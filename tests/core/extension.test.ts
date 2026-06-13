@@ -363,7 +363,7 @@ describe("Core Extension Logic", () => {
                 keypair_source: "env:TEST_SECRET_KEY",
             });
 
-            setEnv("TEST_SECRET_KEY", "SCZANGBA5YHTNYVVV3C7CAZMCLMRABLNMCAUPBKBSNHPEXMZRQAY6M6W");
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
 
             mockGetCurrentLedger.mockResolvedValue(2400000);
 
@@ -406,7 +406,7 @@ describe("Core Extension Logic", () => {
                 keypair_source: "env:TEST_SECRET_KEY",
             });
 
-            setEnv("TEST_SECRET_KEY", "SCZANGBA5YHTNYVVV3C7CAZMCLMRABLNMCAUPBKBSNHPEXMZRQAY6M6W");
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
 
             mockGetCurrentLedger.mockResolvedValue(2400000);
 
@@ -488,7 +488,7 @@ describe("Core Extension Logic", () => {
                 });
             }
 
-            setEnv("TEST_SECRET_KEY", "SCZANGBA5YHTNYVVV3C7CAZMCLMRABLNMCAUPBKBSNHPEXMZRQAY6M6W");
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
             mockGetCurrentLedger.mockResolvedValue(2400000);
 
             // First contract succeeds, second fails
