@@ -243,6 +243,7 @@ export class StellarRpcClient {
     /**
      * Build, sign, and submit an ExtendFootprintTTLOp transaction.
      * Uses simulation to prepare the transaction with correct resource parameters.
+     * Recovers once from txBadSeq errors by refreshing the account sequence.
      */
     async submitExtension(
         entryKeyXdrs: string[],
@@ -252,68 +253,56 @@ export class StellarRpcClient {
         const passphrase = await this.getNetworkPassphrase();
         const keypair = Keypair.fromSecret(secretKey);
         const publicKey = keypair.publicKey();
-
-        // Fetch account sequence number
-        const accountResponse = await this.server.getAccount(publicKey);
-        const account = new Account(publicKey, accountResponse.sequenceNumber());
-
         const keys = entryKeyXdrs.map(k => xdr.LedgerKey.fromXDR(k, "base64"));
 
-        const tx = new TransactionBuilder(account, {
-            fee: "100",
-            networkPassphrase: passphrase,
-        })
-            .addOperation(
-                Operation.extendFootprintTtl({
-                    extendTo: extendToLedgers,
-                }),
-            )
-            .setTimeout(30)
-            .setSorobanData(
-                new (rpc as any).SorobanDataBuilder()
-                    .setReadOnly(keys)
-                    .build(),
-            )
-            .build();
+        const buildTx = async () => {
+            const accountResponse = await this.server.getAccount(publicKey);
+            const account = new Account(publicKey, accountResponse.sequenceNumber());
+            return new TransactionBuilder(account, { fee: "100", networkPassphrase: passphrase })
+                .addOperation(Operation.extendFootprintTtl({ extendTo: extendToLedgers }))
+                .setTimeout(30)
+                .setSorobanData(new (rpc as any).SorobanDataBuilder().setReadOnly(keys).build())
+                .build();
+        };
 
-        // Simulate to prepare the transaction
+        const tx = await buildTx();
         const sim = await this.server.simulateTransaction(tx);
 
         if (rpc.Api.isSimulationError(sim)) {
-            return {
-                success: false,
-                txHash: "",
-                ledger: 0,
-                error: sim.error ?? "Simulation failed",
-            };
+            return { success: false, txHash: "", ledger: 0, error: (sim as any).error ?? "Simulation failed" };
         }
 
-        // Assemble the transaction with simulation results
         const prepared = rpc.assembleTransaction(tx, sim).build();
         prepared.sign(keypair);
-
-        // Submit and poll for result
         const sendResult = await this.server.sendTransaction(prepared);
 
         if (sendResult.status === "ERROR") {
-            const diagnostics = (sendResult as any).errorResult
-                ?? (sendResult as any).diagnosticEventsXdr
-                ?? "";
-            return {
-                success: false,
-                txHash: sendResult.hash,
-                ledger: 0,
-                error: `Transaction send error: ${diagnostics || sendResult.status}`,
-            };
+            if (this.isBadSeqError(sendResult)) {
+                logger.warn("Sequence mismatch detected on ExtendFootprintTTL — refreshing account sequence and retrying");
+                const retryTx = await buildTx();
+                const retrySim = await this.server.simulateTransaction(retryTx);
+                if (rpc.Api.isSimulationError(retrySim)) {
+                    return { success: false, txHash: "", ledger: 0, error: (retrySim as any).error ?? "Simulation failed on retry" };
+                }
+                const retryPrepared = rpc.assembleTransaction(retryTx, retrySim).build();
+                retryPrepared.sign(keypair);
+                const retrySendResult = await this.server.sendTransaction(retryPrepared);
+                if (retrySendResult.status === "ERROR") {
+                    const diagnostics = (retrySendResult as any).errorResult ?? (retrySendResult as any).diagnosticEventsXdr ?? "";
+                    return { success: false, txHash: retrySendResult.hash, ledger: 0, error: `Transaction send error: ${diagnostics || retrySendResult.status}` };
+                }
+                return this.pollTransaction(retrySendResult.hash);
+            }
+            const diagnostics = (sendResult as any).errorResult ?? (sendResult as any).diagnosticEventsXdr ?? "";
+            return { success: false, txHash: sendResult.hash, ledger: 0, error: `Transaction send error: ${diagnostics || sendResult.status}` };
         }
 
-        // Poll for completion
-        const txResult = await this.pollTransaction(sendResult.hash);
-        return txResult;
+        return this.pollTransaction(sendResult.hash);
     }
 
     /**
      * Build, sign, and submit a RestoreFootprintOp transaction to restore archived entries.
+     * Recovers once from txBadSeq errors by refreshing the account sequence.
      */
     async submitRestore(
         entryKeyXdrs: string[],
@@ -322,59 +311,72 @@ export class StellarRpcClient {
         const passphrase = await this.getNetworkPassphrase();
         const keypair = Keypair.fromSecret(secretKey);
         const publicKey = keypair.publicKey();
-
-        const accountResponse = await this.server.getAccount(publicKey);
-        const account = new Account(publicKey, accountResponse.sequenceNumber());
-
         const keys = entryKeyXdrs.map(k => xdr.LedgerKey.fromXDR(k, "base64"));
 
-        const tx = new TransactionBuilder(account, {
-            fee: "100",
-            networkPassphrase: passphrase,
-        })
-            .addOperation(
-                Operation.restoreFootprint({}),
-            )
-            .setTimeout(30)
-            .setSorobanData(
-                new (rpc as any).SorobanDataBuilder()
-                    .setReadWrite(keys)
-                    .build(),
-            )
-            .build();
+        const buildTx = async () => {
+            const accountResponse = await this.server.getAccount(publicKey);
+            const account = new Account(publicKey, accountResponse.sequenceNumber());
+            return new TransactionBuilder(account, { fee: "100", networkPassphrase: passphrase })
+                .addOperation(Operation.restoreFootprint({}))
+                .setTimeout(30)
+                .setSorobanData(new (rpc as any).SorobanDataBuilder().setReadWrite(keys).build())
+                .build();
+        };
 
+        const tx = await buildTx();
         const sim = await this.server.simulateTransaction(tx);
 
         if (rpc.Api.isSimulationError(sim)) {
-            return {
-                success: false,
-                txHash: "",
-                ledger: 0,
-                error: sim.error ?? "Simulation failed",
-            };
+            return { success: false, txHash: "", ledger: 0, error: (sim as any).error ?? "Simulation failed" };
         }
 
         const prepared = rpc.assembleTransaction(tx, sim).build();
         prepared.sign(keypair);
-
         const sendResult = await this.server.sendTransaction(prepared);
 
         if (sendResult.status === "ERROR") {
-            const diagnostics = (sendResult as any).errorResult
-                ?? (sendResult as any).diagnosticEventsXdr
-                ?? "";
-            return {
-                success: false,
-                txHash: sendResult.hash,
-                ledger: 0,
-                error: `Transaction send error: ${diagnostics || sendResult.status}`,
-            };
+            if (this.isBadSeqError(sendResult)) {
+                logger.warn("Sequence mismatch detected on RestoreFootprint — refreshing account sequence and retrying");
+                const retryTx = await buildTx();
+                const retrySim = await this.server.simulateTransaction(retryTx);
+                if (rpc.Api.isSimulationError(retrySim)) {
+                    return { success: false, txHash: "", ledger: 0, error: (retrySim as any).error ?? "Simulation failed on retry" };
+                }
+                const retryPrepared = rpc.assembleTransaction(retryTx, retrySim).build();
+                retryPrepared.sign(keypair);
+                const retrySendResult = await this.server.sendTransaction(retryPrepared);
+                if (retrySendResult.status === "ERROR") {
+                    const diagnostics = (retrySendResult as any).errorResult ?? (retrySendResult as any).diagnosticEventsXdr ?? "";
+                    return { success: false, txHash: retrySendResult.hash, ledger: 0, error: `Transaction send error: ${diagnostics || retrySendResult.status}` };
+                }
+                return this.pollTransaction(retrySendResult.hash);
+            }
+            const diagnostics = (sendResult as any).errorResult ?? (sendResult as any).diagnosticEventsXdr ?? "";
+            return { success: false, txHash: sendResult.hash, ledger: 0, error: `Transaction send error: ${diagnostics || sendResult.status}` };
         }
 
         return this.pollTransaction(sendResult.hash);
     }
 
     // ─── Private helpers ─────────────────────────────────────────────────────
+
+    /**
+     * Returns true if the sendTransaction ERROR response indicates a txBadSeq result code.
+     * The SDK parses errorResultXdr into `errorResult` as an xdr.TransactionResult.
+     */
+    private isBadSeqError(sendResult: any): boolean {
+        try {
+            const errorResult = sendResult.errorResult;
+            if (!errorResult) return false;
+            // errorResult may be a base64 string or a pre-parsed xdr.TransactionResult
+            const parsed = typeof errorResult === "string"
+                ? xdr.TransactionResult.fromXDR(errorResult, "base64")
+                : errorResult;
+            return parsed.result().switch().name === "txBadSeq";
+        } catch {
+            return false;
+        }
+    }
 
     private _cachedPassphrase: string | undefined;
 
