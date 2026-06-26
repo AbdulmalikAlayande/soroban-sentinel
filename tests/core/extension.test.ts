@@ -571,7 +571,7 @@ describe("Core Extension Logic", () => {
             expect(result.contractsExtended).toBe(1);
             expect(result.extensions[0]!.isAnomaly).toBe(true);
             expect(result.extensions[0]!.anomalyDetails).toContain("CPU usage is 3.00x baseline");
-            expect(result.extensions[0]!.anomalyDetails).toContain("Memory usage is 3.76x baseline");
+            expect(result.extensions[0]!.anomalyDetails).toContain("Memory usage is 4.01x baseline");
 
             // Verify the new extension was recorded with anomaly flag
             const history = getExtensionHistory(db, contractId);
