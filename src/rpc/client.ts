@@ -7,6 +7,7 @@ import {
     Account,
     Operation,
     Keypair,
+    Asset,
 } from "@stellar/stellar-sdk";
 import { getLogger } from "../logging/index.js";
 
@@ -47,6 +48,13 @@ export interface SimulateExtensionResult {
     error?: string;
 }
 
+export interface FeeStatsResult {
+    latestLedger?: number;
+    baseFeeStroops: number;
+    surgeFeeStroops: number;
+    surgePricingMultiplier: number;
+}
+
 export interface SubmitTransactionResult {
     /** Whether the transaction succeeded. */
     success: boolean;
@@ -54,6 +62,10 @@ export interface SubmitTransactionResult {
     txHash: string;
     /** Ledger the transaction was included in. */
     ledger: number;
+    /** CPU instructions consumed by the transaction. */
+    cpuInsns?: number;
+    /** Memory bytes consumed by the transaction. */
+    memBytes?: number;
     /** Error message if the transaction failed. */
     error?: string;
 }
@@ -97,6 +109,34 @@ export class StellarRpcClient {
         }
 
         throw new Error("Unable to determine latest ledger from RPC server");
+    }
+
+    async getFeeStats(): Promise<FeeStatsResult> {
+        const serverAny = this.server as any;
+        if (typeof serverAny.getFeeStats !== "function") {
+            throw new Error("RPC server does not support getFeeStats");
+        }
+
+        const response = await serverAny.getFeeStats();
+        const inclusionFee = response.sorobanInclusionFee ?? response.inclusionFee;
+        if (!inclusionFee) {
+            throw new Error("RPC fee stats response did not include inclusion fee data");
+        }
+
+        const baseFeeStroops = parseFeeStat(inclusionFee.p50 ?? inclusionFee.mode ?? inclusionFee.min);
+        const surgeFeeStroops = parseFeeStat(
+            inclusionFee.p95 ?? inclusionFee.p90 ?? inclusionFee.max ?? baseFeeStroops,
+        );
+        const surgePricingMultiplier = baseFeeStroops > 0
+            ? Math.max(surgeFeeStroops / baseFeeStroops, 1)
+            : 1;
+
+        return {
+            latestLedger: typeof response.latestLedger === "number" ? response.latestLedger : undefined,
+            baseFeeStroops,
+            surgeFeeStroops,
+            surgePricingMultiplier,
+        };
     }
 
     async getContractInstanceEntry(contractId: string): Promise<ContractInstanceResult | null> {
@@ -191,6 +231,46 @@ export class StellarRpcClient {
     }
 
     /**
+     * Call the 'get_monitored_keys' view method on a contract.
+     * Returns an array of XDR strings for the keys.
+     */
+    async getMonitoredKeys(contractId: string): Promise<string[]> {
+        const passphrase = await this.getNetworkPassphrase();
+        const contract = new Contract(contractId);
+        const op = contract.call("get_monitored_keys");
+
+        // Use a dummy account for simulation
+        const account = new Account("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF", "0");
+
+        const tx = new TransactionBuilder(account, {
+            fee: "100",
+            networkPassphrase: passphrase,
+        })
+            .addOperation(op)
+            .setTimeout(30)
+            .build();
+
+        const sim = await this.server.simulateTransaction(tx);
+
+        if (rpc.Api.isSimulationError(sim)) {
+            throw new Error(`Simulation failed: ${sim.error ?? "unknown error"}`);
+        }
+
+        const successSim = sim as rpc.Api.SimulateTransactionSuccessResponse;
+        
+        // Parse the result
+        const scv = successSim.result!.retval;
+        
+        // Assuming the return type is a Vec<ScVal> (or similar) of keys
+        if (scv.switch().name === "scvVec") {
+            const vec = scv.vec()!;
+            return vec.map(val => val.toXDR("base64"));
+        }
+        
+        return [];
+    }
+
+    /**
      * Simulate an ExtendFootprintTTLOp to estimate fees before submitting.
      */
     async simulateExtension(
@@ -269,7 +349,14 @@ export class StellarRpcClient {
         const sim = await this.server.simulateTransaction(tx);
 
         if (rpc.Api.isSimulationError(sim)) {
-            return { success: false, txHash: "", ledger: 0, error: (sim as any).error ?? "Simulation failed" };
+            return {
+                success: false,
+                txHash: "",
+                ledger: 0,
+                cpuInsns: 0,
+                memBytes: 0,
+                error: sim.error ?? "Simulation failed",
+            };
         }
 
         const prepared = rpc.assembleTransaction(tx, sim).build();
@@ -282,22 +369,36 @@ export class StellarRpcClient {
                 const retryTx = await buildTx();
                 const retrySim = await this.server.simulateTransaction(retryTx);
                 if (rpc.Api.isSimulationError(retrySim)) {
-                    return { success: false, txHash: "", ledger: 0, error: (retrySim as any).error ?? "Simulation failed on retry" };
+                    return { success: false, txHash: "", ledger: 0, cpuInsns: 0, memBytes: 0, error: retrySim.error ?? "Simulation failed on retry" };
                 }
                 const retryPrepared = rpc.assembleTransaction(retryTx, retrySim).build();
                 retryPrepared.sign(keypair);
                 const retrySendResult = await this.server.sendTransaction(retryPrepared);
                 if (retrySendResult.status === "ERROR") {
                     const diagnostics = (retrySendResult as any).errorResult ?? (retrySendResult as any).diagnosticEventsXdr ?? "";
-                    return { success: false, txHash: retrySendResult.hash, ledger: 0, error: `Transaction send error: ${diagnostics || retrySendResult.status}` };
+                    return { success: false, txHash: retrySendResult.hash, ledger: 0, cpuInsns: Number((retrySim as any).cost?.cpuInsns ?? 0), memBytes: Number((retrySim as any).cost?.memBytes ?? 0), error: `Transaction send error: ${diagnostics || retrySendResult.status}` };
                 }
-                return this.pollTransaction(retrySendResult.hash);
+                const txResult = await this.pollTransaction(retrySendResult.hash);
+                return txResult.success ? this.addResourcesToSuccess(txResult, retrySim as rpc.Api.SimulateTransactionSuccessResponse) : txResult;
             }
             const diagnostics = (sendResult as any).errorResult ?? (sendResult as any).diagnosticEventsXdr ?? "";
-            return { success: false, txHash: sendResult.hash, ledger: 0, error: `Transaction send error: ${diagnostics || sendResult.status}` };
+            return {
+                success: false,
+                txHash: sendResult.hash,
+                ledger: 0,
+                cpuInsns: Number((sim as any).cost?.cpuInsns ?? 0),
+                memBytes: Number((sim as any).cost?.memBytes ?? 0),
+                error: `Transaction send error: ${diagnostics || sendResult.status}`,
+            };
         }
 
-        return this.pollTransaction(sendResult.hash);
+        const txResult = await this.pollTransaction(sendResult.hash);
+        return txResult.success ? this.addResourcesToSuccess(txResult, sim as rpc.Api.SimulateTransactionSuccessResponse) : txResult;
+    }
+
+    // Helper to add resource usage to a successful transaction result
+    private addResourcesToSuccess(result: SubmitTransactionResult, sim: rpc.Api.SimulateTransactionSuccessResponse): SubmitTransactionResult {
+        return { ...result, cpuInsns: Number((sim as any).cost?.cpuInsns ?? 0), memBytes: Number((sim as any).cost?.memBytes ?? 0) };
     }
 
     /**
@@ -327,32 +428,98 @@ export class StellarRpcClient {
         const sim = await this.server.simulateTransaction(tx);
 
         if (rpc.Api.isSimulationError(sim)) {
-            return { success: false, txHash: "", ledger: 0, error: (sim as any).error ?? "Simulation failed" };
+            return {
+                success: false,
+                txHash: "",
+                ledger: 0,
+                cpuInsns: 0,
+                memBytes: 0,
+                error: sim.error ?? "Simulation failed",
+            };
         }
 
         const prepared = rpc.assembleTransaction(tx, sim).build();
         prepared.sign(keypair);
-        const sendResult = await this.server.sendTransaction(prepared);
-
-        if (sendResult.status === "ERROR") {
+        const sendResult = await this.server.sendTransaction(prepared);        if (sendResult.status === "ERROR") {
             if (this.isBadSeqError(sendResult)) {
                 logger.warn("Sequence mismatch detected on RestoreFootprint — refreshing account sequence and retrying");
                 const retryTx = await buildTx();
                 const retrySim = await this.server.simulateTransaction(retryTx);
                 if (rpc.Api.isSimulationError(retrySim)) {
-                    return { success: false, txHash: "", ledger: 0, error: (retrySim as any).error ?? "Simulation failed on retry" };
+                    return { success: false, txHash: "", ledger: 0, cpuInsns: 0, memBytes: 0, error: retrySim.error ?? "Simulation failed on retry" };
                 }
                 const retryPrepared = rpc.assembleTransaction(retryTx, retrySim).build();
                 retryPrepared.sign(keypair);
                 const retrySendResult = await this.server.sendTransaction(retryPrepared);
                 if (retrySendResult.status === "ERROR") {
                     const diagnostics = (retrySendResult as any).errorResult ?? (retrySendResult as any).diagnosticEventsXdr ?? "";
-                    return { success: false, txHash: retrySendResult.hash, ledger: 0, error: `Transaction send error: ${diagnostics || retrySendResult.status}` };
+                    return { success: false, txHash: retrySendResult.hash, ledger: 0, cpuInsns: Number((retrySim as any).cost?.cpuInsns ?? 0), memBytes: Number((retrySim as any).cost?.memBytes ?? 0), error: `Transaction send error: ${diagnostics || retrySendResult.status}` };
                 }
-                return this.pollTransaction(retrySendResult.hash);
+                const txResult = await this.pollTransaction(retrySendResult.hash);
+                return txResult.success ? this.addResourcesToSuccess(txResult, retrySim as rpc.Api.SimulateTransactionSuccessResponse) : txResult;
             }
             const diagnostics = (sendResult as any).errorResult ?? (sendResult as any).diagnosticEventsXdr ?? "";
-            return { success: false, txHash: sendResult.hash, ledger: 0, error: `Transaction send error: ${diagnostics || sendResult.status}` };
+            return {
+                success: false,
+                txHash: sendResult.hash,
+                ledger: 0,
+                cpuInsns: Number((sim as any).cost?.cpuInsns ?? 0),
+                memBytes: Number((sim as any).cost?.memBytes ?? 0),
+                error: `Transaction send error: ${diagnostics || sendResult.status}`,
+            };
+        }
+
+        const txResult = await this.pollTransaction(sendResult.hash);
+        return txResult.success ? this.addResourcesToSuccess(txResult, sim as rpc.Api.SimulateTransactionSuccessResponse) : txResult;
+    }
+
+    /**
+     * Send XLM payments from a source keypair to multiple destination accounts.
+     * Builds a single transaction with one PaymentOp per destination.
+     */
+    async sendPayments(
+        destinations: { publicKey: string; amountXlm: string }[],
+        secretKey: string,
+    ): Promise<SubmitTransactionResult> {
+        if (destinations.length === 0) {
+            return { success: true, txHash: "", ledger: 0 };
+        }
+
+        const passphrase = await this.getNetworkPassphrase();
+        const keypair = Keypair.fromSecret(secretKey);
+        const publicKey = keypair.publicKey();
+
+        const accountResponse = await this.server.getAccount(publicKey);
+        const account = new Account(publicKey, accountResponse.sequenceNumber());
+
+        const builder = new TransactionBuilder(account, {
+            fee: String(100 * destinations.length),
+            networkPassphrase: passphrase,
+        });
+
+        for (const dest of destinations) {
+            builder.addOperation(
+                Operation.payment({
+                    destination: dest.publicKey,
+                    asset: Asset.native(),
+                    amount: dest.amountXlm,
+                }),
+            );
+        }
+
+        const tx = builder.setTimeout(30).build();
+        tx.sign(keypair);
+
+        const sendResult = await this.server.sendTransaction(tx);
+
+        if (sendResult.status === "ERROR") {
+            const diagnostics = (sendResult as any).errorResult ?? "";
+            return {
+                success: false,
+                txHash: sendResult.hash,
+                ledger: 0,
+                error: `Transaction send error: ${diagnostics || sendResult.status}`,
+            };
         }
 
         return this.pollTransaction(sendResult.hash);
@@ -443,4 +610,11 @@ export class StellarRpcClient {
             error: `Transaction polling timed out after ${maxAttempts} attempts`,
         };
     }
+}
+
+function parseFeeStat(value: string | number | bigint | undefined): number {
+    if (value === undefined) return 0;
+    if (typeof value === "bigint") return Number(value);
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
 }
