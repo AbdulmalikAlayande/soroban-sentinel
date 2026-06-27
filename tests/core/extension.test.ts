@@ -178,7 +178,7 @@ describe("Core Extension Logic", () => {
                 success: false,
                 txHash: "failed-tx",
                 ledger: 0,
-                error: "Insufficient funds",
+                error: "Transaction send error: Insufficient funds",
             });
 
             const result = await extendEntries(
@@ -190,11 +190,35 @@ describe("Core Extension Logic", () => {
             );
 
             expect(result.success).toBe(false);
-            expect(result.error).toBe("Insufficient funds");
+            expect(result.error).toBe("Transaction send error: Insufficient funds");
 
             // No history should be recorded
             const history = getExtensionHistory(db, contractId);
             expect(history.length).toBe(0);
+        });
+
+        it("logs warning and returns error on simulation failure", async () => {
+            const contractId = seedContract(db);
+            const entries = getEntriesForContract(db, contractId);
+
+            mockSubmitExtension.mockRejectedValue(new Error("Simulation failed: Invalid footprint key"));
+
+            const { getLogger } = await import("../../src/logging/index.js");
+            const logger = getLogger();
+            const warnSpy = vi.spyOn(logger, "warn");
+
+            const result = await extendEntries(
+                db,
+                contractId,
+                entries.map(e => e.entry_key_xdr),
+                100000,
+                "SECRETKEY123",
+            );
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Simulation failed: Invalid footprint key");
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Simulation failed: Invalid footprint key"));
+            warnSpy.mockRestore();
         });
     });
 
@@ -222,11 +246,7 @@ describe("Core Extension Logic", () => {
         it("returns error on simulation failure", async () => {
             const contractId = seedContract(db);
 
-            mockSimulateExtension.mockResolvedValue({
-                success: false,
-                minResourceFee: 0,
-                error: "Entry is archived",
-            });
+            mockSimulateExtension.mockRejectedValue(new Error("Entry is archived"));
 
             const result = await simulateExtension(
                 db, contractId, ["instance-key-xdr"], 100000, "GPUBLICKEY",

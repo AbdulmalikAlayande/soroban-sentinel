@@ -12,6 +12,22 @@ import {
 } from "@stellar/stellar-sdk";
 import { getLogger } from "../logging/index.js";
 
+export function assertSimulationSuccess(sim: any): asserts sim is rpc.Api.SimulateTransactionSuccessResponse {
+    if (rpc.Api.isSimulationError(sim)) {
+        const err = sim.error || "";
+        if (err.includes("txBadSeq")) {
+            throw new Error("Simulation failed: Expired sequence number");
+        }
+        if (err.includes("InsufficientBalance") || err.includes("txInsufficientBalance")) {
+            throw new Error("Simulation failed: Insufficient wallet balance");
+        }
+        if (err.includes("invalid key") || err.includes("has no entry") || err.includes("invalid footprint")) {
+            throw new Error("Simulation failed: Invalid footprint key");
+        }
+        throw new Error(`Simulation failed: ${err || "unknown error"}`);
+    }
+}
+
 const logger = getLogger().child({ component: "StellarRpcClient" });
 
 const RPC_URLS: Record<string, string> = {
@@ -283,11 +299,9 @@ export class StellarRpcClient {
 
         const sim = await this.server.simulateTransaction(tx);
 
-        if (rpc.Api.isSimulationError(sim)) {
-            throw new Error(`Simulation failed: ${sim.error ?? "unknown error"}`);
-        }
+        assertSimulationSuccess(sim);
 
-        const successSim = sim as rpc.Api.SimulateTransactionSuccessResponse;
+        const successSim = sim;
         
         // Parse the result
         const scv = successSim.result!.retval;
@@ -336,15 +350,9 @@ export class StellarRpcClient {
 
         const sim = await this.server.simulateTransaction(tx);
 
-        if (rpc.Api.isSimulationError(sim)) {
-            return {
-                success: false,
-                minResourceFee: 0,
-                error: sim.error ?? "Simulation failed",
-            };
-        }
+        assertSimulationSuccess(sim);
 
-        const successSim = sim as rpc.Api.SimulateTransactionSuccessResponse;
+        const successSim = sim;
         return {
             success: true,
             minResourceFee: Number(successSim.minResourceFee ?? 0),
@@ -390,16 +398,7 @@ export class StellarRpcClient {
         // Simulate to prepare the transaction
         const sim = await this.server.simulateTransaction(tx);
 
-        if (rpc.Api.isSimulationError(sim)) {
-            return {
-                success: false,
-                txHash: "",
-                ledger: 0,
-                error: sim.error ?? "Simulation failed",
-                cpuInsns: 0,
-                memBytes: 0,
-            };
-        }
+        assertSimulationSuccess(sim);
 
         // Assemble the transaction with simulation results
         const prepared = rpc.assembleTransaction(tx, sim).build();
@@ -465,16 +464,7 @@ export class StellarRpcClient {
 
         const sim = await this.server.simulateTransaction(tx);
 
-        if (rpc.Api.isSimulationError(sim)) {
-            return {
-                success: false,
-                txHash: "",
-                ledger: 0,
-                cpuInsns: 0,
-                memBytes: 0,
-                error: sim.error ?? "Simulation failed",
-            };
-        }
+        assertSimulationSuccess(sim);
 
         const prepared = rpc.assembleTransaction(tx, sim).build();
         prepared.sign(keypair);
