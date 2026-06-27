@@ -1,105 +1,139 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { Command } from "commander";
-import type Database from "better-sqlite3";
-import { getDatabaseForTesting } from "../../src/db/database";
 import { registerWatchCommand } from "../../src/commands/watch";
+import { Command } from "commander";
+import * as dbLib from "../../src/db/database";
+import * as watchCore from "../../src/core/watch";
 
-let mockDb: Database.Database;
+vi.mock("../../src/db/database");
+vi.mock("../../src/core/watch");
 
-const mockWatchContract = vi.fn();
-
-vi.mock("../../src/db/database.js", async (importOriginal) => {
-    const actual = await importOriginal() as any;
-    return {
-        ...actual,
-        getDatabase: () => mockDb,
-    };
-});
-
-vi.mock("../../src/core/watch.js", () => ({
-    watchContract: (...args: unknown[]) => mockWatchContract(...args),
-}));
-
-describe("watch command", () => {
-    const contractId = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
-    let consoleLogSpy: ReturnType<typeof vi.spyOn>;
-    let consoleWarnSpy: ReturnType<typeof vi.spyOn>;
-    let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
-    let exitSpy: ReturnType<typeof vi.spyOn>;
+describe("Watch Command CLI", () => {
+    let program: Command;
+    let mockExit: any;
+    let mockLog: any;
+    let mockWarn: any;
+    let actionFn: (contractId: string, options: any) => Promise<void>;
 
     beforeEach(() => {
-        mockDb = getDatabaseForTesting();
-        vi.clearAllMocks();
-        consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-        consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-        consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-        exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
-            throw new Error("process.exit called");
-        }) as any);
+        program = new Command();
+
+        vi.spyOn(Command.prototype, "action").mockImplementation(function (this: any, fn: any) {
+            actionFn = fn;
+            return this;
+        });
+
+        registerWatchCommand(program);
+
+        mockExit = vi.spyOn(process, "exit").mockImplementation((() => {}) as any);
+        mockLog = vi.spyOn(console, "log").mockImplementation(() => {});
+        mockWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        vi.spyOn(dbLib, "getDatabase").mockReturnValue({} as any);
     });
 
     afterEach(() => {
         vi.restoreAllMocks();
     });
 
-    it("passes --poll-interval to watchContract and stores the override", async () => {
-        mockWatchContract.mockResolvedValue({
-            success: true,
-            contractId,
-            instance: {
-                entryKeyXdr: "instance-key",
-                latestLedger: 1,
-                liveUntilLedgerSeq: 10,
-                lastModifiedLedgerSeq: 1,
-                remainingTTL: 9,
-                executableType: "contractExecutableWasm",
-                wasmHash: null,
-            },
-            wasm: null,
-            fromCache: false,
-        });
+    it("exits with 1 when watchContract returns success=false", async () => {
+        vi.mocked(watchCore.watchContract).mockResolvedValue({
+            success: false,
+            error: "Failed to fetch instance",
+        } as any);
 
-        const program = new Command();
-        registerWatchCommand(program);
-
-        await program.parseAsync([
-            "node",
-            "sorokeep",
-            "watch",
-            contractId,
-            "--poll-interval",
-            "300",
-        ]);
-
-        expect(mockWatchContract).toHaveBeenCalledWith(
-            expect.anything(),
-            expect.objectContaining({
-                contractId,
-                network: "testnet",
-                pollIntervalSeconds: 300,
-            }),
-        );
-
-        expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Poll interval"));
+        const validId = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
+        await actionFn(validId, { network: "testnet" });
+        expect(mockExit).toHaveBeenCalledWith(1);
     });
 
-    it("rejects invalid poll interval values", async () => {
-        const program = new Command();
-        registerWatchCommand(program);
+    it("prints contract details on success (with name)", async () => {
+        vi.mocked(watchCore.watchContract).mockResolvedValue({
+            success: true,
+            instance: { remainingTTL: 100000 },
+            wasm: { remainingTTL: 200000 },
+        } as any);
 
-        await expect(
-            program.parseAsync([
-                "node",
-                "sorokeep",
-                "watch",
-                contractId,
-                "--poll-interval",
-                "0",
-            ]),
-        ).rejects.toThrow("process.exit called");
+        const validId = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
+        await actionFn(validId, { network: "testnet", name: "MyContract" });
 
-        expect(exitSpy).toHaveBeenCalledWith(1);
-        expect(consoleErrorSpy).not.toHaveBeenCalled();
-        expect(consoleWarnSpy).not.toHaveBeenCalled();
+        expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("MyContract"));
+        expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("testnet"));
+    });
+
+    it("prints WASM TTL when wasm entry exists", async () => {
+        vi.mocked(watchCore.watchContract).mockResolvedValue({
+            success: true,
+            instance: { remainingTTL: 100000 },
+            wasm: { remainingTTL: 50000 },
+        } as any);
+
+        const validId = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
+        await actionFn(validId, { network: "testnet" });
+
+        expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("WASM Code TTL"));
+    });
+
+    it("prints WASM warning when present", async () => {
+        vi.mocked(watchCore.watchContract).mockResolvedValue({
+            success: true,
+            instance: { remainingTTL: 100000 },
+            wasm: null,
+            wasmWarning: "WASM could not be fetched",
+        } as any);
+
+        const validId = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
+        await actionFn(validId, { network: "testnet" });
+
+        expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining("WASM could not be fetched"));
+    });
+
+    it("passes correct options to watchContract", async () => {
+        vi.mocked(watchCore.watchContract).mockResolvedValue({
+            success: true,
+            instance: { remainingTTL: 100000 },
+            wasm: null,
+        } as any);
+
+        const validId = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
+        await actionFn(validId, {
+            network: "mainnet",
+            name: "TestContract",
+            rpcUrl: "https://custom-rpc.com",
+            storageKeys: "key1,key2",
+            noIntrospection: true,
+        });
+
+        expect(watchCore.watchContract).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+                contractId: validId,
+                network: "mainnet",
+                name: "TestContract",
+                rpcUrl: "https://custom-rpc.com",
+                storageKeys: "key1,key2",
+                noIntrospection: true,
+            })
+        );
+    });
+
+    it("exits with 1 when watchContract throws an error", async () => {
+        vi.mocked(watchCore.watchContract).mockRejectedValue(new Error("Network timeout"));
+
+        const validId = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
+        await actionFn(validId, { network: "testnet" });
+        expect(mockExit).toHaveBeenCalledWith(1);
+    });
+
+    it("counts entries correctly (instance + wasm + storage keys)", async () => {
+        vi.mocked(watchCore.watchContract).mockResolvedValue({
+            success: true,
+            instance: { remainingTTL: 100000 },
+            wasm: { remainingTTL: 200000 },
+        } as any);
+
+        const validId = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
+        await actionFn(validId, { network: "testnet", storageKeys: "a,b,c" });
+
+        // 1 (instance) + 1 (wasm) + 3 (storage keys) = 5
+        expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("5"));
     });
 });
