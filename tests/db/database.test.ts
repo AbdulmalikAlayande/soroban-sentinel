@@ -3,12 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import DatabaseClass, { type Database } from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
-import { 
+import {
     insertContract, 
     getContract, 
     getAllContracts, 
     updateLastCheckedLedger, 
     deleteContract, 
+    updateContractPollInterval,
+    getContractPollInterval,
     upsertEntry, 
     getEntriesForContract, 
     upsertExtensionPolicy, 
@@ -64,6 +66,7 @@ describe("Contract Operations", () => {
         expect(retrieved!.last_checked_ledger).toBeNull();
         expect(retrieved!.registered_at).toBeDefined();
         expect(new Date(retrieved!.registered_at).getTime()).toBeLessThanOrEqual(Date.now());
+        expect(retrieved!.poll_interval_seconds).toBeNull();
     });
 
     it("returns undefined for non-existent contract", () => {
@@ -106,6 +109,21 @@ describe("Contract Operations", () => {
 
         const retrieved = getContract(db, sampleContract4.id);
         expect(retrieved!.last_checked_ledger).toBe(12345678);
+    });
+
+    it("persists and retrieves per-contract poll interval overrides", () => {
+        const sampleContract = {
+            id: "CBEK0975FU6KKOEZHGO098G6HLBS5D6LVATIGCESOGXSZEQ2UWUY8I3P",
+            name: "poll-override",
+            network: "testnet",
+        };
+        insertContract(db, sampleContract);
+
+        updateContractPollInterval(db, sampleContract.id, 300);
+
+        const retrieved = getContract(db, sampleContract.id);
+        expect(retrieved!.poll_interval_seconds).toBe(300);
+        expect(getContractPollInterval(db, sampleContract.id)).toBe(300);
     });
 
     it.skip("TODO: Implement contract discovery via getEvents", () => {

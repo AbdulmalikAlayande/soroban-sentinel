@@ -15,11 +15,18 @@ export const registerWatchCommand = (program: Command): void => {
         .option("--network <network>", "The stellar network to use (testnet, mainnet)", "testnet")
         .option("-r, --rpc-url <url>", "Custom RPC URL")
         .option("--storage-keys <keys>", "Comma-separated base64 XDR storage keys to watch")
+        .option("--poll-interval <seconds>", "Static polling interval override for this contract")
         .option("--no-introspection", "Skip automatic contract introspection (WASM code fetching)")
         .action(async (contractId, options) => {
             const displayId = formatContractID(contractId);
             const spinner = ora(`Registering contract ${formatContractID(contractId)} and discovering entries...`).start();
             try {
+                const pollIntervalSeconds = options.pollInterval ? parseInt(options.pollInterval, 10) : undefined;
+                if (options.pollInterval && (Number.isNaN(pollIntervalSeconds) || pollIntervalSeconds <= 0)) {
+                    spinner.fail(chalk.red("--poll-interval must be a positive integer"));
+                    process.exit(1);
+                }
+
                 const db = getDatabase();
                 const watchResult = await watchContract(db, {
                     contractId,
@@ -27,6 +34,7 @@ export const registerWatchCommand = (program: Command): void => {
                     name: options.name,
                     rpcUrl: options.rpcUrl,
                     storageKeys: options.storageKeys,
+                    pollIntervalSeconds,
                     noIntrospection: options.noIntrospection,
                 });
                 if (!watchResult.success) {
@@ -40,6 +48,9 @@ export const registerWatchCommand = (program: Command): void => {
                 console.log(`\n  Contract: ${chalk.cyan(options.name ?? displayId)} (${chalk.dim(displayId)})`);
                 console.log(`  Network:  ${chalk.cyan(options.network)}`);
                 console.log(`  Entries:  ${chalk.cyan(entryCount)} discovered`);
+                if (pollIntervalSeconds) {
+                    console.log(`  Poll interval: ${chalk.cyan(`${pollIntervalSeconds}s`)} override`);
+                }
 
                 // Contract Instance TimeToLive
                 const instanceTTL = watchResult.instance.remainingTTL;

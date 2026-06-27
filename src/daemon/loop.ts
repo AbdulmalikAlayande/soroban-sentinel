@@ -4,7 +4,7 @@ import { runIntrospectionRescan } from "../core/introspection.js";
 import { deliverPendingAlerts } from "../alerts/dispatcher.js";
 import { runAutoExtensions } from "../core/extension.js";
 import { vacuumDatabase } from "../db/database.js";
-import { aggregateDailyCostSnapshots } from "../db/repositories.js";
+import { aggregateDailyCostSnapshots, getAllContracts } from "../db/repositories.js";
 import { getLogger } from "../logging/index.js";
 
 const logger = getLogger().child({ component: "DaemonLoop" });
@@ -59,9 +59,10 @@ export async function startDaemon(
     vacuumIntervalMs = options?.vacuumIntervalMs ?? DEFAULT_VACUUM_INTERVAL_MS;
     const rpcUrl = options?.rpcUrl;
     const onCycle = options?.onCycle;
+    const effectiveIntervalMs = resolvePollIntervalMs(db, network, intervalMs);
 
     lastVacuumAt = Date.now();
-    logger.info(`Daemon starting — network: ${network}, interval: ${intervalMs}ms`);
+    logger.info(`Daemon starting — network: ${network}, interval: ${effectiveIntervalMs}ms`);
 
     // Run the initial cycle immediately.
     await executeCycle(db, network, rpcUrl, onCycle);
@@ -69,7 +70,7 @@ export async function startDaemon(
     // Schedule repeating cycles.
     intervalHandle = setInterval(() => {
         void scheduledTick(db, network, rpcUrl, onCycle);
-    }, intervalMs);
+    }, effectiveIntervalMs);
 }
 
 /**
@@ -233,4 +234,17 @@ function safeOnCycle(
     } catch (cbErr) {
         logger.error("onCycle callback threw — ignoring", cbErr);
     }
+}
+
+function resolvePollIntervalMs(db: Database.Database, network: string, fallbackIntervalMs: number): number {
+    const contracts = getAllContracts(db).filter((contract) => contract.network === network);
+    const overrides = contracts
+        .map((contract) => contract.poll_interval_seconds)
+        .filter((value): value is number => typeof value === "number" && value > 0);
+
+    if (overrides.length === 0) {
+        return fallbackIntervalMs;
+    }
+
+    return Math.min(...overrides) * 1000;
 }
