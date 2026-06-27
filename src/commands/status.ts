@@ -11,7 +11,8 @@ export function registerStatusCommand(program: Command): void {
     program
         .command("status <contractId>")
         .description("Show TTL and storage health for a watched contract")
-        .action((contractId: string) => {
+        .option("--json", "Output machine-readable JSON")
+        .action((contractId: string, options: { json?: boolean }) => {
             const db = getDatabase();
 
             let status;
@@ -19,11 +20,25 @@ export function registerStatusCommand(program: Command): void {
                 status = getContractStatus(db, contractId);
             } catch (error) {
                 if (error instanceof ContractNotFoundError) {
-                    console.log(chalk.red(`Contract ${formatContractID(contractId)} is not registered.`));
-                    console.log(chalk.dim("Run 'sorokeep watch <contractId>' first."));
+                    if (options.json) {
+                        console.log(JSON.stringify({
+                            success: false,
+                            error: "contract_not_found",
+                            contractId,
+                            message: `Contract ${formatContractID(contractId)} is not registered.`,
+                        }));
+                    } else {
+                        console.log(chalk.red(`Contract ${formatContractID(contractId)} is not registered.`));
+                        console.log(chalk.dim("Run 'sorokeep watch <contractId>' first."));
+                    }
                     process.exit(1);
                 }
                 throw error;
+            }
+
+            if (options.json) {
+                console.log(JSON.stringify(status, null, 2));
+                return;
             }
 
             const displayName = status.name ?? formatContractID(contractId);
