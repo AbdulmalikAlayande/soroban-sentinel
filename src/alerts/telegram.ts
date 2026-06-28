@@ -31,6 +31,7 @@ function resolveBotToken(): string {
 
 function severityEmoji(event: AlertEvent): string {
     if (event.type === "alert_resolved") return "✅";
+    if (event.type === "state_changed") return "🔄";
     if (event.severity === "critical") return "🔴";
     return "⚠️";
 }
@@ -51,6 +52,25 @@ function buildMessage(event: AlertEvent): string {
             `*Usage:* ${event.resource.usagePercent}% \\(${event.resource.currentUsage.toLocaleString()} / ${event.resource.limit.toLocaleString()}\\)`,
             ``,
             `_Severity: ${escapeMarkdown(event.severity)} \\| Contract: ${escapeMarkdown(event.contractId)}_`,
+        ].join("\n");
+    }
+
+    if (event.type === "state_changed") {
+        const diffLabel = event.diff.diffType.charAt(0).toUpperCase() + event.diff.diffType.slice(1);
+        const entryLabel = event.entry.label ?? event.entry.type;
+        const oldVal = event.diff.oldValueXdr ?? "\\(none\\)";
+        const newVal = event.diff.newValueXdr ?? "\\(none\\)";
+
+        return [
+            `${icon} *State ${diffLabel}* — ${escapeMarkdown(contractDisplay)}`,
+            ``,
+            `*Entry:* ${escapeMarkdown(entryLabel)}`,
+            `*Network:* ${escapeMarkdown(event.network)}`,
+            `*Change Type:* ${escapeMarkdown(event.diff.diffType)}`,
+            `*Old Value:* \`${escapeMarkdown(oldVal)}\``,
+            `*New Value:* \`${escapeMarkdown(newVal)}\``,
+            ``,
+            `_Contract: ${escapeMarkdown(event.contractId)}_`,
         ].join("\n");
     }
 
