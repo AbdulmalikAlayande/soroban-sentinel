@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { StellarRpcClient, extractResourceCosts } from "../../src/rpc/client";
+import { StellarRpcClient, extractResourceCosts, executeWithRetry } from "../../src/rpc/client";
 import { Contract, xdr, Keypair } from "@stellar/stellar-sdk";
 
 vi.mock("@stellar/stellar-sdk", async () =>  {
