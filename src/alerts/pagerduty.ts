@@ -90,7 +90,7 @@ function buildCustomDetails(event: AlertEvent): Record<string, unknown> {
 function buildPayload(event: AlertEvent): unknown {
     return {
         routing_key: "",
-        event_action: event.type === "threshold_crossed" || event.type === "resource_alert" ? "trigger" : "resolve",
+        event_action: event.type === "threshold_crossed" || event.type === "resource_alert" || event.type === "state_changed" ? "trigger" : "resolve",
         dedup_key: buildDedupKey(event),
         payload: {
             summary: buildSummary(event),

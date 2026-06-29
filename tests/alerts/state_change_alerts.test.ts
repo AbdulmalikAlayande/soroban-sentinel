@@ -210,6 +210,45 @@ describe("State Change Alerts", () => {
                 }),
             );
         });
+
+        it("delivers state_changed event via discord", async () => {
+            const { sendDiscordAlert } = await import("../../src/alerts/discord.js");
+            const event = buildStateChangeAlertEvent({
+                contractId: "C1", contractName: null, network: "testnet",
+                entryKeyXdr: "k", entryType: "persistent", entryLabel: null,
+                diffType: "deleted", oldValueXdr: "o", newValueXdr: null,
+                detectedAtLedger: 100,
+            });
+            const success = await deliverSingleAlert("discord", "https://discord.com/webhook", event);
+            expect(success).toBe(true);
+            expect(sendDiscordAlert).toHaveBeenCalledWith("https://discord.com/webhook", event);
+        });
+
+        it("delivers state_changed event via pagerduty", async () => {
+            const { sendPagerDutyAlert } = await import("../../src/alerts/pagerduty.js");
+            const event = buildStateChangeAlertEvent({
+                contractId: "C1", contractName: null, network: "testnet",
+                entryKeyXdr: "k", entryType: "persistent", entryLabel: null,
+                diffType: "updated", oldValueXdr: "o", newValueXdr: "n",
+                detectedAtLedger: 100,
+            });
+            const success = await deliverSingleAlert("pagerduty", "routing-key", event);
+            expect(success).toBe(true);
+            expect(sendPagerDutyAlert).toHaveBeenCalledWith("routing-key", event);
+        });
+
+        it("delivers state_changed event via telegram", async () => {
+            const { sendTelegramAlert } = await import("../../src/alerts/telegram.js");
+            const event = buildStateChangeAlertEvent({
+                contractId: "C1", contractName: null, network: "testnet",
+                entryKeyXdr: "k", entryType: "persistent", entryLabel: null,
+                diffType: "updated", oldValueXdr: "o", newValueXdr: "n",
+                detectedAtLedger: 100,
+            });
+            const success = await deliverSingleAlert("telegram", "chat-123", event);
+            expect(success).toBe(true);
+            expect(sendTelegramAlert).toHaveBeenCalledWith("chat-123", event);
+        });
     });
 
     // =========================================================================
