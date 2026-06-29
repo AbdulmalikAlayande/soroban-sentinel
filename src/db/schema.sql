@@ -155,3 +155,12 @@ CREATE TABLE IF NOT EXISTS resource_alerts_fired (
     resolved BOOLEAN NOT NULL DEFAULT 0,
     resolved_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS budget_tracking (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+    limit_xlm REAL NOT NULL,
+    spent_xlm REAL NOT NULL DEFAULT 0.0,
+    billing_cycle TEXT NOT NULL,
+    UNIQUE(contract_id, billing_cycle)
+);
