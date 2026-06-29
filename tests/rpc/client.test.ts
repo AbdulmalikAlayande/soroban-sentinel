@@ -413,9 +413,8 @@ describe("StellarRpcClient", () => {
             await Promise.all(requests);
 
             expect(timestamps).toHaveLength(4);
-            expect(timestamps[1] - timestamps[0]).toBeGreaterThanOrEqual(500);
-            expect(timestamps[2] - timestamps[1]).toBeGreaterThanOrEqual(500);
-            expect(timestamps[3] - timestamps[2]).toBeGreaterThanOrEqual(500);
+            expect(timestamps[2] - timestamps[0]).toBeGreaterThanOrEqual(1000);
+            expect(timestamps[3] - timestamps[1]).toBeGreaterThanOrEqual(1000);
         });
 
         it("queues requests and resolves them successfully", async () => {
@@ -440,6 +439,68 @@ describe("StellarRpcClient", () => {
 
             expect(settled).toHaveLength(4);
             expect(settled.every((result) => result.status === "healthy")).toBe(true);
+        });
+
+        it("limits in-flight requests to maxRequestsPerSecond at any moment", async () => {
+            vi.useFakeTimers();
+            vi.setSystemTime(new Date("2024-01-01T00:00:00.000Z"));
+
+            let inFlight = 0;
+            let maxInFlight = 0;
+            const server = {
+                getHealth: vi.fn(async () => {
+                    inFlight++;
+                    maxInFlight = Math.max(maxInFlight, inFlight);
+                    // Simulate some async work
+                    await new Promise<void>(resolve => setTimeout(resolve, 50));
+                    inFlight--;
+                    return { status: "healthy", latestLedger: 2443398 };
+                }),
+            };
+
+            const rateLimitedClient = new StellarRpcClient("testnet", undefined, { maxRequestsPerSecond: 2 });
+            (rateLimitedClient as any).server = server;
+
+            const requests = [1, 2, 3, 4].map(() => rateLimitedClient.checkHealth());
+
+            await vi.runAllTimersAsync();
+            await Promise.all(requests);
+
+            // With 2 req/sec rate limit, at most 2 should have been in-flight simultaneously
+            expect(maxInFlight).toBeLessThanOrEqual(2);
+            expect(server.getHealth).toHaveBeenCalledTimes(4);
+        });
+
+        it("continues processing queued requests even if a preceding request fails", async () => {
+            vi.useFakeTimers();
+            vi.setSystemTime(new Date("2024-01-01T00:00:00.000Z"));
+
+            let callCount = 0;
+            const server = {
+                getHealth: vi.fn(async () => {
+                    callCount++;
+                    if (callCount === 1) {
+                        throw new Error("First request failed");
+                    }
+                    return { status: "healthy", latestLedger: 2443398 };
+                }),
+            };
+
+            const rateLimitedClient = new StellarRpcClient("testnet", undefined, { maxRequestsPerSecond: 2 });
+            (rateLimitedClient as any).server = server;
+
+            const [first, second] = await Promise.allSettled([
+                rateLimitedClient.checkHealth(),
+                rateLimitedClient.checkHealth(),
+            ]);
+
+            await vi.runAllTimersAsync();
+
+            // First should have rejected
+            expect(first.status).toBe("rejected");
+            // Second should have resolved despite the first failing
+            expect(second.status).toBe("fulfilled");
+            expect(server.getHealth).toHaveBeenCalledTimes(2);
         });
     });
 });

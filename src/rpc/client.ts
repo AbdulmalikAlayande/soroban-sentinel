@@ -111,8 +111,7 @@ export class StellarRpcClient {
     private readonly server: rpc.Server;
     private readonly maxRequestsPerSecond: number;
     private readonly requestIntervalMs: number;
-    private requestQueue: Promise<void> = Promise.resolve();
-    private lastRequestStartedAt = 0;
+    private recentRequestTimes: number[] = [];
 
     constructor(network: string, customUrl?: string, options: StellarRpcClientOptions = {}) {
         this.network = network;
@@ -134,24 +133,22 @@ export class StellarRpcClient {
     }
 
     async getCurrentLedger(): Promise<number> {
-        return await this.withRateLimit(async () => {
-            const serverAny = this.server as any;
-            if (typeof serverAny.getLatestLedger === "function") {
-                try {
-                    const response = await serverAny.getLatestLedger();
-                    if (response && typeof response.sequence === "number") return response.sequence;
-                } catch (error) {
-                    logger.debug("getLatestLedger failed, falling back to getHealth", error);
-                }
+        const serverAny = this.server as any;
+        if (typeof serverAny.getLatestLedger === "function") {
+            try {
+                const response = await this.withRateLimit(() => serverAny.getLatestLedger());
+                if (response && typeof response.sequence === "number") return response.sequence;
+            } catch (error) {
+                logger.debug("getLatestLedger failed, falling back to getHealth", error);
             }
+        }
 
-            const health = await this.server.getHealth();
-            if (health && typeof (health as any).latestLedger === "number") {
-                return (health as any).latestLedger;
-            }
+        const health = await this.withRateLimit(() => this.server.getHealth());
+        if (health && typeof (health as any).latestLedger === "number") {
+            return (health as any).latestLedger;
+        }
 
-            throw new Error("Unable to determine latest ledger from RPC server");
-        });
+        throw new Error("Unable to determine latest ledger from RPC server");
     }
 
     async getFeeStats(): Promise<FeeStatsResult> {
@@ -655,27 +652,38 @@ export class StellarRpcClient {
     }
 
     private async withRateLimit<T>(operation: () => Promise<T>): Promise<T> {
-        const queuedOperation = this.requestQueue.then(async () => {
-            const waitMs = this.calculateWaitMs();
-            if (waitMs > 0) {
-                await this.sleep(waitMs);
-            }
-            this.lastRequestStartedAt = Date.now();
-            return await operation();
-        });
-
-        this.requestQueue = queuedOperation.then(() => undefined, () => undefined);
-        return await queuedOperation;
+        const waitMs = this.acquireSlot();
+        if (waitMs > 0) {
+            await this.sleep(waitMs);
+        }
+        return operation();
     }
 
-    private calculateWaitMs(): number {
-        if (this.lastRequestStartedAt === 0) {
+    private acquireSlot(): number {
+        const now = Date.now();
+        const windowStart = now - 1000;
+        this.recentRequestTimes = this.recentRequestTimes.filter(t => t > windowStart);
+
+        if (this.recentRequestTimes.length < this.maxRequestsPerSecond) {
+            this.recentRequestTimes.push(now);
             return 0;
         }
 
+        // Wait until the oldest request in the window falls out
+        const oldestInWindow = this.recentRequestTimes[0]!;
+        const waitMs = oldestInWindow + 1000 - now;
+        this.recentRequestTimes.push(now + waitMs);
+        return waitMs;
+    }
+
+    /** @deprecated Use acquireSlot-based withRateLimit instead. Kept for compatibility. */
+    private calculateWaitMs(): number {
         const now = Date.now();
-        const nextAllowedAt = this.lastRequestStartedAt + this.requestIntervalMs;
-        return Math.max(0, nextAllowedAt - now);
+        const windowStart = now - 1000;
+        const recent = this.recentRequestTimes.filter(t => t > windowStart);
+        if (recent.length < this.maxRequestsPerSecond) return 0;
+        const oldest = recent[0]!;
+        return Math.max(0, oldest + 1000 - now);
     }
 
     private async sleep(ms: number): Promise<void> {
