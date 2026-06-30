@@ -1119,7 +1119,7 @@ export function insertResourceUsageLog(
             @fee_historical_ledger,
             @fee_rent_ledger,
             @fee_refundable,
-            COALESCE(@recorded_at, CURRENT_TIMESTAMP)
+            COALESCE(@recorded_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         )
     `).run({
         contract_id: log.contract_id,

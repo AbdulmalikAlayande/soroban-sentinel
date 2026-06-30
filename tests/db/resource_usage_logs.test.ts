@@ -222,6 +222,40 @@ describe("getResourceUsageLogs", () => {
         expect(logs[2]!.cpu_insns).toBe(100);
     });
 
+    it("sorts correctly when mixing default and explicit timestamps", () => {
+        // Explicit timestamp in the past
+        insertResourceUsageLog(db, {
+            contract_id: CONTRACT_ID,
+            cpu_insns: 100,
+            mem_bytes: 100,
+            recorded_at: "2020-01-01T00:00:00.000Z",
+        });
+
+        // Default timestamp (should be "now" in ISO format, so greater than 2020)
+        insertResourceUsageLog(db, {
+            contract_id: CONTRACT_ID,
+            cpu_insns: 200,
+            mem_bytes: 200,
+        });
+
+        // Explicit timestamp far in the future
+        insertResourceUsageLog(db, {
+            contract_id: CONTRACT_ID,
+            cpu_insns: 300,
+            mem_bytes: 300,
+            recorded_at: "2030-01-01T00:00:00.000Z",
+        });
+
+        const logs = getResourceUsageLogs(db, CONTRACT_ID);
+        expect(logs).toHaveLength(3);
+        // Should be ordered descending: 2030, now, 2020
+        expect(logs[0]!.cpu_insns).toBe(300);
+        expect(logs[1]!.cpu_insns).toBe(200);
+        expect(logs[2]!.cpu_insns).toBe(100);
+        // Verify default timestamp format is ISO-8601 UTC
+        expect(logs[1]!.recorded_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/);
+    });
+
     it("only returns logs for the requested contract", () => {
         insertResourceUsageLog(db, { contract_id: CONTRACT_ID, cpu_insns: 100, mem_bytes: 100 });
         insertResourceUsageLog(db, { contract_id: OTHER_CONTRACT_ID, cpu_insns: 999, mem_bytes: 999 });
