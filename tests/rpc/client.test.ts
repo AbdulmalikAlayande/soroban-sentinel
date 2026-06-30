@@ -490,7 +490,9 @@ describe("StellarRpcClient", () => {
             (rateLimitedClient as any).server = server;
 
             const firstPromise = rateLimitedClient.checkHealth();
+            firstPromise.catch(() => {}); // prevent unhandled rejection during runAllTimersAsync
             const secondPromise = rateLimitedClient.checkHealth();
+            secondPromise.catch(() => {}); // prevent unhandled rejection during runAllTimersAsync
 
             await vi.runAllTimersAsync();
             const [first, second] = await Promise.allSettled([firstPromise, secondPromise]);
