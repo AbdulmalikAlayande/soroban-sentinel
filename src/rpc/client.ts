@@ -8,6 +8,7 @@ import {
   Account,
   Operation,
   Keypair,
+  SorobanDataBuilder,
 } from "@stellar/stellar-sdk";
 import { getLogger } from "../logging/index.js";
 
@@ -229,7 +230,7 @@ export class StellarRpcClient {
       )
       .setTimeout(30)
       .setSorobanData(
-        new (rpc as any).SorobanDataBuilder().setReadOnly(keys).build(),
+        new SorobanDataBuilder().setReadOnly(keys).build(),
       )
       .build();
 
@@ -280,7 +281,7 @@ export class StellarRpcClient {
       )
       .setTimeout(30)
       .setSorobanData(
-        new (rpc as any).SorobanDataBuilder().setReadOnly(keys).build(),
+        new SorobanDataBuilder().setReadOnly(keys).build(),
       )
       .build();
 
@@ -354,7 +355,7 @@ export class StellarRpcClient {
       )
       .setTimeout(30)
       .setSorobanData(
-        new (rpc as any).SorobanDataBuilder().setReadOnly(keys).build(),
+        new SorobanDataBuilder().setReadOnly(keys).build(),
       )
       .build();
 
@@ -377,7 +378,7 @@ export class StellarRpcClient {
     // Wrap in a fee-bump transaction — sponsor pays the base fee
     const feeBump = TransactionBuilder.buildFeeBumpTransaction(
       sponsorKeypair,
-      assembledInner.fee,
+      (parseInt(assembledInner.fee, 10) + 10000).toString(),
       assembledInner,
       passphrase,
     );
@@ -424,7 +425,7 @@ export class StellarRpcClient {
       .addOperation(Operation.restoreFootprint({}))
       .setTimeout(30)
       .setSorobanData(
-        new (rpc as any).SorobanDataBuilder().setReadWrite(keys).build(),
+        new SorobanDataBuilder().setReadWrite(keys).build(),
       )
       .build();
 
@@ -528,3 +529,4 @@ export class StellarRpcClient {
     };
   }
 }
+

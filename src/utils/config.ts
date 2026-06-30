@@ -63,7 +63,7 @@ export function loadConfig(customPath?: string): SorokeepConfig {
           ? parsed.pollingIntervalSeconds
           : DEFAULT_CONFIG.pollingIntervalSeconds,
       slackToken: parsed.slackToken,
-      feeSponsorSecret: parsed.feeSponsorSecret,
+      feeSponsorSecret: typeof parsed.feeSponsorSecret === "string" ? parsed.feeSponsorSecret : undefined,
     };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -87,6 +87,11 @@ export function saveConfig(config: SorokeepConfig, customPath?: string): void {
 
   const yamlStr = YAML.stringify(config);
   fs.writeFileSync(configPath, yamlStr, { encoding: "utf-8", mode: 0o600 });
+  try {
+    fs.chmodSync(configPath, 0o600);
+  } catch {
+    // best effort for existing files
+  }
   logger.debug(`Config saved to ${configPath}`);
 }
 

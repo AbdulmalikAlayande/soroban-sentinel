@@ -785,3 +785,54 @@ describe("Core Extension Logic", () => {
     });
   });
 });
+  describe("Real Client Assembly", () => {
+    it("correctly calculates fee-bump transaction fees", async () => {
+      const { StellarRpcClient } = await vi.importActual("../../src/rpc/client.js");
+      const { rpc, TransactionBuilder, Keypair, SorobanDataBuilder } = await import("@stellar/stellar-sdk");
+      
+      const client = new StellarRpcClient("testnet", "https://mock.com");
+      
+      const secret = Keypair.random().secret();
+      const sponsor = Keypair.random().secret();
+      
+      client.server.getNetwork = vi.fn().mockResolvedValue({ passphrase: "Test SDF Network ; September 2015" });
+      client.server.getAccount = vi.fn().mockResolvedValue({ sequenceNumber: () => "123" });
+      
+      // Need a real SorobanDataBuilder to create valid transactionData
+      const sorobanData = new SorobanDataBuilder().build().toXDR("base64");
+      
+      client.server.simulateTransaction = vi.fn().mockResolvedValue({
+        minResourceFee: "5000",
+        transactionData: sorobanData,
+        results: [{ xdr: "AAAAAQ==" }]
+      });
+      
+      const feeBumpSpy = vi.spyOn(TransactionBuilder, "buildFeeBumpTransaction").mockReturnValue({
+        sign: vi.fn(),
+      } as any);
+      
+      client.server.sendTransaction = vi.fn().mockResolvedValue({ status: "SUCCESS", hash: "mock-hash", ledger: 100 });
+      client.pollTransaction = vi.fn().mockResolvedValue({ success: true, txHash: "mock-hash", ledger: 100 });
+      
+      await client.submitExtensionWithFeeBump(
+        ["AAAABgAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAABAAAAAQ=="],
+        1000,
+        secret,
+        sponsor
+      );
+      
+      expect(feeBumpSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        "10100", // (inner base fee 100 + 10000)
+        expect.anything(),
+        expect.anything()
+      );
+      
+      feeBumpSpy.mockRestore();
+    });
+  });
+
+
+
+
+
