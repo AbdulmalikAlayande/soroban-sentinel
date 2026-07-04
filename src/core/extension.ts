@@ -11,9 +11,7 @@ import {
     updateLastCheckedLedger,
     getAverageResourceUsage,
     getBudget,
-    reserveBudget,
-    commitBudget,
-    rollbackBudget,
+    addBudgetSpent,
     countExtensionsInLastHour,
 } from "../db/repositories.js";
 import { ChannelAccountPool } from "./channels.js";
@@ -444,7 +442,7 @@ export async function runAutoExtensions(
                     if (budget && estimatedFeeXlm > 0) {
                         // Assume actualFeeXlm is passed from extResult (we will update extendEntries to return it)
                         const actualFeeXlm = extResult.actualFeeXlm !== undefined ? extResult.actualFeeXlm : estimatedFeeXlm;
-                        commitBudget(db, contract.id, billingCycle, estimatedFeeXlm, actualFeeXlm);
+                        addBudgetSpent(db, contract.id, billingCycle, actualFeeXlm);
                     }
                     result.contractsExtended++;
                     result.entriesExtended += extResult.entriesExtended;
