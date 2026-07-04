@@ -69,11 +69,6 @@ export async function deliverPendingAlerts(
     for (const alert of alerts) {
         result.attempted += 1;
 
-        if (alert.retryCount >= MAX_RETRY_COUNT) {
-            result.abandoned += 1;
-            continue;
-        }
-
         const event = buildEvent(alert);
 
         try {
@@ -83,6 +78,9 @@ export async function deliverPendingAlerts(
         } catch (error: unknown) {
             incrementRetryCount(db, alert.alertFiredId);
             result.failed += 1;
+            if (alert.retryCount + 1 >= MAX_RETRY_COUNT) {
+                result.abandoned += 1;
+            }
             const message = error instanceof Error ? error.message : String(error);
             result.errors.push(message);
             logger.warn(`Alert delivery failed for ${alert.contractId}: ${message}`);

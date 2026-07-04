@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ==========================================
 // --- 1. CORE IMPLEMENTATION CODE ---
@@ -25,6 +25,7 @@ export class StorageKeyScanner {
   async scanAndRegisterInstanceKeys(contractId: string): Promise<string[]> {
     try {
       // Step 1: Query RPC for contract instance ledger entry
+      const footprintKey = Buffer.from(`instance_for_${contractId}`).toString("base64");
       const rpcResponse = await fetch(`${this.rpcUrl}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -32,7 +33,7 @@ export class StorageKeyScanner {
           jsonrpc: "2.0",
           id: 1,
           method: "getLedgerEntries",
-          params: [contractId]
+          params: { keys: [footprintKey] }
         })
       });
       
@@ -92,6 +93,10 @@ describe("TDD - Contract Instance Storage Key Scanner Engine", () => {
 
     // Reset global fetch mock to prevent contamination between test cycles
     vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("should discover and register keys stored inside the contract instance map array", async () => {
