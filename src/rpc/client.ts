@@ -7,9 +7,38 @@ import {
     Account,
     Operation,
     Keypair,
+    SorobanDataBuilder,
     Asset,
 } from "@stellar/stellar-sdk";
 import { getLogger } from "../logging/index.js";
+
+/**
+ * Executes an RPC action with exponential backoff on network timeouts or 429/5xx errors.
+ * Starts at 1 second, doubling up to 3 retries (max 4 attempts).
+ */
+export async function executeWithRetry<T>(action: () => Promise<T>): Promise<T> {
+    const MAX_RETRIES = 3;
+    let delayMs = 1000;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            return await action();
+        } catch (error: any) {
+            const isTimeout = error?.code === "ETIMEDOUT" || error?.code === "ECONNRESET" || error?.message?.includes("timeout");
+            const status = error?.response?.status;
+            const isRetryableHttp = status === 429 || (status >= 500 && status < 600);
+
+            if ((isTimeout || isRetryableHttp) && attempt < MAX_RETRIES) {
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+                delayMs *= 2;
+                continue;
+            }
+
+            throw error;
+        }
+    }
+    throw new Error("Unreachable");
+}
 
 const logger = getLogger().child({ component: "StellarRpcClient" });
 
@@ -39,6 +68,10 @@ export interface EntryTTLsResult {
     entries: SorokeepLedgerEntryResult[];
 }
 
+export interface ContractStorageEntryResult extends SorokeepLedgerEntryResult {
+    valXdr?: string;
+}
+
 export interface SimulateExtensionResult {
     /** Estimated fee in stroops. */
     minResourceFee: number;
@@ -46,6 +79,76 @@ export interface SimulateExtensionResult {
     success: boolean;
     /** Error message if simulation failed. */
     error?: string;
+}
+
+/**
+ * Structured resource usage estimate extracted from a simulateTransaction response.
+ * Used for budget safety checks before executing auto-extensions (issue #133).
+ */
+export interface ResourceEstimate {
+    /** CPU instructions estimated for the transaction. */
+    cpuInstructions: number;
+    /** Memory bytes estimated for the transaction. */
+    memoryBytes: number;
+    /** Minimum resource fee in stroops estimated by the RPC node. */
+    minResourceFee: number;
+}
+
+/**
+ * Parse a simulateTransaction RPC response into a structured ResourceEstimate.
+ *
+ * Extracts `cpuInstructions` from `response.cost.cpuInsns`,
+ * `memoryBytes` from `response.cost.memBytes`, and
+ * `minResourceFee` from `response.minResourceFee`.
+ *
+ * Returns `null` when:
+ *   - The input is null, undefined, or not a plain object.
+ *   - The response contains an `error` field (simulation failed).
+ *   - Neither `cost` nor `minResourceFee` fields are present.
+ *
+ * Missing numeric fields default to `0` rather than `NaN`.
+ *
+ * @param response - The raw simulation response object (or null/undefined).
+ * @returns A ResourceEstimate on success, or null on failure.
+ */
+export function parseResourceEstimate(response: unknown): ResourceEstimate | null {
+    if (response === null || response === undefined) return null;
+    if (typeof response !== "object" || Array.isArray(response)) return null;
+
+    const sim = response as Record<string, unknown>;
+
+    // Simulation error responses have an `error` field — always return null.
+    if (typeof sim["error"] === "string" && sim["error"].length > 0) return null;
+
+    // Need at least one useful field to return a meaningful estimate.
+    const hasCost = sim["cost"] !== undefined && sim["cost"] !== null;
+    const hasFee = sim["minResourceFee"] !== undefined && sim["minResourceFee"] !== null;
+    if (!hasCost && !hasFee) return null;
+
+    // Parse minResourceFee (may be a string or number in the Soroban RPC response)
+    const rawFee = sim["minResourceFee"];
+    const minResourceFee = rawFee !== undefined && rawFee !== null
+        ? safeParseNumber(rawFee)
+        : 0;
+
+    // Parse cost fields
+    let cpuInstructions = 0;
+    let memoryBytes = 0;
+
+    if (hasCost && typeof sim["cost"] === "object" && !Array.isArray(sim["cost"])) {
+        const cost = sim["cost"] as Record<string, unknown>;
+        cpuInstructions = safeParseNumber(cost["cpuInsns"]);
+        memoryBytes = safeParseNumber(cost["memBytes"]);
+    }
+
+    return { cpuInstructions, memoryBytes, minResourceFee };
+}
+
+/** Parse a value to a non-negative finite integer, defaulting to 0. */
+function safeParseNumber(value: unknown): number {
+    if (value === undefined || value === null) return 0;
+    const n = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
 }
 
 export interface FeeStatsResult {
@@ -68,6 +171,34 @@ export interface SubmitTransactionResult {
     memBytes?: number;
     /** Error message if the transaction failed. */
     error?: string;
+    cpuInstructions?: number;
+    memoryBytes?: number;
+    /** Actual fee charged in stroops, parsed from the transaction result. */
+    feeCharged?: number;
+}
+
+export function extractResourceCosts(resultMetaXdrBase64: string): { cpuInstructions: number, memoryBytes: number } | null {
+    if (!resultMetaXdrBase64) return null;
+    try {
+        const meta = xdr.TransactionMeta.fromXDR(resultMetaXdrBase64, "base64");
+        const v3 = typeof meta.v3 === 'function' ? meta.v3() : undefined;
+        
+        if (v3) {
+            const sorobanMeta = typeof v3.sorobanMeta === 'function' ? v3.sorobanMeta() : undefined;
+            if (sorobanMeta) {
+                const anyMeta = sorobanMeta as any;
+                const cpuInstructions = typeof anyMeta.cpuInstructions === 'function' ? Number(anyMeta.cpuInstructions()) : undefined;
+                const memoryBytes = typeof anyMeta.memoryBytes === 'function' ? Number(anyMeta.memoryBytes()) : undefined;
+
+                if (cpuInstructions !== undefined && memoryBytes !== undefined) {
+                    return { cpuInstructions, memoryBytes };
+                }
+            }
+        }
+    } catch (error) {
+        logger.debug("Failed to decode resultMetaXdr for resource costs", { error: String(error) });
+    }
+    return null;
 }
 
 const NETWORK_PASSPHRASES: Record<string, string> = {
@@ -85,7 +216,7 @@ export class StellarRpcClient {
         if (!url) {
             throw new Error(`Unknown network "${network}". Use "testnet", "mainnet", or provide a custom URL.`);
         }
-        this.server = new rpc.Server(url);
+        this.server = new rpc.Server(url, { allowHttp: url.startsWith("http://") });
     }
 
     getNetwork(): string {
@@ -99,8 +230,12 @@ export class StellarRpcClient {
     async getCurrentLedger(): Promise<number> {
         const serverAny = this.server as any;
         if (typeof serverAny.getLatestLedger === "function") {
-            const response = await serverAny.getLatestLedger();
-            if (response && typeof response.sequence === "number") return response.sequence;
+            try {
+                const response = await serverAny.getLatestLedger();
+                if (response && typeof response.sequence === "number") return response.sequence;
+            } catch (error) {
+                logger.debug("getLatestLedger failed, falling back to getHealth", error);
+            }
         }
 
         const health = await this.server.getHealth();
@@ -230,6 +365,68 @@ export class StellarRpcClient {
         return { latestLedger, entries };
     }
 
+    async getContractStorageEntries(entryKeyXdrs: string[]): Promise<ContractStorageEntryResult[]> {
+        if (entryKeyXdrs.length === 0) return [];
+        const keys = entryKeyXdrs.map((xdrStr) =>
+            xdr.LedgerKey.fromXDR(xdrStr, "base64")
+        );
+
+        const response = await this.server.getLedgerEntries(...keys);
+        const latestLedger = response.latestLedger;
+
+        return (response.entries ?? []).map((entry) => {
+            const liveUntilLedgerSeq = entry.liveUntilLedgerSeq ?? 0;
+            const lastModifiedLedgerSeq = entry.lastModifiedLedgerSeq ?? 0;
+            let valXdr: string | undefined;
+            try {
+                if (entry.val && entry.val.switch().name === "contractData") {
+                    valXdr = entry.val.contractData().val().toXDR("base64");
+                }
+            } catch {
+                // ignore
+            }
+            return {
+                entryKeyXdr: entry.key.toXDR("base64"),
+                latestLedger,
+                liveUntilLedgerSeq,
+                lastModifiedLedgerSeq,
+                remainingTTL: liveUntilLedgerSeq - latestLedger,
+                valXdr,
+            };
+        });
+    }
+
+    async getSacDecimals(contractId: string): Promise<number> {
+        try {
+            const passphrase = await this.getNetworkPassphrase();
+            const contract = new Contract(contractId);
+            const op = contract.call("decimals");
+            const account = new Account("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF", "0");
+
+            const tx = new TransactionBuilder(account, {
+                fee: "100",
+                networkPassphrase: passphrase,
+            })
+                .addOperation(op)
+                .setTimeout(30)
+                .build();
+
+            const sim = await this.server.simulateTransaction(tx);
+            if (!rpc.Api.isSimulationError(sim)) {
+                const successSim = sim as rpc.Api.SimulateTransactionSuccessResponse;
+                if (successSim.result?.retval) {
+                    const retval = successSim.result.retval;
+                    if (retval.switch().name === "scvU32") {
+                        return retval.u32();
+                    }
+                }
+            }
+        } catch {
+            // fallback below
+        }
+        return 7; // standard SAC / XLM asset decimals
+    }
+
     /**
      * Call the 'get_monitored_keys' view method on a contract.
      * Returns an array of XDR strings for the keys.
@@ -297,7 +494,7 @@ export class StellarRpcClient {
             )
             .setTimeout(30)
             .setSorobanData(
-                new (rpc as any).SorobanDataBuilder()
+                new SorobanDataBuilder()
                     .setReadOnly(keys)
                     .build(),
             )
@@ -341,7 +538,7 @@ export class StellarRpcClient {
             return new TransactionBuilder(account, { fee: "100", networkPassphrase: passphrase })
                 .addOperation(Operation.extendFootprintTtl({ extendTo: extendToLedgers }))
                 .setTimeout(30)
-                .setSorobanData(new (rpc as any).SorobanDataBuilder().setReadOnly(keys).build())
+                .setSorobanData(new SorobanDataBuilder().setReadOnly(keys).build())
                 .build();
         };
 
@@ -420,7 +617,7 @@ export class StellarRpcClient {
             return new TransactionBuilder(account, { fee: "100", networkPassphrase: passphrase })
                 .addOperation(Operation.restoreFootprint({}))
                 .setTimeout(30)
-                .setSorobanData(new (rpc as any).SorobanDataBuilder().setReadWrite(keys).build())
+                .setSorobanData(new SorobanDataBuilder().setReadWrite(keys).build())
                 .build();
         };
 
@@ -583,10 +780,33 @@ export class StellarRpcClient {
             const txResponse = await this.server.getTransaction(txHash);
 
             if (txResponse.status === "SUCCESS") {
+                const resultMetaXdr = (txResponse as any).resultMetaXdr;
+                let cpuInstructions: number | undefined = undefined;
+                let memoryBytes: number | undefined = undefined;
+
+                if (resultMetaXdr) {
+                    const costs = extractResourceCosts(resultMetaXdr);
+                    if (costs) {
+                        cpuInstructions = costs.cpuInstructions;
+                        memoryBytes = costs.memoryBytes;
+
+                        logger.info(
+                            "Extracted transaction resource costs successfully",
+                            { txHash, cpuInstructions, memoryBytes }
+                        );
+                    }
+                }
+
+                const rawFee = (txResponse as any).feeCharged;
+                const feeCharged = rawFee !== undefined ? Number(rawFee) : undefined;
+
                 return {
                     success: true,
                     txHash,
                     ledger: (txResponse as any).ledger ?? txResponse.latestLedger,
+                    cpuInstructions,
+                    memoryBytes,
+                    feeCharged,
                 };
             }
 

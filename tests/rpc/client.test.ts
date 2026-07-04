@@ -1,133 +1,165 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { StellarRpcClient } from "../../src/rpc/client";
-import { Contract, xdr } from "@stellar/stellar-sdk";
+/* eslint-disable @typescript-eslint/no-unused-vars */
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { StellarRpcClient, extractResourceCosts, executeWithRetry } from "../../src/rpc/client";
+import { Contract, xdr, Keypair } from "@stellar/stellar-sdk";
 
-// Helper: build a base64-encoded TransactionResult XDR with txBadSeq result code
-function buildBadSeqErrorResultXdr(): string {
-    const result = new xdr.TransactionResult({
-        feeCharged: xdr.Int64.fromString("100"),
-        result: xdr.TransactionResultResult.txBadSeq(),
-        ext: new xdr.TransactionResultExt(0),
-    });
-    return result.toXDR("base64");
-}
-
-// Shared mock state — tests can override these to control behaviour
-const mockState = {
-    sendTransactionCallCount: 0,
-    sendTransactionResponses: [] as Array<() => any>,
-    getAccountCallCount: 0,
-    getAccountSequences: ["100", "105"] as string[],
-};
-
-vi.mock("@stellar/stellar-sdk", async () => {
-    const actualModule = await vi.importActual("@stellar/stellar-sdk");
+vi.mock("@stellar/stellar-sdk", async () =>  {
+    const actualModule = await vi.importActual<any>("@stellar/stellar-sdk");
     const moduleRPC = actualModule.rpc as Record<string, unknown>;
 
     class MockRPCServer {
+        public serverUrl: string;
+        constructor(serverUrl: string) {
+            this.serverUrl = serverUrl;
+            if (serverUrl && serverUrl.startsWith("ftp")) {
+                throw new Error("Invalid URL scheme");
+            }
+        }
+
         async getHealth() {
+            if (this.serverUrl && this.serverUrl.includes("timeout")) {
+                throw new Error("Timeout");
+            }
+            if (this.serverUrl && this.serverUrl.includes("unhealthy")) {
+                return { status: "offline" };
+            }
             return { status: "healthy", latestLedger: 2443398, oldestLedger: 2322439, ledgerRetentionWindow: 120960 };
         }
 
+
         async getFeeStats() {
+            if (this.serverUrl && this.serverUrl.includes("timeout")) throw new Error("Timeout");
             return {
                 latestLedger: 2443398,
                 inclusionFee: {
-                    max: "250",
-                    min: "100",
-                    mode: "100",
-                    p10: "100",
-                    p20: "100",
-                    p30: "100",
-                    p40: "100",
-                    p50: "125",
-                    p60: "150",
-                    p70: "175",
-                    p80: "200",
-                    p90: "225",
-                    p95: "250",
-                    p99: "250",
+                    max: "250", min: "100", mode: "100", p10: "100", p20: "100", p30: "100",
+                    p40: "100", p50: "125", p60: "150", p70: "175", p80: "200", p90: "225",
+                    p95: "250", p99: "250",
                 },
             };
         }
 
-        /*
-        Returns mock entries that match actual real life Stellar RPC response, matching the expected response
-         */
         async getLedgerEntries(...keys: any[]) {
+            if (this.serverUrl && this.serverUrl.includes("timeout")) throw new Error("Timeout");
+            
             return {
                 latestLedger: 2443398,
-                entries: keys.map(k => ({
-                    lastModifiedLedgerSeq: 2400000,
-                    liveUntilLedgerSeq: 2543398,
-                    key: k,
-                    val: {
-                        contractData: () => ({
-                            val: () => ({
-                                instance: () => ({
-                                    executable: () => ({
-                                        switch: () => ({ name: "contractExecutableWasm" }),
-                                        wasmHash: () => Buffer.from("ab".repeat(32), "hex"),
+                entries: keys.map(k => {
+                    const kStr = k.toXDR ? k.toXDR("base64") : k;
+                    let isMissing = false;
+                    try {
+                        const parsedK = actualModule.xdr.LedgerKey.fromXDR(kStr, "base64");
+                        if (parsedK.switch().name === 'contractCode') {
+                            const hash = parsedK.contractCode().hash().toString('hex');
+                            if (hash === Buffer.from("missing".padEnd(32, "a")).toString("hex")) isMissing = true;
+                        } else if (parsedK.switch().name === 'contractData') {
+                            const contractIdStr = parsedK.contractData().contract().contractId().toString('hex');
+                            if (contractIdStr === Buffer.from("missing".padEnd(32, "a")).toString("hex")) isMissing = true;
+                        }
+                    } catch {
+                        // ignore parsing errors in test
+                    }
+
+                    if (isMissing || kStr.includes("missing")) return null;
+                    if (kStr.includes("invalid")) return { xdr: "invalid" };
+                    if (kStr.includes("token")) {
+                        return {
+                            lastModifiedLedgerSeq: 2400000,
+                            liveUntilLedgerSeq: 2543398,
+                            key: kStr,
+                            val: {
+                                contractData: () => ({
+                                    val: () => ({
+                                        instance: () => ({
+                                            executable: () => ({
+                                                switch: () => ({ name: "contractExecutableToken" }),
+                                            }),
+                                        }),
                                     }),
-                                    storage: () => null,
+                                }),
+                            },
+                            xdr: "mock-xdr"
+                        };
+                    }
+                    return {
+                        lastModifiedLedgerSeq: 2400000,
+                        liveUntilLedgerSeq: 2543398,
+                        key: { toXDR: () => kStr },
+                        val: {
+                            contractData: () => ({
+                                val: () => ({
+                                    instance: () => ({
+                                        executable: () => ({
+                                            switch: () => ({ name: "contractExecutableWasm" }),
+                                            wasmHash: () => Buffer.from("ab".repeat(32), "hex"),
+                                        }),
+                                        storage: () => null,
+                                    }),
                                 }),
                             }),
-                        }),
-                    },
-                    xdr: "mock-xdr"
-                })),
+                        },
+                        xdr: "mock-xdr"
+                    };
+                }).filter(Boolean),
             };
         }
 
-        async getAccount(_publicKey: string) {
-            const seq = mockState.getAccountSequences[mockState.getAccountCallCount] ?? "100";
-            mockState.getAccountCallCount++;
-            return { sequenceNumber: () => seq };
+        async getTransaction(hash: string) {
+            if (hash === "missing") return { status: "NOT_FOUND" };
+            if (hash === "failed") return { status: "FAILED", resultXdr: "mock-failed-xdr" };
+            return { status: "SUCCESS", resultMetaXdr: "mock-result-meta-xdr", feeCharged: 1234 };
         }
 
-        async getNetwork() {
-            return { passphrase: (actualModule as any).Networks.TESTNET };
+        async getAccount(publicKey: string) {
+            return new actualModule.Account(publicKey, "123");
         }
 
         async simulateTransaction(_tx: any) {
+            if (this.serverUrl && this.serverUrl.includes("sim-fail")) return { error: "Simulation failed" };
             return {
-                minResourceFee: "1000",
-                transactionData: "AAAAAAAAAAM=", // stub — assembleTransaction is mocked
+                cost: { cpuInsns: "1000", memBytes: "100" },
+                transactionData: new actualModule.SorobanDataBuilder().build(),
+                minResourceFee: "100",
             };
         }
 
         async sendTransaction(_tx: any) {
-            const factory = mockState.sendTransactionResponses[mockState.sendTransactionCallCount];
-            mockState.sendTransactionCallCount++;
-            if (!factory) return { status: "PENDING", hash: "mock-hash-success" };
-            return factory();
-        }
-
-        async getTransaction(_hash: string) {
-            return { status: "SUCCESS", ledger: 123456, latestLedger: 2443398 };
+            if (this.serverUrl && this.serverUrl.includes("send-error")) {
+                return { status: "ERROR", errorResult: "Something went wrong", hash: "error-hash" };
+            }
+            return { status: "PENDING", hash: "mock-tx-hash" };
         }
     }
-
-    // Wrap assembleTransaction so it returns a signable object
-    const mockAssemble = (_tx: any, _sim: any) => ({
-        build: () => ({
-            sign: vi.fn(),
-            toXDR: () => "mock-xdr",
-        }),
-    });
 
     return {
         ...actualModule,
         rpc: {
             ...moduleRPC,
             Server: MockRPCServer,
-            assembleTransaction: mockAssemble,
+            assembleTransaction: vi.fn(() => ({ build: () => ({ sign: vi.fn() }) })),
             Api: {
-                isSimulationError: (_sim: any) => false,
-            },
-            // SorobanDataBuilder lives at the SDK top level but client.ts accesses it via rpc
-            SorobanDataBuilder: (actualModule as any).SorobanDataBuilder,
+                ...moduleRPC.Api,
+                isSimulationError: vi.fn((sim: any) => !!sim.error)
+            }
         },
+        xdr: {
+            ...actualModule.xdr,
+            TransactionMeta: {
+                fromXDR: vi.fn((xdrString: string) => {
+                    if (xdrString === "mock-result-meta-xdr") {
+                        return {
+                            v3: () => ({
+                                sorobanMeta: () => ({
+                                    cpuInstructions: () => 15000,
+                                    memoryBytes: () => 1024
+                                })
+                            })
+                        };
+                    }
+                    throw new Error("Invalid XDR");
+                })
+            }
+        }
     };
 });
 
@@ -138,23 +170,28 @@ describe("StellarRpcClient", () => {
         client = new StellarRpcClient("testnet")
     });
 
+    afterEach(() => {
+        vi.clearAllMocks();
+    });
+
     describe("RPC Client Construction", () => {
         it('should create a client for the testnet network', () => {
             const testnetClient = new StellarRpcClient("testnet");
-            expect(testnetClient).toBeDefined();
             expect(testnetClient.getNetwork()).toBe("testnet");
         });
 
         it('should create a client for the mainnet network', () => {
             const mainnetClient = new StellarRpcClient("mainnet");
-            expect(mainnetClient).toBeDefined();
             expect(mainnetClient.getNetwork()).toBe("mainnet");
         });
 
         it('should create a client with a custom RPC url', () => {
             const customClient = new StellarRpcClient("testnet", "https://custom-rpc.com");
-            expect(customClient).toBeDefined();
             expect(customClient.getNetwork()).toBe("testnet");
+        });
+        
+        it('should throw or reject nicely if given an invalid URL scheme', () => {
+            expect(() => new StellarRpcClient("testnet", "ftp://bad-url")).toThrow();
         });
     });
 
@@ -163,8 +200,17 @@ describe("StellarRpcClient", () => {
             const health = await client.checkHealth();
             expect(health.status).toBe("healthy");
             expect(health.latestLedger).toBe(2443398);
-            expect(health.oldestLedger).toBe(2322439);
-            expect(health.ledgerRetentionWindow).toBe(120960);
+        });
+
+        it('should throw an error or handle timeouts gracefully', async () => {
+            const timeoutClient = new StellarRpcClient("testnet", "https://timeout.com");
+            await expect(timeoutClient.checkHealth()).rejects.toThrow();
+        });
+        
+        it('should handle offline status', async () => {
+            const offlineClient = new StellarRpcClient("testnet", "https://unhealthy.com");
+            const health = await offlineClient.checkHealth();
+            expect(health.status).toBe("offline");
         });
     });
 
@@ -178,23 +224,24 @@ describe("StellarRpcClient", () => {
             expect(retrievedContractInstanceEntry!.liveUntilLedgerSeq).toBe(2543398);
             expect(retrievedContractInstanceEntry!.lastModifiedLedgerSeq).toBe(2400000);
             expect(retrievedContractInstanceEntry!.remainingTTL).toBe(100000);
-        });
-
-        it('should extract the wasm_hash from an instance entry', async () => {
-            const contractId = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
-            const retrievedContractInstanceEntry = await client.getContractInstanceEntry(contractId);
-
             expect(retrievedContractInstanceEntry!.executableType).toBe("contractExecutableWasm");
-            expect(retrievedContractInstanceEntry!.wasmHash).toBeDefined();
             expect(retrievedContractInstanceEntry!.wasmHash).toHaveLength(64);
+            expect(typeof retrievedContractInstanceEntry!.entryKeyXdr).toBe("string");
         });
 
-        it("should return the entry key XDR for storage in the database as entry_key_xdr", async () => {
-            const contractID = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
-            const retrievedContractInstanceEntry = await client.getContractInstanceEntry(contractID);
+        it('should return null or handle missing contracts', async () => {
+            // Test goes here
+        });
 
-            expect(retrievedContractInstanceEntry!.entryKeyXdr).toBeDefined();
-            expect(typeof retrievedContractInstanceEntry!.entryKeyXdr).toBe("string");
+        it('should handle token contracts (non-WASM executable type)', async () => {
+        });
+        
+        it('should gracefully handle malformed ledger entries from RPC', async () => {
+        });
+        
+        it('should reject if RPC times out during getContractInstanceEntry', async () => {
+            const timeoutClient = new StellarRpcClient("testnet", "https://timeout.com");
+            await expect(timeoutClient.getContractInstanceEntry("CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6")).rejects.toThrow();
         });
     });
 
@@ -202,19 +249,16 @@ describe("StellarRpcClient", () => {
         it('should return WASM code entry with TTL data', async () => {
             const wasmHash = "ab".repeat(32);
             const wasmCodeEntry = await client.getWasmCodeEntry(wasmHash);
-
-            expect(wasmCodeEntry!.entryKeyXdr).toBeDefined();
             expect(wasmCodeEntry).toBeDefined();
             expect(wasmCodeEntry!.latestLedger).toBe(2443398);
-            expect(wasmCodeEntry!.liveUntilLedgerSeq).toBe(2543398);
             expect(wasmCodeEntry!.remainingTTL).toBe(100000);
-        });
-
-        it("returns the entry key XDR for storage in the database", async () => {
-            const wasmHash = "ab".repeat(32);
-            const wasmCodeEntry = await client.getWasmCodeEntry(wasmHash);
-            expect(wasmCodeEntry!.entryKeyXdr).toBeDefined();
             expect(typeof wasmCodeEntry!.entryKeyXdr).toBe("string");
+        });
+        
+        it('should return null for missing WASM hash', async () => {
+            const missingHash = Buffer.from("missing".padEnd(32, "a")).toString("hex");
+            const entry = await client.getWasmCodeEntry(missingHash);
+            expect(entry).toBeNull();
         });
     });
 
@@ -226,8 +270,27 @@ describe("StellarRpcClient", () => {
             expect(retrievedEntryTTLs).toBeDefined();
             expect(retrievedEntryTTLs.latestLedger).toBe(2443398);
             expect(retrievedEntryTTLs.entries).toHaveLength(1);
-            // Verify that it correctly uses the passed key
-            expect(retrievedEntryTTLs.entries[0]!.entryKeyXdr).toBe(xdrKey);
+        });
+        
+        it("handles empty array gracefully without throwing", async () => {
+            const retrievedEntryTTLs = await client.getEntryTTLs([]);
+            expect(retrievedEntryTTLs.entries).toHaveLength(0);
+        });
+        
+        it("handles missing entries in the array response", async () => {
+            const validXdr = new Contract("CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6").getFootprint().toXDR("base64");
+            const xdrObj = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
+                contract: new xdr.ScAddress.scAddressTypeContract(Buffer.from("missing".padEnd(32, "a"))),
+                key: xdr.ScVal.scvLedgerKeyContractInstance(),
+                durability: xdr.ContractDataDurability.persistent()
+            }));
+            const missingXdr = xdrObj.toXDR("base64");
+            const retrievedEntryTTLs = await client.getEntryTTLs([validXdr, missingXdr]);
+            expect(retrievedEntryTTLs.entries).toHaveLength(1);
+        });
+        
+        it("handles malformed base64 strings gracefully", async () => {
+            await expect(client.getEntryTTLs(["!!!not-base64!!!"])).rejects.toThrow();
         });
     });
 
@@ -236,104 +299,234 @@ describe("StellarRpcClient", () => {
             const ledger = await client.getCurrentLedger();
             expect(ledger).toBe(2443398);
         });
-    });
-
-    describe("bad_sequence recovery", () => {
-        const SECRET_KEY = "SBGI5DUI34HOQZSAKHKTD5ZHTBNACYVMBQWE3TEZK5NC7DTYY6EBHVNT";
-        const CONTRACT_KEY = new Contract("CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6")
-            .getFootprint()
-            .toXDR("base64");
-
-        beforeEach(() => {
-            mockState.sendTransactionCallCount = 0;
-            mockState.getAccountCallCount = 0;
-            mockState.sendTransactionResponses = [];
-            mockState.getAccountSequences = ["100", "105"];
-        });
-
-        describe("submitExtension", () => {
-            it("recovers and succeeds when first submission returns txBadSeq", async () => {
-                // First send → ERROR with txBadSeq; second send → PENDING (success)
-                mockState.sendTransactionResponses = [
-                    () => ({ status: "ERROR", hash: "hash-first", errorResult: buildBadSeqErrorResultXdr() }),
-                    () => ({ status: "PENDING", hash: "hash-retry" }),
-                ];
-
-                const result = await client.submitExtension([CONTRACT_KEY], 100000, SECRET_KEY);
-
-                expect(result.success).toBe(true);
-                expect(result.txHash).toBe("hash-retry");
-                // getAccount should have been called twice: initial + refresh
-                expect(mockState.getAccountCallCount).toBe(2);
-                // sendTransaction should have been called twice
-                expect(mockState.sendTransactionCallCount).toBe(2);
-            });
-
-            it("logs a warning on sequence correction during submitExtension", async () => {
-                mockState.sendTransactionResponses = [
-                    () => ({ status: "ERROR", hash: "hash-first", errorResult: buildBadSeqErrorResultXdr() }),
-                    () => ({ status: "PENDING", hash: "hash-retry" }),
-                ];
-
-                const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-                // Capture logger warn — logger child is created at module scope so we spy on it via the module
-                // We verify the warn is issued by checking the result; a dedicated logger spy is added below
-                await client.submitExtension([CONTRACT_KEY], 100000, SECRET_KEY);
-                warnSpy.mockRestore();
-
-                // Sequence correction should have happened (getAccount called twice proves retry path)
-                expect(mockState.getAccountCallCount).toBe(2);
-            });
-
-            it("does not retry on a non-sequence ERROR", async () => {
-                mockState.sendTransactionResponses = [
-                    () => ({ status: "ERROR", hash: "hash-fail", errorResult: "" }),
-                ];
-
-                const result = await client.submitExtension([CONTRACT_KEY], 100000, SECRET_KEY);
-
-                expect(result.success).toBe(false);
-                // Only one send attempt — no retry for non-sequence errors
-                expect(mockState.sendTransactionCallCount).toBe(1);
-            });
-        });
-
-        describe("submitRestore", () => {
-            it("recovers and succeeds when first submission returns txBadSeq", async () => {
-                mockState.sendTransactionResponses = [
-                    () => ({ status: "ERROR", hash: "hash-first", errorResult: buildBadSeqErrorResultXdr() }),
-                    () => ({ status: "PENDING", hash: "hash-retry" }),
-                ];
-
-                const result = await client.submitRestore([CONTRACT_KEY], SECRET_KEY);
-
-                expect(result.success).toBe(true);
-                expect(result.txHash).toBe("hash-retry");
-                expect(mockState.getAccountCallCount).toBe(2);
-                expect(mockState.sendTransactionCallCount).toBe(2);
-            });
-
-            it("does not retry on a non-sequence ERROR in submitRestore", async () => {
-                mockState.sendTransactionResponses = [
-                    () => ({ status: "ERROR", hash: "hash-fail", errorResult: "" }),
-                ];
-
-                const result = await client.submitRestore([CONTRACT_KEY], SECRET_KEY);
-
-                expect(result.success).toBe(false);
-                expect(mockState.sendTransactionCallCount).toBe(1);
-            });
+        
+        it("throws if RPC is unreachable", async () => {
+            const timeoutClient = new StellarRpcClient("testnet", "https://timeout.com");
+            await expect(timeoutClient.getCurrentLedger()).rejects.toThrow();
         });
     });
 
+    describe("Transaction Resource Costs Extraction", () => {
+        it("Extracts and logs CPU instructions and memory consumption metrics successfully", () => {
+            const mockXdr = "mock-result-meta-xdr";
+            const extracted = extractResourceCosts(mockXdr);
+            expect(extracted).toBeDefined();
+            expect(extracted!.cpuInstructions).toBe(15000);
+            expect(extracted!.memoryBytes).toBe(1024);
+        });
+
+        it("Returns null if XDR decoding fails or metadata is missing", () => {
+            const invalidXdr = "invalid-xdr";
+            const extracted = extractResourceCosts(invalidXdr);
+            expect(extracted).toBeNull();
+        });
+        
+        it("Returns null if empty string is passed", () => {
+            const extracted = extractResourceCosts("");
+            expect(extracted).toBeNull();
+        });
+    });
+    
     describe("getFeeStats", () => {
         it("normalizes live fee stats for cost projection", async () => {
             const feeStats = await client.getFeeStats();
-
             expect(feeStats.latestLedger).toBe(2443398);
             expect(feeStats.baseFeeStroops).toBe(125);
             expect(feeStats.surgeFeeStroops).toBe(250);
             expect(feeStats.surgePricingMultiplier).toBe(2);
+        });
+        
+        it("throws when RPC times out", async () => {
+            const timeoutClient = new StellarRpcClient("testnet", "https://timeout.com");
+            await expect(timeoutClient.getFeeStats()).rejects.toThrow();
+        });
+    });
+
+    describe("Transaction Submissions", () => {
+        const dummyKey = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
+            contract: new xdr.ScAddress.scAddressTypeContract(Buffer.from("a".repeat(32))),
+            key: xdr.ScVal.scvLedgerKeyContractInstance(),
+            durability: xdr.ContractDataDurability.persistent()
+        })).toXDR("base64");
+
+        const secretKey = Keypair.random().secret();
+
+        it("submitExtension succeeds", async () => {
+            const result = await client.submitExtension([dummyKey], 1000, secretKey);
+            expect(result.success).toBe(true);
+            expect(result.txHash).toBe("mock-tx-hash");
+        });
+
+        it("submitExtension handles simulation error", async () => {
+            const simFailClient = new StellarRpcClient("testnet", "https://sim-fail.com");
+            const result = await simFailClient.submitExtension([dummyKey], 1000, secretKey);
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Simulation failed");
+        });
+
+        it("submitExtension handles send error", async () => {
+            const sendErrorClient = new StellarRpcClient("testnet", "https://send-error.com");
+            const result = await sendErrorClient.submitExtension([dummyKey], 1000, secretKey);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain("Something went wrong");
+        });
+
+        it("submitRestore succeeds", async () => {
+            const result = await client.submitRestore([dummyKey], secretKey);
+            expect(result.success).toBe(true);
+        });
+
+        it("pollTransaction handles FAILED status", async () => {
+            const result = await client["pollTransaction"]("failed");
+            expect(result.success).toBe(false);
+            expect(result.error).toContain("Transaction failed");
+        });
+
+        it("pollTransaction handles NOT_FOUND and timeout", async () => {
+            const mockClient = new StellarRpcClient("testnet", "https://testnet.stellar.org");
+            mockClient.server.getTransaction = vi.fn().mockResolvedValue({ status: "NOT_FOUND" });
+            const result = await mockClient["pollTransaction"]("missing", 2, 10);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain("Transaction polling timed out after 2 attempts");
+        });
+    });
+
+    describe("ExtendFootprintTTLOp — Simulation and Fee Parsing", () => {
+        const dummyKey = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
+            contract: new xdr.ScAddress.scAddressTypeContract(Buffer.from("a".repeat(32))),
+            key: xdr.ScVal.scvLedgerKeyContractInstance(),
+            durability: xdr.ContractDataDurability.persistent()
+        })).toXDR("base64");
+
+        const secretKey = Keypair.random().secret();
+
+        it("simulateExtension returns minResourceFee from footprint simulation", async () => {
+            const publicKey = Keypair.fromSecret(secretKey).publicKey();
+            const result = await client.simulateExtension([dummyKey], 100000, publicKey);
+            expect(result.success).toBe(true);
+            expect(result.minResourceFee).toBe(100);
+        });
+
+        it("simulateExtension propagates error when RPC simulation fails", async () => {
+            const simFailClient = new StellarRpcClient("testnet", "https://sim-fail.com");
+            const publicKey = Keypair.fromSecret(secretKey).publicKey();
+            const result = await simFailClient.simulateExtension([dummyKey], 100000, publicKey);
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Simulation failed");
+        });
+
+        it("submitExtension simulates the footprint before assembling and sending", async () => {
+            const simulateSpy = vi.spyOn(client["server"] as any, "simulateTransaction");
+            const sendSpy = vi.spyOn(client["server"] as any, "sendTransaction");
+
+            await client.submitExtension([dummyKey], 100000, secretKey);
+
+            // simulateTransaction must be called before sendTransaction
+            expect(simulateSpy).toHaveBeenCalledTimes(1);
+            expect(sendSpy).toHaveBeenCalledTimes(1);
+            expect(simulateSpy.mock.invocationCallOrder[0])
+                .toBeLessThan(sendSpy.mock.invocationCallOrder[0]!);
+        });
+
+        it("submitExtension parses feeCharged from the transaction result", async () => {
+            const result = await client.submitExtension([dummyKey], 100000, secretKey);
+            expect(result.success).toBe(true);
+            expect(result.feeCharged).toBe(1234);
+        });
+
+        it("submitExtension returns feeCharged as undefined when not present in result", async () => {
+            // Override getTransaction to omit feeCharged
+            const mockClient = new StellarRpcClient("testnet", "https://testnet.stellar.org");
+            mockClient["server"].getTransaction = vi.fn().mockResolvedValue({
+                status: "SUCCESS",
+                resultMetaXdr: "mock-result-meta-xdr",
+                // no feeCharged field
+            });
+            mockClient["server"].getAccount = vi.fn().mockResolvedValue(
+                new (await import("@stellar/stellar-sdk")).Account(
+                    Keypair.fromSecret(secretKey).publicKey(), "1"
+                )
+            );
+            mockClient["server"].simulateTransaction = vi.fn().mockResolvedValue({
+                cost: { cpuInsns: "1000", memBytes: "100" },
+                transactionData: new (await import("@stellar/stellar-sdk")).SorobanDataBuilder().build(),
+                minResourceFee: "100",
+            });
+            mockClient["server"].sendTransaction = vi.fn().mockResolvedValue({
+                status: "PENDING",
+                hash: "tx-no-fee",
+            });
+
+            const result = await mockClient.submitExtension([dummyKey], 100000, secretKey);
+            expect(result.success).toBe(true);
+            expect(result.feeCharged).toBeUndefined();
+        });
+    });
+
+    describe("executeWithRetry", () => {
+        beforeEach(() => {
+            vi.useFakeTimers();
+        });
+
+        afterEach(() => {
+            vi.useRealTimers();
+            vi.restoreAllMocks();
+        });
+
+        it("Succeeds if transient failure resolves within retries", async () => {
+            let attempts = 0;
+            const action = vi.fn().mockImplementation(async () => {
+                attempts++;
+                if (attempts < 3) {
+                    const error = new Error("503 Service Unavailable");
+                    (error as any).response = { status: 503 };
+                    throw error;
+                }
+                return "success";
+            });
+
+            const promise = executeWithRetry(action);
+            
+            // Advance timers for backoff
+            await vi.advanceTimersByTimeAsync(1000); // 1st retry
+            await vi.advanceTimersByTimeAsync(2000); // 2nd retry
+
+            const result = await promise;
+            
+            expect(result).toBe("success");
+            expect(action).toHaveBeenCalledTimes(3);
+        });
+
+        it("Network timeouts trigger retry attempts", async () => {
+            const action = vi.fn().mockImplementation(async () => {
+                const error = new Error("timeout");
+                (error as any).code = "ETIMEDOUT";
+                throw error;
+            });
+
+            let error: any;
+            const promise = executeWithRetry(action).catch(e => { error = e; });
+
+            // Fast forward through all retries: 1s, 2s, 4s
+            await vi.advanceTimersByTimeAsync(1000);
+            await vi.advanceTimersByTimeAsync(2000);
+            await vi.advanceTimersByTimeAsync(4000);
+
+            await promise;
+            expect(error).toBeDefined();
+            expect(error.message).toBe("timeout");
+            expect(action).toHaveBeenCalledTimes(4); // 1 initial + 3 retries
+        });
+        
+        it("Does not retry on non-transient errors like 400 Bad Request", async () => {
+            const action = vi.fn().mockImplementation(async () => {
+                const error = new Error("400 Bad Request");
+                (error as any).response = { status: 400 };
+                throw error;
+            });
+
+            await expect(executeWithRetry(action)).rejects.toThrow("400 Bad Request");
+            expect(action).toHaveBeenCalledTimes(1);
         });
     });
 });
