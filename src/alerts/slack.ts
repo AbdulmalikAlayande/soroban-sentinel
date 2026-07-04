@@ -34,16 +34,27 @@ interface SlackBlock {
 
 function severityEmoji(event: AlertEvent): string {
     if (event.type === "alert_resolved") return "✅";
+    if (event.type === "state_changed") return "🔄";
     if (event.severity === "critical") return "🔴";
     return "⚠️";
 }
 
 function buildBlocks(event: AlertEvent): SlackBlock[] {
     const icon = severityEmoji(event);
-    const status = event.type === "threshold_crossed"
-        ? `TTL ${event.severity === "critical" ? "CRITICAL" : "Warning"}`
-        : "Alert Resolved";
     const contractDisplay = event.contractName ?? event.contractId;
+
+    let status: string;
+    if (event.type === "resource_alert") {
+        const resourceType = event.resource.type === "cpu" ? "CPU" : "Memory";
+        status = `Resource ${resourceType} ${event.severity === "critical" ? "CRITICAL" : "Warning"}`;
+    } else if (event.type === "threshold_crossed") {
+        status = `TTL ${event.severity === "critical" ? "CRITICAL" : "Warning"}`;
+    } else if (event.type === "state_changed") {
+        const diffLabel = event.diff.diffType.charAt(0).toUpperCase() + event.diff.diffType.slice(1);
+        status = `State ${diffLabel}`;
+    } else {
+        status = "Alert Resolved";
+    }
 
     const header: SlackBlock = {
         type: "header",
@@ -54,27 +65,85 @@ function buildBlocks(event: AlertEvent): SlackBlock[] {
         },
     };
 
-    const details: SlackBlock = {
-        type: "section",
-        fields: [
-            {
-                type: "mrkdwn",
-                text: `*Entry:*\n${event.entry.label ?? event.entry.type}`,
-            },
-            {
-                type: "mrkdwn",
-                text: `*Network:*\n${event.network}`,
-            },
-            {
-                type: "mrkdwn",
-                text: `*Remaining TTL:*\n${event.threshold.currentRemainingLedgers.toLocaleString()} ledgers (${event.threshold.approximateTimeRemaining})`,
-            },
-            {
-                type: "mrkdwn",
-                text: `*Threshold:*\n${event.threshold.configuredLedgers.toLocaleString()} ledgers`,
-            },
-        ],
-    };
+    let details: SlackBlock;
+    if (event.type === "resource_alert") {
+        const usageStr = event.resource.currentUsage.toLocaleString();
+        const limitStr = event.resource.limit.toLocaleString();
+
+        details = {
+            type: "section",
+            fields: [
+                {
+                    type: "mrkdwn",
+                    text: `*Resource:*\n${event.resource.type.toUpperCase()}`,
+                },
+                {
+                    type: "mrkdwn",
+                    text: `*Network:*\n${event.network}`,
+                },
+                {
+                    type: "mrkdwn",
+                    text: `*Usage:*\n${usageStr} / ${limitStr} (${event.resource.usagePercent}%)`,
+                },
+                {
+                    type: "mrkdwn",
+                    text: `*Severity:*\n${event.severity}`,
+                },
+            ],
+        };
+    } else if (event.type === "state_changed") {
+        const entryLabel = event.entry.label ?? event.entry.type;
+        const oldVal = event.diff.oldValueXdr ?? "(none)";
+        const newVal = event.diff.newValueXdr ?? "(none)";
+
+        details = {
+            type: "section",
+            fields: [
+                {
+                    type: "mrkdwn",
+                    text: `*Entry:*\n${entryLabel}`,
+                },
+                {
+                    type: "mrkdwn",
+                    text: `*Network:*\n${event.network}`,
+                },
+                {
+                    type: "mrkdwn",
+                    text: `*Change Type:*\n${event.diff.diffType}`,
+                },
+                {
+                    type: "mrkdwn",
+                    text: `*Old Value:*\n\`${oldVal}\``,
+                },
+                {
+                    type: "mrkdwn",
+                    text: `*New Value:*\n\`${newVal}\``,
+                },
+            ],
+        };
+    } else {
+        details = {
+            type: "section",
+            fields: [
+                {
+                    type: "mrkdwn",
+                    text: `*Entry:*\n${event.entry.label ?? event.entry.type}`,
+                },
+                {
+                    type: "mrkdwn",
+                    text: `*Network:*\n${event.network}`,
+                },
+                {
+                    type: "mrkdwn",
+                    text: `*Remaining TTL:*\n${event.threshold.currentRemainingLedgers.toLocaleString()} ledgers (${event.threshold.approximateTimeRemaining})`,
+                },
+                {
+                    type: "mrkdwn",
+                    text: `*Threshold:*\n${event.threshold.configuredLedgers.toLocaleString()} ledgers`,
+                },
+            ],
+        };
+    }
 
     const footer: SlackBlock = {
         type: "context",
@@ -91,17 +160,34 @@ function buildBlocks(event: AlertEvent): SlackBlock[] {
 
 function buildFallbackText(event: AlertEvent): string {
     const icon = severityEmoji(event);
-    const status = event.type === "threshold_crossed"
-        ? `TTL ${event.severity === "critical" ? "CRITICAL" : "Warning"}`
-        : "Alert Resolved";
     const contractDisplay = event.contractName ?? event.contractId;
 
-    return (
-        `${icon} ${status} — ${contractDisplay} (${event.network}) | ` +
-        `Remaining: ${event.threshold.currentRemainingLedgers.toLocaleString()} ledgers ` +
-        `(${event.threshold.approximateTimeRemaining}) | ` +
-        `Threshold: ${event.threshold.configuredLedgers.toLocaleString()} ledgers`
-    );
+    if (event.type === "resource_alert") {
+        const resourceType = event.resource.type === "cpu" ? "CPU" : "Memory";
+        const status = `Resource ${resourceType} ${event.severity === "critical" ? "CRITICAL" : "Warning"}`;
+        return (
+            `${icon} ${status} — ${contractDisplay} (${event.network}) | ` +
+            `Usage: ${event.resource.currentUsage.toLocaleString()} / ${event.resource.limit.toLocaleString()} ` +
+            `(${event.resource.usagePercent}%)`
+        );
+    } else if (event.type === "state_changed") {
+        const diffLabel = event.diff.diffType.charAt(0).toUpperCase() + event.diff.diffType.slice(1);
+        return (
+            `${icon} State ${diffLabel} — ${contractDisplay} (${event.network}) | ` +
+            `Entry: ${event.entry.label ?? event.entry.type} | ` +
+            `Old: ${event.diff.oldValueXdr ?? "(none)"} → New: ${event.diff.newValueXdr ?? "(none)"}`
+        );
+    } else if (event.type === "threshold_crossed") {
+        const status = `TTL ${event.severity === "critical" ? "CRITICAL" : "Warning"}`;
+        return (
+            `${icon} ${status} — ${contractDisplay} (${event.network}) | ` +
+            `Remaining: ${event.threshold.currentRemainingLedgers.toLocaleString()} ledgers ` +
+            `(${event.threshold.approximateTimeRemaining}) | ` +
+            `Threshold: ${event.threshold.configuredLedgers.toLocaleString()} ledgers`
+        );
+    } else {
+        return `${icon} Alert Resolved — ${contractDisplay} (${event.network})`;
+    }
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────

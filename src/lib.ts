@@ -1,0 +1,24 @@
+/**
+ * Sorokeep public library API.
+ *
+ * Re-exports the core programmatic functions so Node.js consumers can
+ * import them without pulling in any CLI (Commander.js) dependencies.
+ *
+ * @example
+ * ```ts
+ * import { watchContract, runMonitorCycle } from "sorokeep";
+ * ```
+ */
+export { watchContract } from "./core/watch.js";
+export type { WatchOptions, WatchResult } from "./core/watch.js";
+
+export { runMonitorCycle } from "./core/monitor.js";
+export type { MonitorCycleResult } from "./core/monitor.js";
+
+
+export { inspectContract, parseSacBalance, buildSacBalanceKeyXdr, formatTokenBalance } from "./core/inspect.js";
+export type { InspectOptions, InspectResult, InspectEntryInfo } from "./core/inspect.js";
+
+export { AWSSecretsResolver } from "./core/aws_secrets.js";
+export type { AWSSecretsResolverConfig } from "./core/aws_secrets.js";
+
