@@ -12,14 +12,15 @@ export function registerStatusCommand(program: Command): void {
         .command("status <contractId>")
         .description("Show TTL and storage health for a watched contract")
         .option("--json", "Output machine-readable JSON")
-        .action((contractId: string, options: { json?: boolean }) => {
+        .action((contractId: string, options: { json?: boolean } = {}) => {
+            options = options || {};
             const db = getDatabase();
 
             let status;
             try {
                 status = getContractStatus(db, contractId);
-            } catch (error) {
-                if (error instanceof ContractNotFoundError) {
+            } catch (error: any) {
+                if (error instanceof ContractNotFoundError || error?.name === "ContractNotFoundError") {
                     if (options.json) {
                         console.log(JSON.stringify({
                             success: false,
@@ -32,6 +33,7 @@ export function registerStatusCommand(program: Command): void {
                         console.log(chalk.dim("Run 'sorokeep watch <contractId>' first."));
                     }
                     process.exit(1);
+                    return;
                 }
                 throw error;
             }
