@@ -5,7 +5,7 @@ import { xdr, Address } from '@stellar/stellar-sdk';
 describe('Ledger Key Decoder', () => {
   it('decodes instance key successfully', () => {
     // contract instance
-    const contractId = 'CB64D3G7SM2RTH6VCGGUNMBQCBDNWZCE58A5T6L7H7J2U5GJ2X3D5CQA';
+    const contractId = 'CCECW3572YITCJALIE74GPBITNBZH2BJNG6TMGAATNCNU5H4R4ESA76C';
     const contractAddress = Address.fromString(contractId);
 
     const key = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
@@ -25,7 +25,7 @@ describe('Ledger Key Decoder', () => {
   });
 
   it('decodes data storage key successfully', () => {
-    const contractId = 'CB64D3G7SM2RTH6VCGGUNMBQCBDNWZCE58A5T6L7H7J2U5GJ2X3D5CQA';
+    const contractId = 'CCECW3572YITCJALIE74GPBITNBZH2BJNG6TMGAATNCNU5H4R4ESA76C';
     const contractAddress = Address.fromString(contractId);
 
     const key = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
