@@ -23,6 +23,8 @@ export interface DaemonOptions {
     intervalMs?: number;
     /** Optional RPC endpoint URL override. */
     rpcUrl?: string;
+    /** Optional sponsor secret key for auto-extensions */
+    feeSponsorSecret?: string;
     /** How frequently to run vacuum maintenance. Defaults to 24 hours. */
     vacuumIntervalMs?: number;
     /** Called after every cycle with the result (or null + error on failure). */
@@ -72,11 +74,11 @@ export async function startDaemon(
     logger().info(`Daemon starting — network: ${network}, interval: ${intervalMs}ms`);
 
     // Run the initial cycle immediately.
-    await executeCycle(db, network, rpcUrl, onCycle);
+    await executeCycle(db, network, rpcUrl, options?.feeSponsorSecret, onCycle);
 
     // Schedule repeating cycles.
     intervalHandle = setInterval(() => {
-        void scheduledTick(db, network, rpcUrl, onCycle);
+        void scheduledTick(db, network, rpcUrl, options?.feeSponsorSecret, onCycle);
     }, effectiveIntervalMs);
 }
 
@@ -110,6 +112,7 @@ async function executeCycle(
     db: Database.Database,
     network: string,
     rpcUrl: string | undefined,
+    feeSponsorSecret: string | undefined,
     onCycle: DaemonOptions["onCycle"],
 ): Promise<void> {
     cycleInFlight = true;
@@ -157,7 +160,7 @@ async function executeCycle(
 
         // Step 4: run auto-extensions for contracts with enabled policies.
         try {
-            const extensions = await runAutoExtensions(db, network, rpcUrl);
+            const extensions = await runAutoExtensions(db, network, rpcUrl, feeSponsorSecret);
             if (extensions.contractsChecked > 0) {
                 logger().info(
                     `Auto-extensions — checked: ${extensions.contractsChecked}, ` +
@@ -196,6 +199,7 @@ async function scheduledTick(
     db: Database.Database,
     network: string,
     rpcUrl: string | undefined,
+    feeSponsorSecret: string | undefined,
     onCycle: DaemonOptions["onCycle"],
 ): Promise<void> {
     if (cycleInFlight) {
@@ -204,7 +208,7 @@ async function scheduledTick(
     }
 
     await runScheduledVacuum(db);
-    await executeCycle(db, network, rpcUrl, onCycle);
+    await executeCycle(db, network, rpcUrl, feeSponsorSecret, onCycle);
 }
 
 async function runScheduledVacuum(db: Database.Database): Promise<void> {
