@@ -19,13 +19,13 @@ export function decodeLedgerKey(base64Key: string): DecodedLedgerKey {
   const contractId = contractAddress.toString();
 
   const scValKey = contractData.key();
-  let symbol: any = 'Unknown';
+  let symbol: any;
   if (scValKey.switch() === xdr.ScValType.scvLedgerKeyContractInstance()) {
     symbol = 'ContractInstance';
   } else {
     try {
       symbol = scValToNative(scValKey);
-    } catch (e) {
+    } catch {
       symbol = 'Unknown';
     }
   }
