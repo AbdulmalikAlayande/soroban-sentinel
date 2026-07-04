@@ -1,103 +1,79 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import ora from "ora";
-import { checkContractTTL } from "../core/check.js";
-import { classifyTTL, formatContractID, formatTimeToCloseLedger, statusIndicator } from "../utils/formatting.js";
-import { getLogger } from "../logging/index.js";
+import { getDatabase } from "../db/database.js";
+import { getContract, getEntriesForContract } from "../db/repositories.js";
+import {
+    classifyTTL,
+    statusIndicator,
+    formatTimeToCloseLedger,
+    formatContractID,
+} from "../utils/formatting.js";
 
-const logger = getLogger().child({ component: "CheckCommand" });
+export function registerCheckCommand(program: Command): void {
+    program
+        .command("check <contractId>")
+        .description("Check TTL health for a watched contract (CI-friendly, can be forced)")
+        .option("--force", "Bypass CI TTL failures and exit 0")
+        .requiredOption(
+            "--fail-under <ledgers>",
+            "Exit with code 1 if any entry TTL is below this many ledgers",
+            parseInt,
+        )
+        .action((contractId: string, options: { failUnder: number; force?: boolean }) => {
+            const db = getDatabase();
+            const contract = getContract(db, contractId);
 
-export const registerCheckCommand = (program: Command): void => {
-    program.command("check <contract-id>")
-        .description("One-shot TTL check: fails with exit code 1 if TTL is below threshold")
-        .option("--network <network>", "Stellar network to use (testnet, mainnet)", "testnet")
-        .option("--threshold <ledgers>", "Minimum required TTL in ledgers", "500")
-        .option("-r, --rpc-url <url>", "Custom RPC endpoint URL")
-        .option("--json", "Output result as JSON (useful for CI integrations)")
-        .action(async (contractId: string, options) => {
-            const threshold = Number(options.threshold);
-
-            if (!Number.isInteger(threshold) || threshold < 0) {
-                console.error(chalk.red(`Invalid threshold: "${options.threshold}". Must be a non-negative integer.`));
-                process.exitCode = 1;
-                    return;
+            if (!contract) {
+                console.log(chalk.red(`Contract ${formatContractID(contractId)} is not registered.`));
+                console.log(chalk.dim("Run 'sorokeep watch <contractId>' first."));
+                process.exit(1);
             }
 
-            const spinner = options.json
-                ? null
-                : ora(`Checking TTL for ${formatContractID(contractId)} on ${options.network}...`).start();
+            const entries = getEntriesForContract(db, contractId);
+            const lastChecked = contract.last_checked_ledger;
 
-            try {
-                const result = await checkContractTTL(
-                    contractId,
-                    options.network,
-                    threshold,
-                    options.rpcUrl,
-                );
+            if (entries.length === 0 || lastChecked == null) {
+                console.log(chalk.green("All TTLs are safe."));
+                process.exit(0);
+            }
 
-                if (options.json) {
-                    console.log(JSON.stringify({
-                        contractId: result.contractId,
-                        network: result.network,
-                        threshold: result.threshold,
-                        minimumTTL: result.minimumTTL,
-                        latestLedger: result.latestLedger,
-                        passed: result.passed,
-                        entries: result.entries,
-                        error: result.error,
-                    }));
-                    process.exitCode = result.passed ? 0 : 1;
-                    return;
-                }
+            let hasFailure = false;
 
-                if (result.error) {
-                    spinner!.fail(chalk.red(`TTL check error: ${result.error}`));
-                    logger.error("TTL check error", { error: result.error });
-                    process.exitCode = 1;
-                    return;
-                }
+            for (const entry of entries) {
+                if (entry.live_until_ledger == null) continue;
 
-                const displayId = formatContractID(contractId);
+                const remainingTTL = entry.live_until_ledger - lastChecked;
+                const label =
+                    entry.entry_type === "instance"
+                        ? "Instance"
+                        : entry.entry_type === "wasm"
+                          ? "WASM Code"
+                          : entry.label ?? entry.entry_type;
+                const timeStr = formatTimeToCloseLedger(remainingTTL);
+                const status = classifyTTL(remainingTTL);
 
-                if (result.passed) {
-                    spinner!.succeed(chalk.green(`TTL check passed for ${displayId}`));
-                } else {
-                    spinner!.fail(chalk.red(`TTL check FAILED for ${displayId} — TTL is below threshold`));
-                }
-
-                console.log(`\n  Contract: ${chalk.cyan(displayId)}`);
-                console.log(`  Network:  ${chalk.cyan(result.network)}`);
-                console.log(`  Threshold: ${chalk.cyan(result.threshold.toLocaleString())} ledgers`);
-                console.log(`  Latest ledger: ${chalk.dim(result.latestLedger.toLocaleString())}`);
-
-                for (const entry of result.entries) {
-                    const status = classifyTTL(entry.remainingTTL);
-                    const label = entry.entryType === "instance" ? "Instance TTL" : "WASM Code TTL";
+                if (remainingTTL < options.failUnder) {
+                    hasFailure = true;
                     console.log(
-                        `  ${label}: ${chalk.cyan(entry.remainingTTL.toLocaleString())} ledgers` +
-                        ` (${formatTimeToCloseLedger(entry.remainingTTL)})  ${statusIndicator(status)}`,
+                        `${chalk.bold(label)}  TTL: ${remainingTTL.toLocaleString().padStart(9)} ledgers (${timeStr})  ${statusIndicator(status)}  ${chalk.red("FAIL")}`,
+                    );
+                } else {
+                    console.log(
+                        `${chalk.bold(label)}  TTL: ${remainingTTL.toLocaleString().padStart(9)} ledgers (${timeStr})  ${statusIndicator(status)}  ${chalk.green("PASS")}`,
                     );
                 }
-
-                if (!result.passed) {
-                    console.log(chalk.red(`\n  Minimum TTL (${result.minimumTTL.toLocaleString()}) is below threshold (${threshold.toLocaleString()}).`));
-                    console.log(chalk.dim("  Run 'sorokeep guard <contract-id>' to extend the TTL."));
-                } else {
-                    console.log(chalk.green(`\n  Minimum TTL (${result.minimumTTL.toLocaleString()}) meets threshold (${threshold.toLocaleString()}).`));
-                }
-
-                process.exitCode = result.passed ? 0 : 1;
-                    return;
-            } catch (error: unknown) {
-                const message = error instanceof Error ? error.message : String(error);
-                if (spinner) {
-                    spinner.fail(chalk.red(`Failed to check TTL: ${message}`));
-                } else {
-                    console.error(chalk.red(`Failed to check TTL: ${message}`));
-                }
-                logger.error("Check command failed", { error: message });
-                process.exitCode = 1;
-                    return;
             }
+
+            if (hasFailure) {
+                if (options.force) {
+                    console.log("WARNING: CI checks bypassed with --force");
+                    process.exit(0);
+                } else {
+                    process.exit(1);
+                }
+            }
+
+            console.log(chalk.green("All TTLs are safe."));
+            process.exit(0);
         });
-};
+}
