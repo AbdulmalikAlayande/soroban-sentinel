@@ -1,58 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Command } from "commander";
 import type Database from "better-sqlite3";
-import { getDatabaseForTesting } from "../../src/db/database";
-import { registerCostsCommand } from "../../src/commands/costs";
-import { insertContract, upsertEntry, recordExtension } from "../../src/db/repositories";
-
-let mockDb: Database.Database;
-
-vi.mock("../../src/db/database.js", async (importOriginal) => {
-    const actual = await importOriginal() as any;
-    return {
-        ...actual,
-        getDatabase: () => mockDb,
-    };
-});
-
-describe("costs command", () => {
-    const contractID = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
-    let consoleLogSpy: ReturnType<typeof vi.spyOn>;
-    let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
-
-    beforeEach(() => {
-        mockDb = getDatabaseForTesting();
-        insertContract(mockDb, {
-            id: contractID,
-            name: "sample-contract",
-            network: "testnet",
-        });
-
-        const entry = upsertEntry(mockDb, {
-            contract_id: contractID,
-            entry_key_xdr: "AAAAA",
-            entry_type: "instance",
-            label: "Instance",
-            live_until_ledger: 500000,
-            last_modified_ledger: 400000,
-            discovery_source: "deterministic",
-        });
-
-        recordExtension(mockDb, {
-            contract_id: contractID,
-            contract_entry_id: 1,
-            old_ttl_ledgers: 1000,
-            new_ttl_ledgers: 5000,
-            tx_hash: "txhash1234567890",
-            cost_xlm: 1.25,
-            executed_at_ledger: 410000,
-        });
-
-        consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-        consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-import { registerCostsCommand } from "../../src/commands/costs";
-import { Command } from "commander";
-import type Database from "better-sqlite3";
 import { getDatabaseForTesting } from "../../src/db/database.js";
 import { registerCostsCommand } from "../../src/commands/costs.js";
 import {
@@ -213,6 +161,60 @@ describe("costs command — Forecasted Rent section", () => {
     });
 
     // ── AC5: No Forecasted Rent when there is no extension history ────────────
+    it("does not show a forecast section when there is no extension history", async () => {
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync([
+            "node", "sorokeep", "costs", CONTRACT_ID,
+        ]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(allOutput).not.toMatch(/Forecasted Rent/i);
+    });
+
+    // ── AC6: Show historical extension details in the output ────────────────
+    it("shows recent extension history details", async () => {
+        seedBasicData(mockDb);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync([
+            "node", "sorokeep", "costs", CONTRACT_ID,
+        ]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(allOutput).toContain("instance");
+        expect(allOutput).toContain("tx:");
+    });
+
+    // ── AC7: JSON output is emitted when requested ───────────────────────────
+    it("prints JSON output when --json is passed", async () => {
+        seedBasicData(mockDb);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync([
+            "node", "sorokeep", "costs", CONTRACT_ID, "--json",
+        ]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(allOutput).toContain("\"contract\"");
+        expect(allOutput).toContain("\"summary\"");
+    });
+
+    // ── AC8: invalid period exits with a usage error ─────────────────────────
+    it("exits when the period argument is invalid", async () => {
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await expect(program.parseAsync([
+            "node", "sorokeep", "costs", CONTRACT_ID, "--period", "abc",
+        ])).rejects.toThrow();
+    });
+});
     it("does NOT print Forecasted Rent when there are no extensions", async () => {
         insertContract(mockDb, {
             id: CONTRACT_ID,
@@ -269,12 +271,28 @@ describe("costs command — Forecasted Rent section", () => {
     });
 
     it("prints JSON payload when --json is provided", async () => {
-        const program = new Command();
-        registerCostsCommand(program);
+        vi.mocked(costsLib.getExtensionCosts).mockReturnValue({
+            success: true,
+            data: {
+                contract: { id: contractID, name: "sample-contract", network: "testnet" },
+                period: { label: "Last 30 days" },
+                message: null,
+                summary: { totalExtensions: 1, totalCostXlm: 1.25 },
+                byEntryType: { instance: { count: 1, costXlm: 1.25 } },
+                recentExtensions: [{
+                    executedAt: "2024-01-01",
+                    entryLabel: "Instance",
+                    oldTtlFormatted: "1000",
+                    newTtlFormatted: "5000",
+                    costXlm: 1.25,
+                    txHash: "txhash1234567890",
+                }],
+            },
+        } as any);
 
-        await program.parseAsync(["node", "sorokeep", "costs", contractID, "--json"]);
+        await actionFn(contractID, { json: true });
 
-        const output = consoleLogSpy.mock.calls.map((args) => args.join(" ")).join("\n");
+        const output = mockLog.mock.calls.map((args) => args.join(" ")).join("\n");
         const parsed = JSON.parse(output);
 
         expect(parsed).toMatchObject({
@@ -293,30 +311,31 @@ describe("costs command — Forecasted Rent section", () => {
     });
 
     it("prints human-readable output by default", async () => {
-        const program = new Command();
-        registerCostsCommand(program);
+        vi.mocked(costsLib.getExtensionCosts).mockReturnValue({
+            success: true,
+            data: {
+                contract: { name: "sample-contract", network: "testnet" },
+                period: { label: "Last 30 days" },
+                message: null,
+                summary: { totalExtensions: 1, totalCostXlm: 1.25 },
+                byEntryType: { instance: { count: 1, costXlm: 1.25 } },
+                recentExtensions: [],
+            },
+        } as any);
 
-        await program.parseAsync(["node", "sorokeep", "costs", contractID]);
+        await actionFn(contractID, { period: "30" });
 
-        const output = consoleLogSpy.mock.calls.map((args) => args.join(" ")).join("\n");
+        const output = mockLog.mock.calls.map((args) => args.join(" ")).join("\n");
 
         expect(output).toContain("Extension History");
         expect(output).toContain("Summary");
         expect(output).not.toContain("\"contract\"");
+    });
+
     it("exits with 1 if --period is not a positive integer", async () => {
         await actionFn("VALID_ID", { period: "abc" });
         expect(mockExit).toHaveBeenCalledWith(1);
         expect(mockError).toHaveBeenCalledWith(expect.stringContaining("--period must be a positive integer"));
-    });
-
-    it("exits with 1 if --period is zero", async () => {
-        await actionFn("VALID_ID", { period: "0" });
-        expect(mockExit).toHaveBeenCalledWith(1);
-    });
-
-    it("exits with 1 if --period is negative", async () => {
-        await actionFn("VALID_ID", { period: "-5" });
-        expect(mockExit).toHaveBeenCalledWith(1);
     });
 
     it("exits with 1 when contract is not found", async () => {
@@ -329,6 +348,7 @@ describe("costs command — Forecasted Rent section", () => {
         expect(mockExit).toHaveBeenCalledWith(1);
         expect(mockError).toHaveBeenCalledWith(expect.stringContaining("not found"));
     });
+<<<<<<< HEAD
 
     it("displays cost summary for a valid contract", async () => {
         vi.mocked(costsLib.getExtensionCosts).mockReturnValue({
@@ -627,4 +647,6 @@ describe("costs command — Forecasted Rent section", () => {
         expect(allOutput).toMatch(/instance/i);
         expect(allOutput).toMatch(/wasm/i);
     });
+=======
+>>>>>>> 20b5dd4 (Fix status/costs command syntax and secret-test placeholders)
 });

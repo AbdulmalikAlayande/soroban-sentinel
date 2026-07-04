@@ -5,11 +5,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
-const VALID_STELLAR_SECRET = "S" + "A".repeat(55);
-const VALID_STELLAR_SECRET_2 = "S" + "B".repeat(55);
-const VALID_STELLAR_SECRET_3 = "S" + "C".repeat(55);
-const VALID_STELLAR_SECRET_4 = "S" + "D".repeat(55);
-const VALID_STELLAR_SECRET_5 = "S" + "E".repeat(55);
+const makeStellarSecret = (suffix: string): string => `S${suffix.padEnd(55, "0")}`;
+
+const VALID_STELLAR_SECRET = makeStellarSecret("0");
+const VALID_STELLAR_SECRET_2 = makeStellarSecret("1");
+const VALID_STELLAR_SECRET_3 = makeStellarSecret("2");
+const VALID_STELLAR_SECRET_4 = makeStellarSecret("3");
+const VALID_STELLAR_SECRET_5 = makeStellarSecret("4");
 const TEST_VAULT_TOKEN = "test-vault-token";
 
 describe("VaultResolver", () => {
