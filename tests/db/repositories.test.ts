@@ -6,56 +6,10 @@ describe("Database Repositories", () => {
     let db: any;
 
     beforeEach(() => {
+        // getDatabaseForTesting() execs the current schema.sql directly into a
+        // fresh :memory: database, so it already has every column/table/CHECK
+        // schema.sql defines — no need to replay ad-hoc migrations here.
         db = getDatabaseForTesting();
-        // Since getDatabaseForTesting might miss live migrations that getDatabase does, let's run them just in case.
-        const migrations = [
-            `ALTER TABLE alerts_fired ADD COLUMN delivered INTEGER NOT NULL DEFAULT 0`,
-            `ALTER TABLE alerts_fired ADD COLUMN delivered_at TEXT`,
-            `ALTER TABLE alerts_fired ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0`,
-            `ALTER TABLE alert_configs ADD COLUMN webhook_secret TEXT`,
-            `CREATE TABLE IF NOT EXISTS channel_accounts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                public_key TEXT NOT NULL UNIQUE,
-                keypair_source TEXT,
-                label TEXT,
-                network TEXT NOT NULL DEFAULT 'testnet',
-                funded BOOLEAN NOT NULL DEFAULT 0,
-                balance_xlm REAL,
-                balance_checked_at TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )`,
-            `ALTER TABLE contracts ADD COLUMN last_introspected_at DATETIME`,
-        ];
-        for (const sql of migrations) {
-            try { db.exec(sql); } catch { /* ignore */ }
-        }
-        
-        try {
-            db.exec("PRAGMA foreign_keys = OFF;");
-            db.exec("BEGIN TRANSACTION;");
-            db.exec(`
-                CREATE TABLE IF NOT EXISTS alert_configs_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
-                    channel_type TEXT NOT NULL CHECK(channel_type IN ('slack', 'webhook', 'pagerduty', 'discord', 'telegram')),
-                    channel_target TEXT NOT NULL,
-                    threshold_ledgers INTEGER NOT NULL,
-                    webhook_secret TEXT,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-            `);
-            db.exec(`
-                INSERT OR IGNORE INTO alert_configs_new (id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, created_at)
-                SELECT id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, created_at
-                FROM alert_configs
-            `);
-            db.exec(`DROP TABLE alert_configs;`);
-            db.exec(`ALTER TABLE alert_configs_new RENAME TO alert_configs;`);
-            db.exec("COMMIT;");
-            db.exec("PRAGMA foreign_keys = ON;");
-        } catch {
-            // ignore failure if tables already altered
-        }
     });
 
     afterEach(() => {
@@ -234,6 +188,32 @@ describe("Database Repositories", () => {
             expect(configs.length).toBe(1);
             expect(configs[0].channel_type).toBe("telegram");
             expect(configs[0].channel_target).toBe("chat:123456");
+        });
+
+        it("accepts an arbitrary plugin channel_type not in the built-in set", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.insertAlertConfig(db, {
+                contract_id: "C1",
+                channel_type: "matrix",
+                channel_target: "!room:example.org",
+                threshold_ledgers: 400,
+            });
+
+            const configs = repo.getAlertConfigsForContract(db, "C1");
+            expect(configs.length).toBe(1);
+            expect(configs[0].channel_type).toBe("matrix");
+        });
+
+        it("rejects an empty channel_type", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            expect(() =>
+                repo.insertAlertConfig(db, {
+                    contract_id: "C1",
+                    channel_type: "",
+                    channel_target: "T1",
+                    threshold_ledgers: 100,
+                }),
+            ).toThrow();
         });
 
         it("handles alert delivery logic", () => {
@@ -503,6 +483,21 @@ describe("Database Repositories", () => {
     });
 
     describe("Resource Alerts Config & Fired", () => {
+        it("accepts an arbitrary plugin channel_type not in the built-in set", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.insertResourceAlertConfig(db, {
+                contract_id: "C1",
+                channel_type: "matrix",
+                channel_target: "!room:example.org",
+                cpu_limit: 50,
+                mem_limit: 50,
+            });
+
+            const configs = repo.getResourceAlertConfigsForContract(db, "C1");
+            expect(configs.length).toBe(1);
+            expect(configs[0].channel_type).toBe("matrix");
+        });
+
         it("crud resource alert configs and records fired", () => {
             repo.insertContract(db, { id: "C1", network: "testnet" });
             repo.insertResourceAlertConfig(db, {
