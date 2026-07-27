@@ -19,7 +19,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SCHEMA_FILE_PATH = path.join(__dirname, 'schema.sql');
 const SCHEMA = fs.readFileSync(SCHEMA_FILE_PATH, 'utf-8')
-    .replace(/--.*\n/g, '') // Removes SQL comments
+    // Removes SQL comments. [^\n]* (not .*) so a CRLF-checked-out file still
+    // matches: JS `.` excludes all line terminators including \r, so `.*\n`
+    // silently fails to match a comment ending in \r\n — the comment (and,
+    // once whitespace collapses newlines to spaces, everything after it,
+    // since SQLite's own -- then runs to the string's end) survives into
+    // the executed script instead of being stripped.
+    .replace(/--[^\n]*\n/g, '')
     .replace(/\s+/g, ' ') // Collapse whitespaces
     .trim();
 
@@ -70,6 +76,7 @@ export function getDatabase(customPath?: string): Database.Database {
     }
 
     migrateAlertConfigsChannelTypeCheck(db);
+    relaxChannelTypeChecks(db);
 
     return db;
 }
@@ -111,6 +118,77 @@ function migrateAlertConfigsChannelTypeCheck(db: Database.Database): void {
     db.exec(`ALTER TABLE alert_configs_new RENAME TO alert_configs;`);
     db.exec("COMMIT;");
     db.exec("PRAGMA foreign_keys = ON;");
+}
+
+/**
+ * channel_type validity used to be enforced by a fixed SQL CHECK enum
+ * (`CHECK(channel_type IN ('slack', 'webhook', ...))`). That enum is now
+ * enforced at the application layer by the alert channel registry
+ * (src/alerts/registry.ts) so contributors can add a new channel without a
+ * schema migration. Existing databases still carry the old restrictive
+ * CHECK on disk — this rebuilds `alert_configs` and `resource_alert_configs`
+ * in place (SQLite has no `ALTER TABLE ... DROP CONSTRAINT`) to the new
+ * permissive CHECK, preserving all rows. No-op once already relaxed.
+ */
+function relaxChannelTypeChecks(db: Database.Database): void {
+    const hasEnumCheck = (tableName: string): boolean => {
+        const row = db.prepare(`
+            SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?
+        `).get(tableName) as { sql?: string } | undefined;
+        return !!row?.sql && /CHECK\s*\(\s*channel_type\s+IN\s*\(/i.test(row.sql);
+    };
+
+    if (hasEnumCheck("alert_configs")) {
+        db.exec("PRAGMA foreign_keys = OFF;");
+        db.exec("BEGIN TRANSACTION;");
+        db.exec(`
+            CREATE TABLE alert_configs_relaxed (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+                channel_type TEXT NOT NULL CHECK(channel_type <> ''),
+                channel_target TEXT NOT NULL,
+                threshold_ledgers INTEGER NOT NULL,
+                webhook_secret TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        db.exec(`
+            INSERT INTO alert_configs_relaxed (id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, created_at)
+            SELECT id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, created_at
+            FROM alert_configs
+        `);
+        db.exec(`DROP TABLE alert_configs;`);
+        db.exec(`ALTER TABLE alert_configs_relaxed RENAME TO alert_configs;`);
+        db.exec("COMMIT;");
+        db.exec("PRAGMA foreign_keys = ON;");
+    }
+
+    if (hasEnumCheck("resource_alert_configs")) {
+        db.exec("PRAGMA foreign_keys = OFF;");
+        db.exec("BEGIN TRANSACTION;");
+        db.exec(`
+            CREATE TABLE resource_alert_configs_relaxed (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+                channel_type TEXT NOT NULL CHECK(channel_type <> ''),
+                channel_target TEXT NOT NULL,
+                cpu_limit INTEGER NOT NULL,
+                mem_limit INTEGER NOT NULL,
+                webhook_secret TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(contract_id, channel_type, channel_target)
+            )
+        `);
+        db.exec(`
+            INSERT INTO resource_alert_configs_relaxed (id, contract_id, channel_type, channel_target, cpu_limit, mem_limit, webhook_secret, created_at)
+            SELECT id, contract_id, channel_type, channel_target, cpu_limit, mem_limit, webhook_secret, created_at
+            FROM resource_alert_configs
+        `);
+        db.exec(`DROP TABLE resource_alert_configs;`);
+        db.exec(`ALTER TABLE resource_alert_configs_relaxed RENAME TO resource_alert_configs;`);
+        db.exec("COMMIT;");
+        db.exec("PRAGMA foreign_keys = ON;");
+    }
 }
 
 export function closeDatabase() {
