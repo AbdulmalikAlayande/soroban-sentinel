@@ -41,7 +41,8 @@ export interface ExtensionPolicy {
 export interface AlertConfig {
     id: number;
     contract_id: string;
-    channel_type: "slack" | "webhook" | "pagerduty" | "discord" | "telegram";
+    /** Any registered alert channel name (see src/alerts/registry.ts) — not a fixed enum. */
+    channel_type: string;
     channel_target: string;
     threshold_ledgers: number;
     webhook_secret: string | null;
@@ -633,7 +634,8 @@ export interface UndeliveredAlert {
     entryKeyXdr: string;
     entryType: string;
     entryLabel: string | null;
-    channelType: "webhook" | "slack" | "pagerduty" | "discord" | "telegram";
+    /** Any registered alert channel name (see src/alerts/registry.ts) — not a fixed enum. */
+    channelType: string;
     channelTarget: string;
     thresholdLedgers: number;
     webhookSecret: string | null;
@@ -976,7 +978,8 @@ export function getStateChangeHistory(
 export interface ResourceAlertConfig {
     id: number;
     contract_id: string;
-    channel_type: "slack" | "webhook";
+    /** Any registered alert channel name (see src/alerts/registry.ts) — not a fixed enum. */
+    channel_type: string;
     channel_target: string;
     cpu_limit: number;
     mem_limit: number;
@@ -1083,7 +1086,8 @@ export function getUndeliveredResourceAlerts(db: Database.Database, network: str
     usage: number;
     limit: number;
     usagePercent: number;
-    channelType: "webhook" | "slack";
+    /** Any registered alert channel name (see src/alerts/registry.ts) — not a fixed enum. */
+    channelType: string;
     channelTarget: string;
     webhookSecret: string | null;
     retryCount: number;
@@ -1120,7 +1124,8 @@ export function getUndeliveredResourceAlerts(db: Database.Database, network: str
         usage: number;
         limit: number;
         usagePercent: number;
-        channelType: "webhook" | "slack";
+        /** Any registered alert channel name (see src/alerts/registry.ts) — not a fixed enum. */
+    channelType: string;
         channelTarget: string;
         webhookSecret: string | null;
         retryCount: number;
