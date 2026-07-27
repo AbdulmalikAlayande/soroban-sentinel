@@ -79,7 +79,7 @@ Everything sorokeep knows lives in one SQLite file (`~/.sorokeep/sorokeep.db`, s
 
 | Change | Files |
 |---|---|
-| New alert channel | `src/alerts/<channel>.ts` (implements `AlertChannel` from `alerts/types.ts`), registered in `alerts/dispatcher.ts`'s `DEFAULT_CHANNELS`, `channel_type` CHECK constraint in `schema.sql` |
+| New alert channel | `src/alerts/<channel>.ts` (implements `AlertChannel` from `alerts/types.ts`) plus a `registerAlertChannel(...)` call in `alerts/builtins.ts`. No dispatcher, CLI, or schema changes needed — see [docs/adding-an-alert-channel.md](adding-an-alert-channel.md) for the full walkthrough. |
 | New CLI command | `src/commands/<name>.ts` (thin wrapper), core logic in `src/core/<name>.ts`, wired into `src/index.ts` |
 | Change to threshold/extension logic | `src/core/monitor.ts` or `src/core/extension.ts` — read the fault-isolation notes above before touching these |
 | New RPC-derived data | `src/rpc/client.ts` first, then whatever core module consumes it |
