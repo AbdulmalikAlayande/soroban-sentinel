@@ -266,7 +266,7 @@ The sandbox lets you test Sorokeep against a real Stellar RPC without touching p
 
 If you're new to the project, look for issues tagged `good first issue`. These are typically:
 
-- Adding a new alert channel (email, Discord, Telegram)
+- Adding a new alert channel (e.g. Matrix, Microsoft Teams, email) — see [docs/adding-an-alert-channel.md](docs/adding-an-alert-channel.md), it's a self-contained plugin registration, not a core change
 - CLI UX improvements (better error messages, colored output)
 - Documentation improvements
 - Adding test coverage for edge cases
