@@ -37,10 +37,14 @@ CREATE TABLE IF NOT EXISTS extension_policies (
     UNIQUE(contract_id)
 );
 
+-- channel_type is validated against the alert channel registry
+-- (src/alerts/registry.ts) at the application layer, not a fixed SQL enum —
+-- this is what lets a contributor add a new alert channel without a schema
+-- migration. The CHECK below only guards against an empty string.
 CREATE TABLE IF NOT EXISTS alert_configs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
-    channel_type TEXT NOT NULL CHECK(channel_type IN ('slack', 'webhook', 'pagerduty', 'discord', 'telegram')),
+    channel_type TEXT NOT NULL CHECK(channel_type <> ''),
     channel_target TEXT NOT NULL,
     threshold_ledgers INTEGER NOT NULL,
     webhook_secret TEXT,
@@ -145,10 +149,11 @@ CREATE TABLE IF NOT EXISTS budgets (
     UNIQUE(contract_id, billing_cycle)
 );
 
+-- See the comment above alert_configs — same reasoning applies here.
 CREATE TABLE IF NOT EXISTS resource_alert_configs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
-    channel_type TEXT NOT NULL CHECK(channel_type IN ('slack', 'webhook', 'pagerduty', 'discord', 'telegram')),
+    channel_type TEXT NOT NULL CHECK(channel_type <> ''),
     channel_target TEXT NOT NULL,
     cpu_limit INTEGER NOT NULL,
     mem_limit INTEGER NOT NULL,
