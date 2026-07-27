@@ -1,0 +1,13 @@
+# Default owner for everything in the repo, unless a more specific rule below matches.
+*                           @AbdulmalikAlayande
+
+# Anything touching secret-key handling or transaction submission gets
+# mandatory review — see SECURITY.md for why these paths are sensitive.
+/src/core/extension.ts     @AbdulmalikAlayande
+/src/core/channels.ts      @AbdulmalikAlayande
+/src/core/vault.ts         @AbdulmalikAlayande
+/src/core/aws_secrets.ts   @AbdulmalikAlayande
+/src/db/schema.sql         @AbdulmalikAlayande
+
+/.github/                  @AbdulmalikAlayande
+/SECURITY.md                @AbdulmalikAlayande
