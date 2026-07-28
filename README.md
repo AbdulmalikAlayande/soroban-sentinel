@@ -18,6 +18,10 @@
   </p>
 </p>
 
+<p align="right">
+  <a href="README.zh.md">简体中文</a>
+</p>
+
 <br />
 
 ## Why This Exists
