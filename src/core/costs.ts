@@ -31,6 +31,14 @@ export interface CostProjection {
     formula: string;
 }
 
+export interface TrendAdjustedProjection {
+    flatProjectedCostXlm: number;
+    trendAdjustedProjectedCostXlm: number;
+    trendMultiplier: number;
+    feeTrend: "rising" | "falling" | "stable";
+    basisDays: number;
+}
+
 export interface ExtensionCostsResult {
     contract: {
         id: string;
@@ -48,6 +56,7 @@ export interface ExtensionCostsResult {
     byEntryType: Record<string, EntryTypeCostBreakdown>;
     recentExtensions: ExtensionCostDetail[];
     projection?: CostProjection;
+    trendProjection?: TrendAdjustedProjection;
     message?: string;
 }
 
@@ -64,7 +73,7 @@ const DEFAULT_PERIOD_DAYS = 30;
 export function getExtensionCosts(
     db: Database.Database,
     contractId: string,
-    options?: { period?: number; all?: boolean },
+    options?: { period?: number; all?: boolean; recentBaseFees?: number[] },
 ): GetExtensionCostsResponse {
     const contract = getContract(db, contractId);
     if (!contract) {
@@ -177,6 +186,15 @@ export function getExtensionCosts(
                           basisDays: period,
                           formula: "linear extrapolation from period average",
                       },
+                      ...(options?.recentBaseFees
+                          ? {
+                                trendProjection: calculateTrendAdjustedProjection(
+                                    totalCostXlm,
+                                    period,
+                                    options.recentBaseFees,
+                                ),
+                            }
+                          : {}),
                   }
                 : {}),
         },
@@ -257,5 +275,49 @@ export function calculateFeeAdjustedProjection(
         adjustedProjectedCostXlm: baseProjectedCostXlm * baseFeeMultiplier * surgePricingMultiplier,
         baseFeeMultiplier,
         surgePricingMultiplier,
+    };
+}
+
+export function calculateTrendAdjustedProjection(
+    totalCostXlm: number,
+    periodDays: number,
+    recentBaseFees?: number[],
+): TrendAdjustedProjection {
+    const flatProjectedCostXlm = (totalCostXlm / periodDays) * 30;
+
+    if (!recentBaseFees || recentBaseFees.length < 2) {
+        return {
+            flatProjectedCostXlm,
+            trendAdjustedProjectedCostXlm: flatProjectedCostXlm,
+            trendMultiplier: 1,
+            feeTrend: "stable",
+            basisDays: periodDays,
+        };
+    }
+
+    const midpoint = Math.floor(recentBaseFees.length / 2);
+    const firstHalf = recentBaseFees.slice(0, midpoint);
+    const secondHalf = recentBaseFees.slice(recentBaseFees.length % 2 === 0 ? midpoint : midpoint + 1);
+
+    const avgFirst = firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length;
+    const avgSecond = secondHalf.reduce((a, b) => a + b, 0) / secondHalf.length;
+
+    const trendMultiplier = avgFirst > 0 ? avgSecond / avgFirst : 1;
+
+    let feeTrend: "rising" | "falling" | "stable";
+    if (trendMultiplier > 1.001) {
+        feeTrend = "rising";
+    } else if (trendMultiplier < 0.999) {
+        feeTrend = "falling";
+    } else {
+        feeTrend = "stable";
+    }
+
+    return {
+        flatProjectedCostXlm,
+        trendAdjustedProjectedCostXlm: flatProjectedCostXlm * trendMultiplier,
+        trendMultiplier,
+        feeTrend,
+        basisDays: periodDays,
     };
 }
