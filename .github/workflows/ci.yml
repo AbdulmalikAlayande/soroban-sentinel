@@ -40,6 +40,9 @@ jobs:
     - name: Lint Code
       run: npm run lint
 
+    - name: Check Test File Locations
+      run: npm run check:test-locations
+
     - name: Run Tests
       run: npm run test -- --coverage
 
