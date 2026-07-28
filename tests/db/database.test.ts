@@ -89,4 +89,18 @@ describe("Database core functions", () => {
             db.close();
         });
     });
+    describe("CRLF-safe schema parsing", () => {
+        it("strips SQL comments from CRLF-terminated schema", () => {
+            const schemaPath = path.join(process.cwd(), "test-schema-crlf.sql");
+            fs.writeFileSync(schemaPath, "-- comment line\r\nCREATE TABLE test_crlf (id INTEGER);\r\n");
+            try {
+                const db = getDatabaseForTesting(schemaPath);
+                const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='test_crlf'").all();
+                expect(tables.length).toBe(1);
+                db.close();
+            } finally {
+                if (fs.existsSync(schemaPath)) fs.unlinkSync(schemaPath);
+            }
+        });
+    });
 });
