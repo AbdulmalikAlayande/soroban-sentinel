@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { registerGuardCommand } from "../../src/commands/guard";
+import { registerGuardCommand, runCostEstimateCommand } from "../../src/commands/guard";
 import { Command } from "commander";
 import * as repos from "../../src/db/repositories";
 import * as extensionLib from "../../src/core/extension";
+import * as costs from "../../src/core/costs";
 import ora from "ora";
 
 const { mockSpinner } = vi.hoisted(() => {
@@ -224,6 +225,46 @@ describe("Guard Command CLI", () => {
         expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("Memory:       1 KB"));
         expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("Read size:    2 KB"));
         expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("Write size:   3 KB"));
+    });
+
+    it("compares cost estimates for multiple target TTL values", async () => {
+        vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
+        vi.spyOn(costs, "getExtensionCosts").mockReturnValue({
+            success: true,
+            data: {
+                summary: {
+                    totalExtensions: 10,
+                    totalCostXlm: 1.5,
+                },
+            },
+        } as any);
+
+        await runCostEstimateCommand("VALID_ID", { targetTtl: "100000,200000" });
+
+        const output = mockLog.mock.calls.map((call) => call.join(" ")).join("\n");
+        expect(output).toContain("100000");
+        expect(output).toContain("200000");
+        expect(output).toContain("estimated extensions/month");
+        expect(output).toContain("estimated monthly cost");
+    });
+
+    it("reports a clear message when there is no extension history", async () => {
+        vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
+        vi.spyOn(costs, "getExtensionCosts").mockReturnValue({
+            success: true,
+            data: {
+                summary: {
+                    totalExtensions: 0,
+                    totalCostXlm: 0,
+                },
+                message: "No extensions recorded for this period.",
+            },
+        } as any);
+
+        await runCostEstimateCommand("VALID_ID", { targetTtl: "100000" });
+
+        const output = mockLog.mock.calls.map((call) => call.join(" ")).join("\n");
+        expect(output).toContain("No extension history found");
     });
 });
 
