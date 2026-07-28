@@ -13,16 +13,24 @@ import {
     getBudget,
     addBudgetSpent,
     countExtensionsInLastHour,
-
+    getAlertConfigsForContract,
 } from "../db/repositories.js";
 import { ChannelAccountPool } from "./channels.js";
 import { getLogger } from "../logging/index.js";
 import { formatSecretKey } from "../utils/formatting.js";
 import { VaultResolver } from "./vault.js";
 import { loadConfig } from "../utils/config.js";
+import { buildTTLDriftAlertEvent } from "../alerts/types.js";
+import { deliverSingleAlert } from "../alerts/dispatcher.js";
 
 const logger = getLogger().child({ component: "Extension" });
 
+/**
+ * Default tolerance (in ledgers) used when comparing the actual post-extension
+ * TTL against the policy's target_ttl_ledgers.  If the absolute delta is within
+ * this tolerance no drift alert is fired.
+ */
+export const DEFAULT_DRIFT_TOLERANCE_LEDGERS = 100;
 
 // ─── Rate limiter ─────────────────────────────────────────────────────────────
 
@@ -32,17 +40,6 @@ const logger = getLogger().child({ component: "Extension" });
  */
 export const HOURLY_RATE_LIMIT = 5;
 
-/**
- * Check whether the given contract has reached its hourly auto-extension rate limit.
- *
- * Queries `extension_history` for records within the last 60 minutes and
- * compares the count against `limit` (default: HOURLY_RATE_LIMIT).
- *
- * @param db - The SQLite database connection.
- * @param contractId - The contract to check.
- * @param limit - Maximum allowed extensions per hour (defaults to HOURLY_RATE_LIMIT).
- * @returns `true` when the contract is rate-limited; `false` otherwise.
- */
 export function isRateLimited(
     db: import("better-sqlite3").Database,
     contractId: string,
@@ -54,7 +51,6 @@ export function isRateLimited(
 
 // ─── Public contract ──────────────────────────────────────────────────────────
 
-
 export interface ExtensionResult {
     success: boolean;
     contractId: string;
@@ -62,22 +58,16 @@ export interface ExtensionResult {
     txHash?: string;
     ledger?: number;
     error?: string;
-    /** Estimated fee in stroops (from simulation, before submission). */
     estimatedFee?: number;
-    /** Actual fee charged in stroops (from submitted transaction result). */
     feeCharged?: number;
-    /** CPU instructions consumed by the transaction. */
-
     cpuInsns?: number;
     memBytes?: number;
-    /** Read footprint size in bytes. */
     readBytes?: number;
-    /** Write footprint size in bytes. */
     writeBytes?: number;
-    /** Whether resource usage spiked. */
-
     isAnomaly?: boolean;
     anomalyDetails?: string;
+    /** Signed ledger delta: actual post-extension TTL minus policy target_ttl_ledgers. */
+    driftLedgers?: number;
 }
 
 export interface AutoExtensionResult {
@@ -92,6 +82,7 @@ export interface AutoExtensionResult {
         ledger: number;
         isAnomaly?: boolean;
         anomalyDetails?: string;
+        driftLedgers?: number;
     }>;
 }
 
@@ -102,14 +93,11 @@ export interface RestoreResult {
     txHash?: string;
     ledger?: number;
     error?: string;
-    /** Estimated fee in stroops (from simulation, before submission). */
     estimatedFee?: number;
     cpuInsns?: number;
     memBytes?: number;
     minResourceFee?: number;
-    /** Fee charged in stroops. */
     feeCharged?: number;
-
 }
 
 export async function simulateExtension(
@@ -132,12 +120,7 @@ export async function simulateExtension(
         sim = await client.simulateExtension(entryKeyXdrs, extendToLedgers, sourcePublicKey);
     } catch (err: any) {
         logger.warn(`Simulation warning for ${contractId}: ${err.message}`);
-        return {
-            success: false,
-            contractId,
-            entriesExtended: 0,
-            error: err.message,
-        };
+        return { success: false, contractId, entriesExtended: 0, error: err.message };
     }
 
     return {
@@ -172,9 +155,7 @@ export async function extendEntries(
 
     const client = new StellarRpcClient(contract.network, rpcUrl);
 
-    logger.info(
-        `Extending ${entryKeyXdrs.length} entries for ${contractId} to ${extendToLedgers} ledgers`,
-    );
+    logger.info(`Extending ${entryKeyXdrs.length} entries for ${contractId} to ${extendToLedgers} ledgers`);
 
     const resolvedSponsorSecret = sponsorSecret ? await resolveSecretKey(sponsorSecret) : undefined;
     if (sponsorSecret && !resolvedSponsorSecret) {
@@ -189,21 +170,11 @@ export async function extendEntries(
     let txResult;
     try {
         txResult = resolvedSponsorSecret
-            ? await client.submitExtensionWithFeeBump(
-                entryKeyXdrs,
-                extendToLedgers,
-                secretKey,
-                resolvedSponsorSecret,
-            )
+            ? await client.submitExtensionWithFeeBump(entryKeyXdrs, extendToLedgers, secretKey, resolvedSponsorSecret)
             : await client.submitExtension(entryKeyXdrs, extendToLedgers, secretKey);
     } catch (err: any) {
         logger.warn(`Simulation warning for ${contractId}: ${err.message}`);
-        return {
-            success: false,
-            contractId,
-            entriesExtended: 0,
-            error: err.message,
-        };
+        return { success: false, contractId, entriesExtended: 0, error: err.message };
     }
 
     if (!txResult.success) {
@@ -294,6 +265,7 @@ export async function runAutoExtensions(
     network: string,
     rpcUrl?: string,
     sponsorSecret?: string,
+    driftToleranceLedgers: number = DEFAULT_DRIFT_TOLERANCE_LEDGERS,
 ): Promise<AutoExtensionResult> {
     const result: AutoExtensionResult = {
         contractsChecked: 0,
@@ -316,9 +288,7 @@ export async function runAutoExtensions(
     const latestLedger = await client.getCurrentLedger();
 
     const channelAccounts = getChannelAccounts(db, network);
-    const pool = channelAccounts.length > 0
-        ? new ChannelAccountPool(db, network)
-        : null;
+    const pool = channelAccounts.length > 0 ? new ChannelAccountPool(db, network) : null;
 
     result.contractsChecked = eligibleContracts.length;
 
@@ -336,10 +306,7 @@ export async function runAutoExtensions(
 
             if (needsExtension.length === 0) return;
 
-
             // ── Rate limit check (issue #142) ────────────────────────────────
-            // Block auto-extension if the contract has already hit the maximum
-            // number of extension transactions allowed per hour.
             if (isRateLimited(db, contract.id)) {
                 const count = countExtensionsInLastHour(db, contract.id);
                 const msg = `Contract ${contract.id}: rate limit reached — ${count}/${HOURLY_RATE_LIMIT} extensions in the last hour. Skipping.`;
@@ -348,7 +315,6 @@ export async function runAutoExtensions(
                 return;
             }
 
-            // Resolve secret key: prefer channel pool, fall back to policy keypair
             let secretKey: string | null = null;
             let slot: import("./channels.js").ChannelSlot | null = null;
 
@@ -388,11 +354,11 @@ export async function runAutoExtensions(
                     const { Keypair } = await import("@stellar/stellar-sdk");
                     const pubKey = Keypair.fromSecret(secretKey).publicKey();
                     const simResult = await simulateExtension(db, contract.id, entryKeys, policy.target_ttl_ledgers, pubKey, rpcUrl);
-                    
+
                     if (!simResult.success) {
                         throw new Error(`Simulation failed: ${simResult.error}`);
                     }
-                    
+
                     estimatedFeeXlm = (simResult.estimatedFee || 0) / 10000000;
                     if (budget.spent_xlm + estimatedFeeXlm > budget.limit_xlm) {
                         throw new Error(`budget limit exceeded. Estimated cost: ${estimatedFeeXlm} XLM, Remaining: ${budget.limit_xlm - budget.spent_xlm} XLM`);
@@ -411,7 +377,9 @@ export async function runAutoExtensions(
 
                 if (extResult.success) {
                     if (budget && estimatedFeeXlm > 0) {
-                        const actualFeeXlm = extResult.feeCharged !== undefined ? extResult.feeCharged / 10000000 : estimatedFeeXlm;
+                        const actualFeeXlm = extResult.feeCharged !== undefined
+                            ? extResult.feeCharged / 10000000
+                            : estimatedFeeXlm;
                         addBudgetSpent(db, contract.id, billingCycle, actualFeeXlm);
                     }
 
@@ -420,6 +388,48 @@ export async function runAutoExtensions(
                             `Contract ${contract.id}: Extension succeeded but RPC returned no txHash or ledger`,
                         );
                     } else {
+                        // ── TTL drift check (issue #495) ─────────────────────────────
+                        let driftLedgers: number | undefined;
+
+                        const freshTTLs = await client.getEntryTTLs(entryKeys);
+                        if (freshTTLs.entries.length > 0) {
+                            const maxActualTTL = Math.max(...freshTTLs.entries.map(e => e.remainingTTL));
+                            const drift = maxActualTTL - policy.target_ttl_ledgers;
+                            driftLedgers = drift;
+
+                            if (Math.abs(drift) > driftToleranceLedgers) {
+                                logger.warn(
+                                    `TTL drift detected for ${contract.id}: ` +
+                                    `target=${policy.target_ttl_ledgers}, actual=${maxActualTTL}, ` +
+                                    `drift=${drift} (tolerance=${driftToleranceLedgers})`,
+                                );
+
+                                const driftEvent = buildTTLDriftAlertEvent({
+                                    contractId: contract.id,
+                                    contractName: contract.name ?? null,
+                                    network,
+                                    targetTTLLedgers: policy.target_ttl_ledgers,
+                                    actualTTLLedgers: maxActualTTL,
+                                    driftLedgers: drift,
+                                    toleranceLedgers: driftToleranceLedgers,
+                                    txHash: extResult.txHash,
+                                    detectedAtLedger: extResult.ledger,
+                                });
+
+                                const alertConfigs = getAlertConfigsForContract(db, contract.id);
+                                await Promise.all(
+                                    alertConfigs.map(cfg =>
+                                        deliverSingleAlert(
+                                            cfg.channel_type,
+                                            cfg.channel_target,
+                                            driftEvent,
+                                            cfg.webhook_secret,
+                                        ),
+                                    ),
+                                );
+                            }
+                        }
+
                         result.contractsExtended++;
                         result.entriesExtended += extResult.entriesExtended;
                         result.extensions.push({
@@ -429,6 +439,7 @@ export async function runAutoExtensions(
                             ledger: extResult.ledger,
                             isAnomaly: extResult.isAnomaly,
                             anomalyDetails: extResult.anomalyDetails,
+                            driftLedgers,
                         });
                     }
                 } else {
@@ -501,12 +512,7 @@ export async function restoreEntries(
         txResult = await client.submitRestore(entryKeyXdrs, secretKey);
     } catch (err: any) {
         logger.warn(`Simulation warning for ${contractId}: ${err.message}`);
-        return {
-            success: false,
-            contractId,
-            entriesRestored: 0,
-            error: err.message,
-        };
+        return { success: false, contractId, entriesRestored: 0, error: err.message };
     }
 
     if (!txResult.success) {
@@ -564,13 +570,6 @@ export async function restoreEntries(
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
-/**
- * Resolve a secret key from a keypair_source string.
- * Supports:
- *   - "env:VAR_NAME" — reads from environment variable
- *   - "vault:<secret_path>" — reads from HashiCorp Vault (KV v1/v2)
- *   - Direct secret key string starting with "S" (56 chars)
- */
 export async function resolveSecretKey(source: string | null): Promise<string | null> {
     if (!source) return null;
 
@@ -613,7 +612,6 @@ export async function resolveSecretKey(source: string | null): Promise<string | 
         }
     }
 
-    // Direct secret key
     if (source.startsWith("S") && source.length === 56) {
         return source;
     }
