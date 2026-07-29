@@ -7,6 +7,7 @@ import { vacuumDatabase } from "../db/database.js";
 import { aggregateDailyCostSnapshots } from "../db/repositories.js";
 import { getLogger } from "../logging/index.js";
 import type { Logger } from "../logging/types.js";
+import { daemonCycleDuration, daemonCyclesSkipped } from "../observability/metrics/daemon.js";
 
 // Resolve the child logger lazily so that a runtime reconfiguration of the
 // global logger (e.g. the daemon command's `--log-format json`) is in effect
@@ -123,6 +124,8 @@ async function executeCycle(
             `resolved: ${result.alertsResolved}, ` +
             `errors: ${result.errors.length}`,
         );
+        const cycleDurationSec = (result.cycleFinishedAt.getTime() - result.cycleStartedAt.getTime()) / 1000;
+        daemonCycleDuration.observe(cycleDurationSec);
 
         // Step 2: deliver any pending alerts that accumulated during detection.
         // Errors here are isolated — they must NOT kill the cycle or surface to onCycle.
@@ -198,6 +201,7 @@ async function scheduledTick(
     onCycle: DaemonOptions["onCycle"],
 ): Promise<void> {
     if (cycleInFlight) {
+        daemonCyclesSkipped.inc();
         logger().debug("Skipping tick — previous cycle still in flight");
         return;
     }

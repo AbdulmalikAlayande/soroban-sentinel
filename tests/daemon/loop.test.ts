@@ -30,6 +30,20 @@ vi.mock("../../src/alerts/dispatcher.js", () => ({
     deliverPendingAlerts: (...args: unknown[]) => mockDeliverPendingAlerts(...args),
 }));
 
+const mockMetrics = vi.hoisted(() => ({
+    observe: vi.fn(),
+    inc: vi.fn(),
+}));
+
+vi.mock("../../src/observability/metrics/daemon.js", () => ({
+    daemonCycleDuration: {
+        observe: mockMetrics.observe,
+    },
+    daemonCyclesSkipped: {
+        inc: mockMetrics.inc,
+    },
+}));
+
 vi.mock("../../src/db/database.js", async (importOriginal) => {
     const actual = await importOriginal<typeof import("../../src/db/database.js")>();
     return {
@@ -83,6 +97,8 @@ describe("daemon loop", () => {
             failed: 0,
             errors: [],
         });
+        mockMetrics.observe.mockClear();
+        mockMetrics.inc.mockClear();
     });
 
     afterEach(() => {
@@ -415,6 +431,54 @@ describe("daemon loop", () => {
             // If old timer was still alive, we'd see 4 calls at 10s
             await vi.advanceTimersByTimeAsync(5000);
             expect(mockRunMonitorCycle).toHaveBeenCalledTimes(4);
+        });
+    });
+
+    // =========================================================================
+    // 6.5 METRICS
+    // =========================================================================
+    describe("Metrics recording", () => {
+        it("records the cycle duration histogram upon completion", async () => {
+            const start = new Date(1000);
+            const finish = new Date(3500); // 2.5s duration
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult({
+                cycleStartedAt: start,
+                cycleFinishedAt: finish,
+            }));
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+            
+            // Should be called with the duration in seconds
+            expect(mockMetrics.observe).toHaveBeenCalledTimes(1);
+            expect(mockMetrics.observe).toHaveBeenCalledWith(2.5);
+        });
+
+        it("increments the skipped cycle counter when a tick is skipped", async () => {
+            let resolveSlowCycle!: (value: MonitorCycleResult) => void;
+            
+            // First cycle resolves immediately (initial)
+            mockRunMonitorCycle.mockResolvedValueOnce(makeCycleResult());
+
+            // Second cycle is slow — takes longer than the interval
+            mockRunMonitorCycle.mockImplementationOnce(() => {
+                return new Promise<MonitorCycleResult>((resolve) => {
+                    resolveSlowCycle = resolve;
+                });
+            });
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+            
+            // Trigger the second cycle (slow)
+            await vi.advanceTimersByTimeAsync(5000);
+            
+            // Trigger the third cycle while second is still in flight (this causes the skip)
+            await vi.advanceTimersByTimeAsync(5000);
+            
+            expect(mockMetrics.inc).toHaveBeenCalledTimes(1);
+            
+            // Resolve slow cycle so it finishes
+            resolveSlowCycle(makeCycleResult());
+            await vi.advanceTimersByTimeAsync(0);
         });
     });
 
