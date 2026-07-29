@@ -186,7 +186,7 @@ export async function sendDiscordAlert(webhookUrl: string, event: AlertEvent): P
     });
 
     const customMessage = renderAlertTemplate("discord", event);
-    let payload: any;
+    let payload: Record<string, unknown>;
 
     if (customMessage !== null) {
         try {

@@ -25,7 +25,7 @@ export const registerPauseCommand = (program: Command): void => {
                 setContractActiveStatus(db, contractId, false);
                 console.log(chalk.green(`Successfully paused monitoring for ${formatContractID(contractId)}.`));
                 console.log(chalk.dim(`Run 'sorokeep resume ${formatContractID(contractId)}' to re-enable.`));
-            } catch (error: any) {
+            } catch (error: unknown) {
                 const errorMessage = error instanceof Error ? error.message : String(error);
                 logger.error("Pause command failed", { error: errorMessage });
                 console.log(chalk.red(`Failed to pause contract: ${errorMessage}`));

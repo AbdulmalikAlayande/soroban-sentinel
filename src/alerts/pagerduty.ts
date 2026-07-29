@@ -120,7 +120,7 @@ export class PagerDutyChannel {
         logger.debug(`Sending PagerDuty event: ${event.type}`, { contractId: event.contractId });
 
         const customMessage = renderAlertTemplate("pagerduty", event);
-        const payload = buildPayload(event) as any;
+        const payload = buildPayload(event) as Record<string, unknown>;
         payload.routing_key = this.#routingKey;
 
         if (customMessage !== null) {
@@ -129,7 +129,7 @@ export class PagerDutyChannel {
                 if (parsed && typeof parsed === "object") {
                     if (parsed.payload && typeof parsed.payload === "object") {
                         payload.payload = {
-                            ...payload.payload,
+                            ...(payload.payload as Record<string, unknown>),
                             ...parsed.payload,
                         };
                     }
@@ -143,10 +143,12 @@ export class PagerDutyChannel {
                         }
                     }
                 } else {
-                    payload.payload.summary = customMessage;
+                    const innerPayload = payload.payload as Record<string, unknown>;
+                    innerPayload.summary = customMessage;
                 }
             } catch {
-                payload.payload.summary = customMessage;
+                const innerPayload = payload.payload as Record<string, unknown>;
+                innerPayload.summary = customMessage;
             }
         }
 

@@ -12,7 +12,9 @@ function severityEmoji(event: AlertEvent): string {
     return "⚠️";
 }
 
-function buildBlocks(event: AlertEvent): any[] {
+type SlackBlock = Record<string, unknown>;
+
+function buildBlocks(event: AlertEvent): SlackBlock[] {
     const icon = severityEmoji(event);
     const contractDisplay = event.contractName ?? event.contractId;
 
@@ -38,7 +40,7 @@ function buildBlocks(event: AlertEvent): any[] {
         },
     };
 
-    let details: any;
+    let details: SlackBlock;
     if (event.type === "resource_alert") {
         const usageStr = event.resource.currentUsage.toLocaleString();
         const limitStr = event.resource.limit.toLocaleString();
@@ -130,7 +132,7 @@ export class SlackChannel {
         logger.debug(`Sending Slack alert to webhook`, { type: event.type, contractId: event.contractId });
 
         const customMessage = renderAlertTemplate("slack", event);
-        let payload: { text?: string; blocks?: any[] };
+        let payload: { text?: string; blocks?: SlackBlock[] };
 
         if (customMessage !== null) {
             try {
