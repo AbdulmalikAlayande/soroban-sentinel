@@ -64,6 +64,18 @@ export function registerBuiltinChannels(): void {
             missingTargetError: "Error: --channel is required when --type is telegram (use chat ID or @channelname).",
             supportsSigning: false,
         },
+        {
+            name: "teams",
+            channel: {
+                send: async (target, event) => {
+                    const { sendTeamsAlert } = await import("./teams.js");
+                    await sendTeamsAlert(target, event);
+                },
+            },
+            targetOption: "url",
+            missingTargetError: "Error: --url is required when --type is teams. Paste the full Teams webhook URL.",
+            supportsSigning: false,
+        },
     ];
 
     for (const def of definitions) {
