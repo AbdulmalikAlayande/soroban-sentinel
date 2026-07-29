@@ -30,7 +30,7 @@ export function getTemplateContext(event: AlertEvent) {
     if (isResourceAlert) {
         resourceLabel = event.resource.type === "cpu" ? "CPU" : "Memory";
         resourceUnit = event.resource.type === "cpu" ? "instructions" : "bytes";
-    } else {
+    } else if (event.type !== "budget_exhausted") {
         entryLabel = event.entry.label ?? event.entry.type;
     }
 
@@ -81,6 +81,18 @@ export function getTemplateContext(event: AlertEvent) {
             entryLabel: event.entry.label,
             diffType: event.diff.diffType,
             detectedAtLedger: event.detectedAtLedger,
+            timestamp: event.timestamp,
+        };
+    } else if (event.type === "budget_exhausted") {
+        dedupKey = `sorokeep:${event.network}:${event.contractId}:budget:${event.budget.billingCycle}`;
+        customDetails = {
+            contractId: event.contractId,
+            contractName: event.contractName,
+            network: event.network,
+            billingCycle: event.budget.billingCycle,
+            limitXlm: event.budget.limitXlm,
+            spentXlm: event.budget.spentXlm,
+            estimatedFeeXlm: event.budget.estimatedFeeXlm,
             timestamp: event.timestamp,
         };
     } else {

@@ -25,6 +25,8 @@ function buildBlocks(event: AlertEvent): any[] {
     } else if (event.type === "state_changed") {
         const diffLabel = event.diff.diffType.charAt(0).toUpperCase() + event.diff.diffType.slice(1);
         status = `State ${diffLabel}`;
+    } else if (event.type === "budget_exhausted") {
+        status = "Budget Exhausted";
     } else {
         status = "Alert Resolved";
     }
@@ -63,6 +65,19 @@ function buildBlocks(event: AlertEvent): any[] {
                 { type: "mrkdwn", text: `*Change Type:*\n${event.diff.diffType}` },
                 { type: "mrkdwn", text: `*Old Value:*\n\`${oldVal}\`` },
                 { type: "mrkdwn", text: `*New Value:*\n\`${newVal}\`` },
+            ],
+        };
+    } else if (event.type === "budget_exhausted") {
+        const remaining = (event.budget.limitXlm - event.budget.spentXlm).toFixed(7);
+        details = {
+            type: "section",
+            fields: [
+                { type: "mrkdwn", text: `*Billing Cycle:*\n${event.budget.billingCycle}` },
+                { type: "mrkdwn", text: `*Network:*\n${event.network}` },
+                { type: "mrkdwn", text: `*Limit:*\n${event.budget.limitXlm.toFixed(7)} XLM` },
+                { type: "mrkdwn", text: `*Spent:*\n${event.budget.spentXlm.toFixed(7)} XLM` },
+                { type: "mrkdwn", text: `*Remaining:*\n${remaining} XLM` },
+                { type: "mrkdwn", text: `*Est. Fee:*\n${event.budget.estimatedFeeXlm.toFixed(7)} XLM` },
             ],
         };
     } else {

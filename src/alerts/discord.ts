@@ -49,6 +49,10 @@ function buildTitle(event: AlertEvent): string {
         return `${icon} State ${diffLabel} — ${contractDisplay}`;
     }
 
+    if (event.type === "budget_exhausted") {
+        return `${icon} Budget Exhausted — ${contractDisplay}`;
+    }
+
     const level = event.severity === "critical" ? "CRITICAL" : "Warning";
     return `${icon} TTL ${level} — ${contractDisplay}`;
 }
@@ -108,6 +112,35 @@ function buildEmbed(event: AlertEvent): DiscordEmbed {
                 name: "New Value",
                 value: `\`${event.diff.newValueXdr ?? "(none)"}\``,
                 inline: false,
+            }
+        );
+    } else if (event.type === "budget_exhausted") {
+        const remaining = (event.budget.limitXlm - event.budget.spentXlm).toFixed(7);
+        fields.push(
+            {
+                name: "Billing Cycle",
+                value: event.budget.billingCycle,
+                inline: true,
+            },
+            {
+                name: "Limit",
+                value: `${event.budget.limitXlm.toFixed(7)} XLM`,
+                inline: true,
+            },
+            {
+                name: "Spent",
+                value: `${event.budget.spentXlm.toFixed(7)} XLM`,
+                inline: true,
+            },
+            {
+                name: "Remaining",
+                value: `${remaining} XLM`,
+                inline: true,
+            },
+            {
+                name: "Estimated Fee",
+                value: `${event.budget.estimatedFeeXlm.toFixed(7)} XLM`,
+                inline: true,
             }
         );
     } else {
