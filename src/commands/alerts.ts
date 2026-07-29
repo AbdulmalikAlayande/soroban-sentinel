@@ -6,11 +6,11 @@ import {
     insertAlertConfig,
     getAlertConfigsForContract,
     getAlertConfigById,
-    deleteAlertConfig,
     insertResourceAlertConfig,
     getContract,
     getAlertHistory,
     getChannelDeliveryStats,
+    addTargetToAlertConfig,
 } from "../db/repositories.js";
 import { formatContractID, formatTimeToCloseLedger } from "../utils/formatting.js";
 import { deliverSingleAlert } from "../alerts/dispatcher.js";
@@ -30,10 +30,11 @@ export function registerAlertsCommand(program: Command): void {
         .command("add")
         .description("Add a new alert configuration (TTL-based or resource-based)")
         .requiredOption("--contract <id>", "The contract ID to alert on")
-        .requiredOption("--type <type>", "The notification channel type ('webhook', 'slack', 'discord', 'telegram', or 'pagerduty')")
+        .option("--type <type>", "The notification channel type ('webhook', 'slack', 'discord', 'telegram', or 'pagerduty')")
         .option("--url <url>", "Webhook URL (required if --type is webhook or discord)")
         .option("--channel <channel>", "Slack channel (required if --type is slack)")
         .option("--routing-key <key>", "PagerDuty integration key (required if --type is pagerduty)")
+        .option("--target <type:target>", "Additional targets (repeatable)", (val, prev: string[]) => prev.concat([val]), [])
         .option("--secret <secret>", "HMAC secret for webhook signing (auto-generated if omitted for webhooks)")
         .option("--threshold <ledgers>", "Threshold in number of ledgers (for TTL-based alerts)", (val) => parseInt(val, 10))
         .option("--cpu-limit <instructions>", "CPU instruction limit for resource alerts (default: 100,000,000)", (val) => parseInt(val, 10))
@@ -63,31 +64,67 @@ export function registerAlertsCommand(program: Command): void {
                 process.exit(1);
             }
 
-            let target = "";
+            let primaryType = options.type;
+            let primaryTarget = "";
             let webhookSecret: string | undefined;
 
-            if (options.type === "email") {
-                // Not a registered channel — called out explicitly since it's a
-                // common ask, so the error is more helpful than a generic "unknown type".
-                console.error(chalk.red("Error: Email alerting is not yet implemented. Use 'webhook', 'slack', 'discord', 'telegram', or 'pagerduty'."));
-                process.exit(1);
+            const additionalTargets: {type: string; target: string}[] = [];
+            if (options.target) {
+                for (const t of options.target as string[]) {
+                    const parts = t.split(":");
+                    if (parts.length < 2) {
+                        console.error(chalk.red(`Error: --target must be formatted as <type>:<target> (e.g. webhook:https://...). Got: ${t}`));
+                        process.exit(1);
+                    }
+                    const ctype = parts[0];
+                    const ctarget = parts.slice(1).join(":");
+                    
+                    const cdef = getAlertChannel(ctype);
+                    if (!cdef) {
+                        console.error(chalk.red(`Error: Unknown channel type '${ctype}' in --target ${t}`));
+                        process.exit(1);
+                    }
+                    additionalTargets.push({type: ctype, target: ctarget});
+                }
             }
 
-            const channelDef = getAlertChannel(options.type);
-            if (!channelDef) {
-                const known = listAlertChannels().map((d) => d.name).join(", ");
-                console.error(chalk.red(`Error: --type must be one of: ${known}.`));
-                process.exit(1);
-            } else {
-                const targetValue = (options as Record<string, string | undefined>)[channelDef.targetOption];
-                if (!targetValue) {
-                    console.error(chalk.red(channelDef.missingTargetError));
+            if (!primaryType) {
+                if (additionalTargets.length === 0) {
+                    console.error(chalk.red("Error: You must specify either --type and a target flag (e.g., --url) or provide at least one --target <type>:<target> pair."));
                     process.exit(1);
                 }
-                target = targetValue as string;
-
-                if (channelDef.supportsSigning) {
+                const first = additionalTargets.shift()!;
+                primaryType = first.type;
+                primaryTarget = first.target;
+                
+                const channelDef = getAlertChannel(primaryType);
+                if (channelDef?.supportsSigning) {
                     webhookSecret = options.secret ?? randomBytes(32).toString("hex");
+                }
+            } else {
+                if (primaryType === "email") {
+                    // Not a registered channel — called out explicitly since it's a
+                    // common ask, so the error is more helpful than a generic "unknown type".
+                    console.error(chalk.red("Error: Email alerting is not yet implemented. Use 'webhook', 'slack', 'discord', 'telegram', or 'pagerduty'."));
+                    process.exit(1);
+                }
+
+                const channelDef = getAlertChannel(primaryType);
+                if (!channelDef) {
+                    const known = listAlertChannels().map((d) => d.name).join(", ");
+                    console.error(chalk.red(`Error: --type must be one of: ${known}.`));
+                    process.exit(1);
+                } else {
+                    const targetValue = (options as Record<string, string | undefined>)[channelDef.targetOption];
+                    if (!targetValue) {
+                        console.error(chalk.red(channelDef.missingTargetError));
+                        process.exit(1);
+                    }
+                    primaryTarget = targetValue as string;
+
+                    if (channelDef.supportsSigning) {
+                        webhookSecret = options.secret ?? randomBytes(32).toString("hex");
+                    }
                 }
             }
 
@@ -98,17 +135,21 @@ export function registerAlertsCommand(program: Command): void {
                     process.exit(1);
                 }
 
-                insertAlertConfig(db, {
+                const alertConfigId = insertAlertConfig(db, {
                     contract_id: contractId,
-                    channel_type: options.type,
-                    channel_target: target,
+                    channel_type: primaryType,
+                    channel_target: primaryTarget,
                     threshold_ledgers: threshold,
                     webhook_secret: webhookSecret,
                 });
 
+                for (const addT of additionalTargets) {
+                    addTargetToAlertConfig(db, alertConfigId, addT.type, addT.target);
+                }
+
                 console.log(
                     chalk.green(
-                        `Successfully added alert config: type=${options.type}, target=${target}, threshold=${threshold} ledgers`
+                        `Successfully added alert config: type=${primaryType}, target=${primaryTarget}, threshold=${threshold} ledgers`
                     )
                 );
 
@@ -126,18 +167,24 @@ export function registerAlertsCommand(program: Command): void {
                     process.exit(1);
                 }
 
-                insertResourceAlertConfig(db, {
+                const resourceAlertConfigId = insertResourceAlertConfig(db, {
                     contract_id: contractId,
-                    channel_type: options.type,
-                    channel_target: target,
+                    channel_type: primaryType,
+                    channel_target: primaryTarget,
                     cpu_limit: cpuLimit,
                     mem_limit: memLimit,
                     webhook_secret: webhookSecret,
                 });
 
+                // Resource alerts don't currently support multiple targets in schema, but we can log that we aren't supporting it if there are additional targets, 
+                // or just leave them since the issue only requested it for standard alert_configs.
+                if (additionalTargets.length > 0) {
+                    console.log(chalk.yellow("Warning: Additional targets are currently only supported for TTL alerts, not resource alerts."));
+                }
+
                 console.log(
                     chalk.green(
-                        `Successfully added alert config: type=${options.type}, target=${target}, CPU=${cpuLimit.toLocaleString()} instr, MEM=${memLimit.toLocaleString()} bytes`
+                        `Successfully added alert config: type=${primaryType}, target=${primaryTarget}, CPU=${cpuLimit.toLocaleString()} instr, MEM=${memLimit.toLocaleString()} bytes`
                     )
                 );
 

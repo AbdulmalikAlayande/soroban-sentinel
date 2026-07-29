@@ -49,6 +49,13 @@ export interface AlertConfig {
     created_at: Date;
 }
 
+export interface AlertConfigTarget {
+    id: number;
+    alert_config_id: number;
+    channel_type: string;
+    channel_target: string;
+}
+
 export interface AlertFired {
     id: number;
     alert_config_id: number;
@@ -273,14 +280,34 @@ export function insertAlertConfig(db: Database.Database, config: {
   channel_target: string;
   threshold_ledgers: number;
   webhook_secret?: string;
-}): void {
-  db.prepare(`
+}): number {
+  const info = db.prepare(`
     INSERT INTO alert_configs (contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret)
     VALUES (@contract_id, @channel_type, @channel_target, @threshold_ledgers, @webhook_secret)
   `).run({
     ...config,
     webhook_secret: config.webhook_secret ?? null,
   });
+  return info.lastInsertRowid as number;
+}
+
+export function getAlertConfigTargets(db: Database.Database, alertConfigId: number): AlertConfigTarget[] {
+  return db.prepare(`SELECT * FROM alert_config_targets WHERE alert_config_id = ?`).all(alertConfigId) as AlertConfigTarget[];
+}
+
+export function addTargetToAlertConfig(db: Database.Database, alertConfigId: number, channelType: string, channelTarget: string): void {
+  db.prepare(`
+    INSERT INTO alert_config_targets (alert_config_id, channel_type, channel_target)
+    VALUES (?, ?, ?)
+    ON CONFLICT DO NOTHING
+  `).run(alertConfigId, channelType, channelTarget);
+}
+
+export function removeTargetFromAlertConfig(db: Database.Database, alertConfigId: number, channelType: string, channelTarget: string): void {
+  db.prepare(`
+    DELETE FROM alert_config_targets
+    WHERE alert_config_id = ? AND channel_type = ? AND channel_target = ?
+  `).run(alertConfigId, channelType, channelTarget);
 }
 
 export function getAlertConfigById(db: Database.Database, id: number): AlertConfig | undefined {
@@ -301,11 +328,17 @@ export function recordAlertFired(db: Database.Database, alert: {
   contract_entry_id: number;
   fired_at_ledger: number;
   ttl_at_fire: number;
+  channel_type?: string;
+  channel_target?: string;
 }): void {
   db.prepare(`
-    INSERT INTO alerts_fired (alert_config_id, contract_entry_id, fired_at_ledger, ttl_at_fire)
-    VALUES (@alert_config_id, @contract_entry_id, @fired_at_ledger, @ttl_at_fire)
-  `).run(alert);
+    INSERT INTO alerts_fired (alert_config_id, contract_entry_id, fired_at_ledger, ttl_at_fire, channel_type, channel_target)
+    VALUES (@alert_config_id, @contract_entry_id, @fired_at_ledger, @ttl_at_fire, @channel_type, @channel_target)
+  `).run({
+    ...alert,
+    channel_type: alert.channel_type ?? null,
+    channel_target: alert.channel_target ?? null
+  });
 }
 
 export function hasUnresolvedAlert(db: Database.Database, alertConfigId: number, entryId: number): boolean {
@@ -669,8 +702,8 @@ export function getUndeliveredAlerts(
             ce.entry_key_xdr AS entryKeyXdr,
             ce.entry_type    AS entryType,
             ce.label         AS entryLabel,
-            ac.channel_type  AS channelType,
-            ac.channel_target AS channelTarget,
+            COALESCE(af.channel_type, ac.channel_type)  AS channelType,
+            COALESCE(af.channel_target, ac.channel_target) AS channelTarget,
             ac.threshold_ledgers AS thresholdLedgers,
             ac.webhook_secret AS webhookSecret,
             af.ttl_at_fire   AS remainingTTL,
@@ -763,8 +796,8 @@ export function getAlertHistory(db: Database.Database, contractId: string, limit
     const sql = `
         SELECT
             af.id              AS alertFiredId,
-            ac.channel_type    AS channelType,
-            ac.channel_target  AS channelTarget,
+            COALESCE(af.channel_type, ac.channel_type)    AS channelType,
+            COALESCE(af.channel_target, ac.channel_target)  AS channelTarget,
             ce.entry_key_xdr   AS entryKeyXdr,
             ce.entry_type      AS entryType,
             ce.label           AS entryLabel,
@@ -816,8 +849,8 @@ export function getChannelDeliveryStats(
     const params: any[] = [MAX_RETRY_COUNT, MAX_RETRY_COUNT, channelType];
     
     if (days !== undefined && days > 0) {
-        sql += \` AND af.fired_at >= datetime('now', ?)\`;
-        params.push(\`-\${days} days\`);
+        sql += ` AND af.fired_at >= datetime('now', ?)`;
+        params.push(`-${days} days`);
     }
 
     const row = db.prepare(sql).get(...params) as any;
