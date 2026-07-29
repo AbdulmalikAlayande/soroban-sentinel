@@ -661,7 +661,7 @@ Email is not yet implemented. The CLI will reject `--type email` with a clear er
 ## Roadmap
 
 - Plugin interface for alert channels — so a new channel (Matrix, MS Teams, email) doesn't require touching core dispatch code or the DB schema
-- Prometheus `/metrics` endpoint for teams with existing observability stacks
+- Prometheus `/metrics` endpoint for teams with existing observability stacks — see [Observability Setup Guide](docs/observability.md)
 - Reusable GitHub Action wrapping `sorokeep check` for CI-integrated TTL checks
 - Web dashboard for visual TTL monitoring
 - Multi-contract batch operations
