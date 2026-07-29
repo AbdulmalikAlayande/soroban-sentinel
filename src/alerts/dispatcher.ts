@@ -4,6 +4,8 @@ import { buildAlertEvent, type AlertEvent, type AlertChannel } from "./types.js"
 import { registerBuiltinChannels } from "./builtins.js";
 import { listAlertChannels } from "./registry.js";
 import { getLogger } from "../logging/index.js";
+import { incrementAlertCounter, observeAlertDuration } from "../observability/metrics/alerts.js";
+
 
 const logger = getLogger().child({ component: "AlertDispatcher" });
 
@@ -63,24 +65,31 @@ export async function deliverPendingAlerts(
             firedAtLedger: alert.firedAtLedger,
         });
 
+        const startTime = performance.now();
+
         try {
             const channel = channels[alert.channelType];
             if (!channel) throw new Error(`Unknown channel type: ${alert.channelType}`);
             await channel.send(alert.channelTarget, event, alert.webhookSecret);
             markAlertDelivered(db, alert.alertFiredId);
             result.delivered++;
+            incrementAlertCounter("delivered", alert.channelType);
+            const duration = (performance.now() - startTime) / 1000;
+            observeAlertDuration(alert.channelType, duration);
             logger.info(
-                `Alert delivered — id: ${alert.alertFiredId}, channel: ${alert.channelType}, contract: ${alert.contractId}`,
+                `Alert delivered — id: ${alert.alertFiredId}, channel: ${alert.channelType}, contract: ${alert.contractId}, duration: ${duration}s`,
             );
         } catch (err: unknown) {
             const message = err instanceof Error ? err.message : String(err);
             result.failed++;
             result.errors.push(message);
+            incrementAlertCounter("failed", alert.channelType);
             incrementRetryCount(db, alert.alertFiredId);
             const nextRetry = alert.retryCount + 1;
 
             if (nextRetry >= MAX_RETRY_COUNT) {
                 result.abandoned++;
+                incrementAlertCounter("abandoned", alert.channelType);
                 logger.error(
                     `Alert abandoned after ${MAX_RETRY_COUNT} retries — id: ${alert.alertFiredId}, channel: ${alert.channelType}, error: ${message}`,
                 );
