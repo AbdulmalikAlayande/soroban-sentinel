@@ -5,6 +5,9 @@ import { vacuumDatabase } from "../db/database.js";
 import { aggregateDailyCostSnapshots, getAllContracts } from "../db/repositories.js";
 import { getLogger } from "../logging/index.js";
 import type { Logger } from "../logging/types.js";
+import { initTracing, getTracer, endSpan } from "../observability/tracing.js";
+import { context, trace } from "@opentelemetry/api";
+import type { Span } from "@opentelemetry/api";
 
 // Resolve the child logger lazily so that a runtime reconfiguration of the
 // global logger (e.g. the daemon command's `--log-format json`) is in effect
@@ -118,8 +121,29 @@ async function executeCycle(
 ): Promise<void> {
     cycleInFlight = true;
 
+    await initTracing();
+    const tracer = getTracer();
+    const cycleSpan: Span = tracer.startSpan("DaemonCycle");
+    const cycleCtx = trace.setSpan(context.active(), cycleSpan);
+
+    // Helper to create a child span of the cycle span
+    function startChildSpan(name: string): Span {
+        return tracer.startSpan(name, undefined, cycleCtx);
+    }
+
     try {
-        const result = await runMonitorCycle(db, network, rpcUrl, feeSponsorSecret);
+        // ── Monitor Phase ──
+        const monitorSpan = startChildSpan("Monitor");
+        let result: MonitorCycleResult;
+        let monitorError: unknown;
+        try {
+            result = await runMonitorCycle(db, network, rpcUrl, feeSponsorSecret);
+        } catch (err) {
+            monitorError = err;
+            throw err;
+        } finally {
+            endSpan(monitorSpan, monitorError);
+        }
 
         logger().debug(
             `Cycle complete — checked: ${result.contractsChecked}, ` +
@@ -130,8 +154,10 @@ async function executeCycle(
             `errors: ${result.errors.length}`,
         );
 
+        // ── Deliver Phase ──
         // Step 2: deliver any pending alerts that accumulated during detection.
         // Errors here are isolated — they must NOT kill the cycle or surface to onCycle.
+        const deliverSpan = startChildSpan("Deliver");
         try {
             const delivery = await deliverPendingAlerts(db, network);
             if (delivery.attempted > 0) {
@@ -145,13 +171,17 @@ async function executeCycle(
             // but guard defensively.
             logger().error("deliverPendingAlerts threw unexpectedly", deliveryErr);
         }
+        endSpan(deliverSpan);
 
+        // ── Auto-Extend Phase ──
         // Step 3: aggregate daily cost snapshots for past extension history.
+        const autoExtendSpan = startChildSpan("Auto-Extend");
         try {
             aggregateDailyCostSnapshots(db);
         } catch (snapshotErr: unknown) {
             logger().error("aggregateDailyCostSnapshots threw unexpectedly", snapshotErr);
         }
+        endSpan(autoExtendSpan);
 
         safeOnCycle(onCycle, result, undefined);
     } catch (err: unknown) {
@@ -159,6 +189,7 @@ async function executeCycle(
         logger().error(`Cycle failed: ${error.message}`, err);
         safeOnCycle(onCycle, null, error);
     } finally {
+        endSpan(cycleSpan);
         cycleInFlight = false;
     }
 }
