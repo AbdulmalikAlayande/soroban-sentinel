@@ -8,6 +8,7 @@ import {
     getAlertConfigsForContract,
     insertAlertConfig,
     getResourceAlertConfigsForContract,
+    setAlertConfigEnabled,
 } from "../../src/db/repositories";
 
 let mockDb: Database.Database;
@@ -537,6 +538,72 @@ describe("alerts command", () => {
                 channel_target: "https://example.com/webhook",
                 threshold_ledgers: 1000,
             });
+
+    describe("alerts enable / disable", () => {
+        it("disables an alert config without deleting it", () => {
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "webhook",
+                channel_target: "https://example.com/webhook",
+                threshold_ledgers: 1000,
+            });
+            const configId = getAlertConfigsForContract(mockDb, contractID)[0]!.id;
+
+            parse(["alerts", "disable", "--id", configId.toString()]);
+
+            const configs = getAlertConfigsForContract(mockDb, contractID);
+            expect(configs).toHaveLength(1);
+            expect(configs[0]!.enabled).toBe(0);
+            expect(consoleLogSpy).toHaveBeenCalledWith(
+                expect.stringContaining(`Alert config ID ${configId} disabled`)
+            );
+        });
+
+        it("re-enables a disabled alert config", () => {
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "webhook",
+                channel_target: "https://example.com/webhook",
+                threshold_ledgers: 1000,
+            });
+            const configId = getAlertConfigsForContract(mockDb, contractID)[0]!.id;
+
+            parse(["alerts", "disable", "--id", configId.toString()]);
+            parse(["alerts", "enable", "--id", configId.toString()]);
+
+            const configs = getAlertConfigsForContract(mockDb, contractID);
+            expect(configs[0]!.enabled).toBe(1);
+            expect(consoleLogSpy).toHaveBeenCalledWith(
+                expect.stringContaining(`Alert config ID ${configId} enabled`)
+            );
+        });
+
+        it("exits with 1 when disabling a non-existent config", () => {
+            parseExpectExit(["alerts", "disable", "--id", "99999"]);
+            expect(exitSpy).toHaveBeenCalledWith(1);
+            expect(consoleErrorSpy).toHaveBeenCalledWith(
+                expect.stringContaining("Alert config ID 99999 not found")
+            );
+        });
+
+        it("exits with 1 when enabling a non-existent config", () => {
+            parseExpectExit(["alerts", "enable", "--id", "99999"]);
+            expect(exitSpy).toHaveBeenCalledWith(1);
+            expect(consoleErrorSpy).toHaveBeenCalledWith(
+                expect.stringContaining("Alert config ID 99999 not found")
+            );
+        });
+
+        it("exits with 1 when --id is not a number (disable)", () => {
+            parseExpectExit(["alerts", "disable", "--id", "not-a-number"]);
+            expect(exitSpy).toHaveBeenCalledWith(1);
+        });
+
+        it("exits with 1 when --id is not a number (enable)", () => {
+            parseExpectExit(["alerts", "enable", "--id", "not-a-number"]);
+            expect(exitSpy).toHaveBeenCalledWith(1);
+        });
+    });
 
             const configs = getAlertConfigsForContract(mockDb, contractID);
             const configId = configs[0]!.id;
