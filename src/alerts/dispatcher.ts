@@ -7,6 +7,8 @@ import { sendPagerDutyAlert } from "./pagerduty.js";
 import { sendDiscordAlert } from "./discord.js";
 import { sendTelegramAlert } from "./telegram.js";
 import { getLogger } from "../logging/index.js";
+import { getAlertChannel } from "./registry.js";
+import "./builtins.js"; // Ensure builtins are registered
 
 const logger = getLogger().child({ component: "AlertDispatcher" });
 
@@ -46,6 +48,15 @@ export async function deliverPendingAlerts(
     logger.debug(`Dispatcher: ${pending.length} undelivered alert(s) for network ${network}`);
 
     for (const alert of pending) {
+        const channelDef = getAlertChannel(alert.channelType);
+        const maxRetries = channelDef?.maxRetries ?? MAX_RETRY_COUNT;
+
+        if (alert.retryCount >= maxRetries) {
+            // Already abandoned in a previous cycle, but DB query still fetched it 
+            // because DB uses the global MAX_RETRY_COUNT. Just ignore it.
+            continue;
+        }
+
         result.attempted++;
 
         const event = buildAlertEvent({
@@ -78,15 +89,15 @@ export async function deliverPendingAlerts(
             incrementRetryCount(db, alert.alertFiredId);
             const nextRetry = alert.retryCount + 1;
 
-            if (nextRetry >= MAX_RETRY_COUNT) {
+            if (nextRetry >= maxRetries) {
                 result.abandoned++;
                 logger.error(
-                    `Alert abandoned after ${MAX_RETRY_COUNT} retries — id: ${alert.alertFiredId}, ` +
+                    `Alert abandoned after ${maxRetries} retries — id: ${alert.alertFiredId}, ` +
                     `channel: ${alert.channelType}, error: ${message}`,
                 );
             } else {
                 logger.warn(
-                    `Alert delivery failed (attempt ${nextRetry}/${MAX_RETRY_COUNT}) — ` +
+                    `Alert delivery failed (attempt ${nextRetry}/${maxRetries}) — ` +
                     `id: ${alert.alertFiredId}, channel: ${alert.channelType}, error: ${message}`,
                 );
             }
