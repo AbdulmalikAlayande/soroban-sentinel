@@ -154,7 +154,7 @@ export class OpsgenieChannel {
                 "or pass the key directly.",
             );
         }
-        this.#apiKey = apiKey;
+        this.#apiKey = apiKey.trim();
     }
 
     async send(event: AlertEvent): Promise<void> {
