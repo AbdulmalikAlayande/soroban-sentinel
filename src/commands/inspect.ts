@@ -3,7 +3,7 @@ import chalk from "chalk";
 import ora from "ora";
 import { getDatabase } from "../db/database.js";
 import { inspectContract } from "../core/inspect.js";
-import { statusIndicator, formatContractID } from "../utils/formatting.js";
+import { statusIndicator, formatContractID, printOutput } from "../utils/formatting.js";
 import { getLogger } from "../logging/index.js";
 
 const logger = getLogger().child({ component: "InspectCommand" });
@@ -15,8 +15,9 @@ export function registerInspectCommand(program: Command): void {
         .option("--entry <keyOrShortcut>", "Specific entry key XDR or shortcut (e.g. balance:<address>)", collect, [])
         .option("--network <network>", "The stellar network to use (testnet, mainnet)")
         .option("-r, --rpc-url <url>", "Custom RPC URL")
-        .action(async (contractId: string, options: { entry: string[]; network?: string; rpcUrl?: string }) => {
-            const spinner = ora(`Inspecting contract ${formatContractID(contractId)}...`).start();
+        .option("--json", "Output machine-readable JSON")
+        .action(async (contractId: string, options: { entry: string[]; network?: string; rpcUrl?: string; json?: boolean }) => {
+            const spinner = options.json ? null : ora(`Inspecting contract ${formatContractID(contractId)}...`).start();
             try {
                 const db = getDatabase();
                 const result = await inspectContract(db, contractId, {
@@ -26,6 +27,11 @@ export function registerInspectCommand(program: Command): void {
                 });
 
                 if (!result.success) {
+                    if (options.json) {
+                        printOutput({ success: false, error: result.error, contractId }, true);
+                        process.exit(1);
+                        return;
+                    }
                     spinner.fail(chalk.red("Inspection failed"));
                     console.error(chalk.red(result.error));
                     process.exit(1);
@@ -33,6 +39,15 @@ export function registerInspectCommand(program: Command): void {
                 }
 
                 const displayName = result.contractName ?? formatContractID(contractId);
+                if (options.json) {
+                    printOutput({
+                        ...result,
+                        contractId,
+                        contractName: displayName,
+                        requestedEntries: options.entry,
+                    }, true);
+                    return;
+                }
                 spinner.succeed(chalk.green(`Inspected ${displayName}`));
 
                 console.log();
@@ -78,6 +93,11 @@ export function registerInspectCommand(program: Command): void {
                 }
             } catch (error: any) {
                 const msg = error instanceof Error ? error.message : String(error);
+                if (options.json) {
+                    printOutput({ success: false, error: msg, contractId }, true);
+                    process.exit(1);
+                    return;
+                }
                 spinner.fail(chalk.red("Error"));
                 console.error(chalk.red(`Error: ${msg}`));
                 logger.error("Inspect command failed", { error: msg });

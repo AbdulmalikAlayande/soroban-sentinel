@@ -9,6 +9,7 @@ import {
   classifyTTL,
   formatContractID,
   formatTimeToCloseLedger,
+  printOutput,
   statusIndicator,
 } from "../utils/formatting.js";
 import { watchContract } from "../core/watch.js";
@@ -39,7 +40,8 @@ export const registerWatchCommand = (program: Command): void => {
       "--from-file <path>",
       "Load multiple contract registrations from a YAML or JSON file",
     )
-    .action(async (contractId, options) => {
+    .option("--json", "Output machine-readable JSON")
+    .action(async (contractId, options: { json?: boolean; fromFile?: string; network?: string; name?: string; rpcUrl?: string; storageKeys?: string; noIntrospection?: boolean } = {}) => {
       try {
         const db = getDatabase();
 
@@ -74,6 +76,17 @@ export const registerWatchCommand = (program: Command): void => {
             });
           }
 
+          if (options.json) {
+            printOutput({
+              success: results.every((result) => result.status === "SUCCESS"),
+              results,
+            }, true);
+            if (results.some((result) => result.status === "FAILED")) {
+              process.exit(1);
+            }
+            return;
+          }
+
           printBatchSummary(results);
 
           if (results.some((result) => result.status === "FAILED")) {
@@ -83,6 +96,16 @@ export const registerWatchCommand = (program: Command): void => {
         }
 
         if (!contractId) {
+          if (options.json) {
+            printOutput({
+              success: false,
+              error: "contract_id_required",
+              message: "A contract ID is required unless --from-file is provided.",
+            }, true);
+            process.exit(1);
+            return;
+          }
+
           console.log(
             chalk.red(
               "A contract ID is required unless --from-file is provided.",
@@ -105,8 +128,23 @@ export const registerWatchCommand = (program: Command): void => {
           noIntrospection: options.noIntrospection,
         });
         if (!watchResult.success) {
+          if (options.json) {
+            printOutput({ success: false, error: watchResult.error, contractId, network: options.network }, true);
+            process.exit(1);
+            return;
+          }
+
           spinner.fail(chalk.red(watchResult.error));
           process.exit(1);
+          return;
+        }
+        if (options.json) {
+          printOutput({
+            ...watchResult,
+            contractId,
+            network: options.network,
+            name: options.name,
+          }, true);
           return;
         }
         spinner.succeed(
@@ -161,6 +199,11 @@ export const registerWatchCommand = (program: Command): void => {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
         logger.error("Watch command failed", { error: errorMessage });
+        if (options.json) {
+          printOutput({ success: false, error: errorMessage, message: "Failed to watch contract" }, true);
+          process.exit(1);
+          return;
+        }
         console.log(chalk.red(`Failed to watch contract: ${errorMessage}`));
         process.exit(1);
       }

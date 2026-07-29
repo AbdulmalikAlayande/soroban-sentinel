@@ -6,6 +6,14 @@ export function convertLedgerCloseTimeToSeconds(ledgerCloseTime: number): number
     return ledgerCloseTime * AVG_LEDGER_CLOSE_TIME_IN_SECONDS;
 }
 
+export function printOutput(data: unknown, jsonFlag = false): void {
+    if (!jsonFlag) {
+        return;
+    }
+
+    console.log(JSON.stringify(data, null, 2));
+}
+
 export function formatTimeToCloseLedger(ledgers: number): string {
   if (ledgers <= 0) {
     return "Ledger Expired";
