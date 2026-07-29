@@ -118,5 +118,8 @@ describe("registerBuiltinChannels", () => {
         expect(getAlertChannel("telegram")?.missingTargetError).toBe(
             "Error: --channel is required when --type is telegram (use chat ID or @channelname).",
         );
+        expect(getAlertChannel("opsgenie")?.missingTargetError).toBe(
+            "Error: --routing-key is required when --type is opsgenie (use your Opsgenie API key).",
+        );
     });
 });

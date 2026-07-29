@@ -124,7 +124,14 @@ async function postJson(url: string, apiKey: string, body: unknown): Promise<voi
     }
 
     if (!response.ok) {
-        throw new Error(`Opsgenie API request failed: HTTP ${response.status}`);
+        let detail = "";
+        try {
+            const errorBody = await response.json() as { message?: string };
+            if (errorBody.message) detail = `: ${errorBody.message}`;
+        } catch {
+            // body not JSON — omit detail
+        }
+        throw new Error(`Opsgenie API request failed: HTTP ${response.status}${detail}`);
     }
 }
 
@@ -149,8 +156,10 @@ export class OpsgenieChannel {
         const alias = buildAlias(event);
 
         if (event.type === "alert_resolved") {
-            // Map resolution events to Opsgenie's close-alert endpoint
-            const closeUrl = `${OPSGENIE_ALERTS_URL}/${encodeURIComponent(alias)}/close`;
+            // Map resolution events to Opsgenie's close-alert endpoint.
+            // `identifierType=alias` is required — without it Opsgenie defaults
+            // to searching by alert ID and the close will silently find nothing.
+            const closeUrl = `${OPSGENIE_ALERTS_URL}/${encodeURIComponent(alias)}/close?identifierType=alias`;
             await postJson(closeUrl, this.#apiKey, {
                 note: buildMessage(event),
             });

@@ -272,7 +272,16 @@ describe("sendOpsgenieAlert", () => {
 
             expect(mockFetch).toHaveBeenCalledTimes(1);
             const [url] = mockFetch.mock.calls[0]!;
-            expect(url).toMatch(/\/v2\/alerts\/.+\/close$/);
+            expect(url).toMatch(/\/v2\/alerts\/.+\/close/);
+        });
+
+        it("includes identifierType=alias as a query param so Opsgenie looks up by alias not ID", async () => {
+            mockFetch.mockResolvedValue(makeOkResponse());
+
+            await sendOpsgenieAlert("api-key", makeTTLEvent({ type: "alert_resolved", severity: "info" }));
+
+            const [url] = mockFetch.mock.calls[0]!;
+            expect(url as string).toContain("identifierType=alias");
         });
 
         it("does NOT call the flat /v2/alerts create endpoint for alert_resolved", async () => {
@@ -434,6 +443,18 @@ describe("sendOpsgenieAlert", () => {
                 .rejects.toThrow(/Opsgenie API request failed: HTTP 401/);
         });
 
+        it("includes the Opsgenie error body detail in the thrown message", async () => {
+            mockFetch.mockResolvedValue(
+                new Response(JSON.stringify({ message: "API key does not exist" }), {
+                    status: 403,
+                    headers: { "content-type": "application/json" },
+                }),
+            );
+
+            await expect(sendOpsgenieAlert("bad-key", makeTTLEvent()))
+                .rejects.toThrow(/API key does not exist/);
+        });
+
         it("throws on 429 rate-limit response", async () => {
             mockFetch.mockResolvedValue(makeErrorResponse(429));
 
@@ -454,6 +475,27 @@ describe("sendOpsgenieAlert", () => {
             await expect(
                 sendOpsgenieAlert("api-key", makeTTLEvent({ type: "alert_resolved", severity: "info" })),
             ).rejects.toThrow(/Opsgenie API request failed: HTTP 404/);
+        });
+
+        it("aborts the request after the 10-second timeout", async () => {
+            vi.useFakeTimers();
+
+            // fetch hangs indefinitely — only the abort signal resolves it
+            mockFetch.mockImplementation(
+                (_url: string, init: RequestInit) =>
+                    new Promise<Response>((_resolve, reject) => {
+                        init.signal?.addEventListener("abort", () =>
+                            reject(new DOMException("The operation was aborted.", "AbortError")),
+                        );
+                    }),
+            );
+
+            const promise = sendOpsgenieAlert("api-key", makeTTLEvent());
+            vi.advanceTimersByTime(10_000);
+
+            await expect(promise).rejects.toThrow(/abort/i);
+
+            vi.useRealTimers();
         });
     });
 });
