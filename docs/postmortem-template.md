@@ -20,7 +20,7 @@ What happened? What was the user-visible impact?
 ## Timeline
 
 <!--
-Chronological log of key events in the local timezone + UTC.
+Chronological log of key events in UTC.
 Include detection, escalation, mitigation, and resolution timestamps.
 -->
 
@@ -51,7 +51,7 @@ Walk through the evidence collected during the investigation:
    ```bash
    journalctl -u sorokeep-daemon --since "YYYY-MM-DD HH:MM" --until "YYYY-MM-DD HH:MM"
    # or, for Docker:
-   docker logs sorokeep-daemon --since 2025-01-01T00:00:00Z
+   docker logs sorokeep-daemon --since "YYYY-MM-DDTHH:MM:SSZ"
    ```
 
    Look for: error traces, unexpected restarts, polling gaps, failed RPC calls,
@@ -133,9 +133,8 @@ Gaps that made the incident worse or longer than necessary.
 ## Action Items
 
 <!--
-Specific, owner-assigned, tracked work items. Use checkboxes so this
-section doubles as a tracking board. Leave the PR / issue number blank
-until the item is filed.
+Specific, owner-assigned, tracked work items. Leave the Tracker column
+blank until the item is filed.
 -->
 
 | # | Action | Owner | Tracker |
