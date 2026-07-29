@@ -5,6 +5,7 @@ import { vacuumDatabase } from "../db/database.js";
 import { aggregateDailyCostSnapshots, getAllContracts } from "../db/repositories.js";
 import { getLogger } from "../logging/index.js";
 import type { Logger } from "../logging/types.js";
+import { createMetricsServer, stopMetricsServer } from "../observability/server.js";
 
 // Resolve the child logger lazily so that a runtime reconfiguration of the
 // global logger (e.g. the daemon command's `--log-format json`) is in effect
@@ -27,6 +28,8 @@ export interface DaemonOptions {
     vacuumIntervalMs?: number;
     /** Called after every cycle with the result (or null + error on failure). */
     onCycle?: (result: MonitorCycleResult | null, error?: Error) => void;
+    /** If set, start a Prometheus /metrics HTTP server on this port. Off by default. */
+    metricsPort?: number;
 }
 
 // ─── Module-level state ───────────────────────────────────────────────────────
@@ -71,6 +74,16 @@ export async function startDaemon(
     lastVacuumAt = Date.now();
     logger().info(`Daemon starting — network: ${network}, interval: ${intervalMs}ms`);
 
+    // Start the metrics server if a port was configured.
+    if (options?.metricsPort !== undefined) {
+        try {
+            createMetricsServer(options.metricsPort);
+            logger().info(`Metrics server listening on http://127.0.0.1:${options.metricsPort}/metrics`);
+        } catch (err: unknown) {
+            logger().error("Failed to start metrics server", err);
+        }
+    }
+
     // Run the initial cycle immediately.
     await executeCycle(db, network, rpcUrl, options?.feeSponsorSecret, onCycle);
 
@@ -94,6 +107,10 @@ export function stopDaemon(): void {
         intervalHandle = null;
         logger().info("Daemon stopped");
     }
+
+    // Shut down the metrics server if it was started.
+    void stopMetricsServer();
+
     // Do NOT reset cycleInFlight here — let executeCycle's finally-block
     // handle it when the in-flight cycle completes.  Resetting it early
     // breaks the re-entrance guard if startDaemon() is called before the
