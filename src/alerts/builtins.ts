@@ -64,6 +64,18 @@ export function registerBuiltinChannels(): void {
             missingTargetError: "Error: --channel is required when --type is telegram (use chat ID or @channelname).",
             supportsSigning: false,
         },
+        {
+            name: "email",
+            channel: {
+                send: async (target, event) => {
+                    const { sendEmailAlert } = await import("./email.js");
+                    await sendEmailAlert(target, event);
+                },
+            },
+            targetOption: "channel",
+            missingTargetError: "Error: --channel is required when --type is email (use the recipient email address).",
+            supportsSigning: false,
+        },
     ];
 
     for (const def of definitions) {
