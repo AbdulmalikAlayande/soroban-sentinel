@@ -208,9 +208,10 @@ async function processContract(
 
         const remainingTTL = rpcEntry.remainingTTL;
 
-        for (const alertConfig of alertConfigs) {
-            const isBelowThreshold = remainingTTL < alertConfig.threshold_ledgers;
+       for (const alertConfig of alertConfigs) {
+    if (!alertConfig.enabled) continue; // disabled configs never fire
 
+    const isBelowThreshold = remainingTTL < alertConfig.threshold_ledgers;
             if (isBelowThreshold) {
                 // 4. TTL is below threshold — fire if not already unresolved.
                 if (!hasUnresolvedAlert(db, alertConfig.id, entry.id)) {
