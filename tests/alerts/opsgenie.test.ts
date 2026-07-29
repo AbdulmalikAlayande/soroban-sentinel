@@ -494,7 +494,7 @@ describe("sendOpsgenieAlert", () => {
                 const promise = sendOpsgenieAlert("api-key", makeTTLEvent());
                 vi.advanceTimersByTime(10_000);
 
-                await expect(promise).rejects.toThrow(/abort/i);
+                await expect(promise).rejects.toThrow("Opsgenie API request timed out after 10 seconds");
             } finally {
                 vi.useRealTimers();
             }
