@@ -20,7 +20,7 @@ import { getLogger } from "../logging/index.js";
 import { formatSecretKey } from "../utils/formatting.js";
 import { VaultResolver } from "./vault.js";
 import { loadConfig } from "../utils/config.js";
-import { buildTTLDriftAlertEvent } from "../alerts/types.js";
+import { buildTTLDriftAlertEvent, type AlertChannel } from "../alerts/types.js";
 import { deliverSingleAlert } from "../alerts/dispatcher.js";
 
 const logger = getLogger().child({ component: "Extension" });
@@ -210,6 +210,13 @@ export async function extendEntries(
     const entries = getEntriesForContract(db, contractId);
     const entryMap = new Map(entries.map(e => [e.entry_key_xdr, e]));
 
+    // Compute drift here so it can be persisted alongside the extension record.
+    let driftLedgers: number | undefined;
+    if (freshTTLs.entries.length > 0) {
+        const maxActualTTL = Math.max(...freshTTLs.entries.map(e => e.remainingTTL));
+        driftLedgers = maxActualTTL - extendToLedgers;
+    }
+
     const updateDb = db.transaction(() => {
         for (const freshEntry of freshTTLs.entries) {
             const dbEntry = entryMap.get(freshEntry.entryKeyXdr);
@@ -229,6 +236,7 @@ export async function extendEntries(
                 mem_bytes: txResult.memBytes,
                 is_anomaly: isAnomaly,
                 executed_at_ledger: freshTTLs.latestLedger,
+                drift_ledgers: driftLedgers ?? null,
             });
 
             upsertEntry(db, {
@@ -257,6 +265,7 @@ export async function extendEntries(
         memBytes: txResult.memBytes,
         isAnomaly,
         anomalyDetails,
+        driftLedgers,
     };
 }
 
@@ -266,6 +275,7 @@ export async function runAutoExtensions(
     rpcUrl?: string,
     sponsorSecret?: string,
     driftToleranceLedgers: number = DEFAULT_DRIFT_TOLERANCE_LEDGERS,
+    channels?: Record<string, AlertChannel>,
 ): Promise<AutoExtensionResult> {
     const result: AutoExtensionResult = {
         contractsChecked: 0,
@@ -389,19 +399,17 @@ export async function runAutoExtensions(
                         );
                     } else {
                         // ── TTL drift check (issue #495) ─────────────────────────────
-                        let driftLedgers: number | undefined;
+                        // Drift is already computed and persisted by extendEntries.
+                        // Fire an alert if the drift exceeds tolerance.  Isolated in its
+                        // own try/catch so a failure here never rolls back a completed extension.
+                        let driftLedgers = extResult.driftLedgers;
 
-                        const freshTTLs = await client.getEntryTTLs(entryKeys);
-                        if (freshTTLs.entries.length > 0) {
-                            const maxActualTTL = Math.max(...freshTTLs.entries.map(e => e.remainingTTL));
-                            const drift = maxActualTTL - policy.target_ttl_ledgers;
-                            driftLedgers = drift;
-
-                            if (Math.abs(drift) > driftToleranceLedgers) {
+                        try {
+                            if (driftLedgers !== undefined && Math.abs(driftLedgers) > driftToleranceLedgers) {
                                 logger.warn(
                                     `TTL drift detected for ${contract.id}: ` +
-                                    `target=${policy.target_ttl_ledgers}, actual=${maxActualTTL}, ` +
-                                    `drift=${drift} (tolerance=${driftToleranceLedgers})`,
+                                    `target=${policy.target_ttl_ledgers}, actual=${policy.target_ttl_ledgers + driftLedgers}, ` +
+                                    `drift=${driftLedgers} (tolerance=${driftToleranceLedgers})`,
                                 );
 
                                 const driftEvent = buildTTLDriftAlertEvent({
@@ -409,8 +417,8 @@ export async function runAutoExtensions(
                                     contractName: contract.name ?? null,
                                     network,
                                     targetTTLLedgers: policy.target_ttl_ledgers,
-                                    actualTTLLedgers: maxActualTTL,
-                                    driftLedgers: drift,
+                                    actualTTLLedgers: policy.target_ttl_ledgers + driftLedgers,
+                                    driftLedgers,
                                     toleranceLedgers: driftToleranceLedgers,
                                     txHash: extResult.txHash,
                                     detectedAtLedger: extResult.ledger,
@@ -424,10 +432,14 @@ export async function runAutoExtensions(
                                             cfg.channel_target,
                                             driftEvent,
                                             cfg.webhook_secret,
+                                            channels,
                                         ),
                                     ),
                                 );
                             }
+                        } catch (driftErr: unknown) {
+                            const driftMsg = driftErr instanceof Error ? driftErr.message : String(driftErr);
+                            logger.warn(`TTL drift alert delivery failed for ${contract.id}: ${driftMsg}`);
                         }
 
                         result.contractsExtended++;

@@ -5,6 +5,7 @@ import {
     insertContract,
     upsertEntry,
     upsertExtensionPolicy,
+    insertAlertConfig,
     getEntriesForContract,
     recordExtension,
     getExtensionHistory,
@@ -816,11 +817,6 @@ describe("Core Extension Logic", () => {
         // =========================================================================
 
         it("does not fire a drift alert when actual TTL is within tolerance", async () => {
-            const mockDeliverSingleAlert = vi.fn().mockResolvedValue(true);
-            vi.doMock("../../src/alerts/dispatcher.js", () => ({
-                deliverSingleAlert: mockDeliverSingleAlert,
-            }));
-
             const contractId = seedContract(db);
 
             upsertEntry(db, {
@@ -837,6 +833,14 @@ describe("Core Extension Logic", () => {
                 target_ttl_ledgers: 100000,
                 extend_when_below_ledgers: 20000,
                 keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            // Seed an alert config so deliverSingleAlert would be reachable if drift fired
+            insertAlertConfig(db, {
+                contract_id: contractId,
+                channel_type: "webhook",
+                channel_target: "https://example.com/hook",
+                threshold_ledgers: 20000,
             });
 
             savedEnv["TEST_SECRET_KEY"] = process.env["TEST_SECRET_KEY"];
@@ -861,20 +865,16 @@ describe("Core Extension Logic", () => {
                 }],
             });
 
-            const result = await runAutoExtensions(db, "testnet");
+            const mockChannel = { send: vi.fn().mockResolvedValue(undefined) };
+            const result = await runAutoExtensions(db, "testnet", undefined, undefined, 100, { webhook: mockChannel });
 
             expect(result.contractsExtended).toBe(1);
-            // Drift = 50, tolerance = 100 → no alert
-            expect(mockDeliverSingleAlert).not.toHaveBeenCalled();
+            // Drift = 50, tolerance = 100 → no alert fired
+            expect(mockChannel.send).not.toHaveBeenCalled();
             expect(result.extensions[0]!.driftLedgers).toBe(50);
         });
 
         it("fires exactly one drift alert per extension when actual TTL exceeds tolerance", async () => {
-            const mockDeliverSingleAlert = vi.fn().mockResolvedValue(true);
-            vi.doMock("../../src/alerts/dispatcher.js", () => ({
-                deliverSingleAlert: mockDeliverSingleAlert,
-            }));
-
             const contractId = seedContract(db);
 
             upsertEntry(db, {
@@ -891,6 +891,14 @@ describe("Core Extension Logic", () => {
                 target_ttl_ledgers: 100000,
                 extend_when_below_ledgers: 20000,
                 keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            // Seed one alert config — expect exactly one deliverSingleAlert call
+            insertAlertConfig(db, {
+                contract_id: contractId,
+                channel_type: "webhook",
+                channel_target: "https://example.com/hook",
+                threshold_ledgers: 20000,
             });
 
             savedEnv["TEST_SECRET_KEY"] = process.env["TEST_SECRET_KEY"];
@@ -915,15 +923,23 @@ describe("Core Extension Logic", () => {
                 }],
             });
 
-            // Use a tight tolerance so the drift definitely triggers
-            const result = await runAutoExtensions(db, "testnet", undefined, undefined, 100);
+            const mockChannel = { send: vi.fn().mockResolvedValue(undefined) };
+            const result = await runAutoExtensions(db, "testnet", undefined, undefined, 100, { webhook: mockChannel });
 
             expect(result.contractsExtended).toBe(1);
             expect(result.extensions[0]!.driftLedgers).toBe(-2000);
-            // One deliverSingleAlert call per alert config for this contract (0 configs
-            // registered in this test seed → deliverSingleAlert not called, but drift IS recorded)
-            // Verify drift was computed correctly
-            expect(Math.abs(result.extensions[0]!.driftLedgers!)).toBeGreaterThan(100);
+            // Exactly one call — one alert config, one extension
+            expect(mockChannel.send).toHaveBeenCalledTimes(1);
+            expect(mockChannel.send).toHaveBeenCalledWith(
+                "https://example.com/hook",
+                expect.objectContaining({
+                    type: "ttl_drift",
+                    driftLedgers: -2000,
+                    targetTTLLedgers: 100000,
+                    actualTTLLedgers: 98000,
+                }),
+                null,
+            );
         });
     });
 });
