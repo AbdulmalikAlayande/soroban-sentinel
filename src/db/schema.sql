@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS alert_configs (
     channel_target TEXT NOT NULL,
     threshold_ledgers INTEGER NOT NULL,
     webhook_secret TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
