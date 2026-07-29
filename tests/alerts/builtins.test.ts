@@ -7,6 +7,7 @@ const mockSlackSend = vi.fn().mockResolvedValue(undefined);
 const mockSendPagerDutyAlert = vi.fn().mockResolvedValue(undefined);
 const mockSendDiscordAlert = vi.fn().mockResolvedValue(undefined);
 const mockSendTelegramAlert = vi.fn().mockResolvedValue(undefined);
+const mockSendTeamsAlert = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("../../src/alerts/webhook.js", () => ({
     sendWebhookAlert: (...args: unknown[]) => mockSendWebhookAlert(...args),
@@ -28,6 +29,9 @@ vi.mock("../../src/alerts/discord.js", () => ({
 vi.mock("../../src/alerts/telegram.js", () => ({
     sendTelegramAlert: (...args: unknown[]) => mockSendTelegramAlert(...args),
 }));
+vi.mock("../../src/alerts/teams.js", () => ({
+    sendTeamsAlert: (...args: unknown[]) => mockSendTeamsAlert(...args),
+}));
 
 const event = { type: "threshold_crossed", contractId: "C1" } as unknown as AlertEvent;
 
@@ -40,15 +44,15 @@ describe("registerBuiltinChannels", () => {
         registerBuiltinChannels();
     });
 
-    it("registers exactly the five built-in channel names", () => {
+    it("registers exactly the six built-in channel names", () => {
         const names = listAlertChannels().map((d) => d.name).sort();
-        expect(names).toEqual(["discord", "pagerduty", "slack", "telegram", "webhook"]);
+        expect(names).toEqual(["discord", "pagerduty", "slack", "teams", "telegram", "webhook"]);
     });
 
     it("is idempotent — calling it again does not throw", async () => {
         const { registerBuiltinChannels } = await import("../../src/alerts/builtins");
         expect(() => registerBuiltinChannels()).not.toThrow();
-        expect(listAlertChannels()).toHaveLength(5);
+        expect(listAlertChannels()).toHaveLength(6);
     });
 
     it("only webhook supports HMAC signing", () => {
@@ -63,6 +67,7 @@ describe("registerBuiltinChannels", () => {
         ["pagerduty", "routingKey"],
         ["discord", "url"],
         ["telegram", "channel"],
+        ["teams", "url"],
     ] as const)("%s reads its target from --%s", (name, targetOption) => {
         expect(getAlertChannel(name)?.targetOption).toBe(targetOption);
     });
@@ -92,6 +97,11 @@ describe("registerBuiltinChannels", () => {
         expect(mockSendTelegramAlert).toHaveBeenCalledWith("@mychannel", event);
     });
 
+    it("teams definition delegates to sendTeamsAlert (lazily imported)", async () => {
+        await getAlertChannel("teams")!.channel.send("https://contoso.webhook.office.com/webhookb2/123", event);
+        expect(mockSendTeamsAlert).toHaveBeenCalledWith("https://contoso.webhook.office.com/webhookb2/123", event);
+    });
+
     it("each missingTargetError message matches the historical CLI wording", () => {
         expect(getAlertChannel("webhook")?.missingTargetError).toBe(
             "Error: --url is required when --type is webhook.",
@@ -107,6 +117,9 @@ describe("registerBuiltinChannels", () => {
         );
         expect(getAlertChannel("telegram")?.missingTargetError).toBe(
             "Error: --channel is required when --type is telegram (use chat ID or @channelname).",
+        );
+        expect(getAlertChannel("teams")?.missingTargetError).toBe(
+            "Error: --url is required when --type is teams. Paste the full Teams webhook URL.",
         );
     });
 });
