@@ -1,0 +1,42 @@
+groups:
+  - name: sorokeep-alerts
+    rules:
+      # TTL-remaining below a threshold (adjust the threshold, e.g., 17280 ledgers is roughly 1 day)
+      - alert: SorokeepEntryTTLLow
+        expr: sorokeep_entry_ttl_remaining_ledgers < 17280
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sorokeep entry TTL is running low"
+          description: "Entry TTL remaining ledgers is below the safe threshold."
+      
+      # Budget-remaining near zero (adjust the threshold based on your typical monthly budget and usage)
+      - alert: SorokeepBudgetNearZero
+        expr: sorokeep_budget_remaining < 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sorokeep contract budget is near zero"
+          description: "The remaining budget for the contract has fallen below the critical threshold."
+
+      # Alert-delivery failure rate above a threshold (adjust the rate threshold, e.g., > 10% failure rate)
+      - alert: SorokeepAlertDeliveryFailureRateHigh
+        expr: rate(sorokeep_alert_delivery_failures_total[5m]) / rate(sorokeep_alert_deliveries_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High alert delivery failure rate"
+          description: "More than 10% of alert deliveries have failed in the last 5 minutes."
+
+      # Daemon cycle duration exceeding the poll interval
+      - alert: SorokeepDaemonCycleTooLong
+        expr: sorokeep_daemon_cycle_duration_seconds > 60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sorokeep daemon cycle takes longer than poll interval"
+          description: "The daemon cycle duration is taking longer than the configured interval."
