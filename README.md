@@ -660,7 +660,7 @@ Email is not yet implemented. The CLI will reject `--type email` with a clear er
 
 ## Roadmap
 
-Track overall progress on the [Sorokeep Roadmap board](https://github.com/AbdulmalikAlayande/sorokeep/projects) — issues are grouped by phase (`phase-1` through `phase-15`) with open/in-progress/closed status.
+Track overall progress on the [Sorokeep Roadmap board](https://github.com/AbdulmalikAlayande/sorokeep/projects) — issues are grouped by phase (`phase-1` through `phase-15`) with Todo/In Progress/Done status.
 
 > **Note:** The board is configured via a proposal at [`docs/roadmap-board-proposal.md`](docs/roadmap-board-proposal.md).
 > If you're a maintainer, follow that doc to create and link the board.
