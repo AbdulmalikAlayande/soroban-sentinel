@@ -237,6 +237,58 @@ describe("Database Repositories", () => {
             undelivered = repo.getUndeliveredAlerts(db, "testnet");
             expect(undelivered.length).toBe(0);
         });
+
+        it("computes channel delivery stats correctly", () => {
+            repo.insertContract(db, { id: "C2", network: "testnet" });
+            repo.upsertEntry(db, { contract_id: "C2", entry_key_xdr: "xdr2", entry_type: "wasm" });
+            const entryId = repo.getEntriesForContract(db, "C2")[0].id;
+
+            // Multiple configs for same channel type
+            repo.insertAlertConfig(db, { contract_id: "C2", channel_type: "slack", channel_target: "C_A", threshold_ledgers: 100 });
+            repo.insertAlertConfig(db, { contract_id: "C2", channel_type: "slack", channel_target: "C_B", threshold_ledgers: 100 });
+            
+            const configs = repo.getAlertConfigsForContract(db, "C2");
+            const configIdA = configs[0].id;
+            const configIdB = configs[1].id;
+
+            // We need 10 attempts total: 8 delivered, 2 abandoned (retry_count >= 5)
+            // 5 delivered for config A
+            for (let i = 0; i < 5; i++) {
+                repo.recordAlertFired(db, { alert_config_id: configIdA, contract_entry_id: entryId, fired_at_ledger: 1000, ttl_at_fire: 100 });
+            }
+            // 3 delivered for config B
+            for (let i = 0; i < 3; i++) {
+                repo.recordAlertFired(db, { alert_config_id: configIdB, contract_entry_id: entryId, fired_at_ledger: 1000, ttl_at_fire: 100 });
+            }
+            
+            // Mark the first 8 as delivered
+            const history = repo.getAlertHistory(db, "C2");
+            for (let i = 0; i < 8; i++) {
+                repo.markAlertDelivered(db, history[i].alertFiredId);
+            }
+
+            // 2 abandoned for config A
+            for (let i = 0; i < 2; i++) {
+                repo.recordAlertFired(db, { alert_config_id: configIdA, contract_entry_id: entryId, fired_at_ledger: 1000, ttl_at_fire: 100 });
+            }
+
+            // Increment retry_count to 5 for the abandoned ones
+            const historyAfterAbandoned = repo.getAlertHistory(db, "C2");
+            const undelivered = historyAfterAbandoned.filter(a => a.delivered === 0);
+            for (const alert of undelivered) {
+                for (let r = 0; r < 5; r++) {
+                    repo.incrementRetryCount(db, alert.alertFiredId);
+                }
+            }
+
+            const stats = repo.getChannelDeliveryStats(db, "slack");
+            expect(stats).toBeDefined();
+            expect(stats.totalAttempts).toBe(10);
+            expect(stats.deliveredCount).toBe(8);
+            expect(stats.abandonedCount).toBe(2);
+            expect(stats.failedCount).toBe(0);
+            expect(stats.successRate).toBe(80);
+        });
     });
 
     describe("Extension History & Cost Snapshots", () => {
