@@ -248,11 +248,6 @@ describe("sendOpsgenieAlert", () => {
         it("sets priority P3 for info severity", async () => {
             mockFetch.mockResolvedValue(makeOkResponse());
 
-            await sendOpsgenieAlert("api-key", makeTTLEvent({ type: "alert_resolved", severity: "info" }));
-
-            // alert_resolved goes to the close endpoint, so test info priority on a resource event
-            vi.clearAllMocks();
-            mockFetch.mockResolvedValue(makeOkResponse());
             await sendOpsgenieAlert("api-key", makeResourceEvent({ severity: "info" }));
 
             const [, options] = mockFetch.mock.calls[0]!;
