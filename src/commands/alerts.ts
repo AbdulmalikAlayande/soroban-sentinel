@@ -14,6 +14,10 @@ import {
 import { formatContractID, formatTimeToCloseLedger } from "../utils/formatting.js";
 import { deliverSingleAlert } from "../alerts/dispatcher.js";
 import { buildAlertEvent } from "../alerts/types.js";
+import { getAlertChannel, listAlertChannels } from "../alerts/registry.js";
+import { registerBuiltinChannels } from "../alerts/builtins.js";
+
+registerBuiltinChannels();
 
 export function registerAlertsCommand(program: Command): void {
     const alerts = program
@@ -61,43 +65,29 @@ export function registerAlertsCommand(program: Command): void {
             let target = "";
             let webhookSecret: string | undefined;
 
-            if (options.type === "webhook") {
-                if (!options.url) {
-                    console.error(chalk.red("Error: --url is required when --type is webhook."));
-                    process.exit(1);
-                }
-                target = options.url;
-                webhookSecret = options.secret ?? randomBytes(32).toString("hex");
-            } else if (options.type === "slack") {
-                if (!options.channel) {
-                    console.error(chalk.red("Error: --channel is required when --type is slack."));
-                    process.exit(1);
-                }
-                target = options.channel;
-            } else if (options.type === "pagerduty") {
-                if (!options.routingKey) {
-                    console.error(chalk.red("Error: --routing-key is required when --type is pagerduty."));
-                    process.exit(1);
-                }
-                target = options.routingKey;
-            } else if (options.type === "discord") {
-                if (!options.url) {
-                    console.error(chalk.red("Error: --url is required when --type is discord. Paste the full Discord webhook URL."));
-                    process.exit(1);
-                }
-                target = options.url;
-            } else if (options.type === "telegram") {
-                if (!options.channel) {
-                    console.error(chalk.red("Error: --channel is required when --type is telegram (use chat ID or @channelname)."));
-                    process.exit(1);
-                }
-                target = options.channel;
-            } else if (options.type === "email") {
+            if (options.type === "email") {
+                // Not a registered channel — called out explicitly since it's a
+                // common ask, so the error is more helpful than a generic "unknown type".
                 console.error(chalk.red("Error: Email alerting is not yet implemented. Use 'webhook', 'slack', 'discord', 'telegram', or 'pagerduty'."));
                 process.exit(1);
-            } else {
-                console.error(chalk.red("Error: --type must be 'webhook', 'slack', 'discord', 'telegram', or 'pagerduty'."));
+            }
+
+            const channelDef = getAlertChannel(options.type);
+            if (!channelDef) {
+                const known = listAlertChannels().map((d) => d.name).join(", ");
+                console.error(chalk.red(`Error: --type must be one of: ${known}.`));
                 process.exit(1);
+            } else {
+                const targetValue = (options as Record<string, string | undefined>)[channelDef.targetOption];
+                if (!targetValue) {
+                    console.error(chalk.red(channelDef.missingTargetError));
+                    process.exit(1);
+                }
+                target = targetValue as string;
+
+                if (channelDef.supportsSigning) {
+                    webhookSecret = options.secret ?? randomBytes(32).toString("hex");
+                }
             }
 
             if (isTTLAlert) {

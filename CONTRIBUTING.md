@@ -34,6 +34,10 @@ Read the [README](README.md) to understand what Sorokeep does and how it's struc
 
 If you want to work on something, check the [open issues](https://github.com/AbdulmalikAlayande/sorokeep/issues) first. If there's no issue for what you want to do, open one and describe the change before writing code. This prevents wasted effort on changes that don't fit the project direction.
 
+For how the pieces actually work together at runtime (the daemon cycle, fault isolation, where a new alert channel or command plugs in), read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The [Project Structure](#project-structure) section below covers the directory layout; ARCHITECTURE.md covers the data flow.
+
+If you're reporting a security issue (key leakage, unintended transactions, signature bypass), see [SECURITY.md](SECURITY.md) instead of opening a public issue. This project is also governed by a [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Quick Start
 
 You need:
@@ -262,7 +266,7 @@ The sandbox lets you test Sorokeep against a real Stellar RPC without touching p
 
 If you're new to the project, look for issues tagged `good first issue`. These are typically:
 
-- Adding a new alert channel (email, Discord, Telegram)
+- Adding a new alert channel (e.g. Matrix, Microsoft Teams, email) — see [docs/adding-an-alert-channel.md](docs/adding-an-alert-channel.md), it's a self-contained plugin registration, not a core change
 - CLI UX improvements (better error messages, colored output)
 - Documentation improvements
 - Adding test coverage for edge cases
