@@ -357,6 +357,18 @@ Generate shell autocomplete scripts for bash/zsh to enable tab completion for al
 
 Sorokeep delivers alerts through multiple channels: **webhooks**, **Slack**, **Discord**, **Telegram**, and **PagerDuty**. Each alert includes a severity level and rich context about the affected entry. Sorokeep uses a robust, decoupled detection and dispatch architecture with a database-backed queue.
 
+### Supported Channels Comparison
+
+| Channel | Auth Method | Typical Rate Limit | Payload Format | Setup Complexity |
+|---------|-------------|--------------------|----------------|------------------|
+| **Webhook** | HMAC-SHA256 (`X-Sorokeep-Signature`) / Secret | Unlimited (target dependent) | Generic JSON | Low |
+| **Slack** | Bot OAuth Token (`xoxb-...`) / Webhook URL | 1 req/sec | Slack Block Kit JSON | Low |
+| **PagerDuty** | Events API v2 Routing Key | 120 req/min | PagerDuty Event v2 JSON | Low |
+| **Discord** | Webhook URL | 30 req/min per webhook | Discord Embed JSON | Low |
+| **Telegram** | Bot Token (`SOROKEEP_TELEGRAM_BOT_TOKEN`) | 30 msg/sec overall (1 msg/sec per chat) | HTML / Markdown Formatted Text | Medium |
+
+> Need a channel not listed here? See [Adding an Alert Channel](docs/adding-an-alert-channel.md) to implement a custom channel plugin.
+
 ### Alert Lifecycle
 
 1. **Threshold Crossed** — During each monitoring cycle, if an entry's remaining TTL drops below a configured threshold, the monitor writes a `threshold_crossed` alert to the database queue.

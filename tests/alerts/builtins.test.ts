@@ -109,4 +109,23 @@ describe("registerBuiltinChannels", () => {
             "Error: --channel is required when --type is telegram (use chat ID or @channelname).",
         );
     });
+
+    it("README.md alert channel comparison table accurately reflects every registered builtin channel", async () => {
+        const fs = await import("node:fs");
+        const path = await import("node:path");
+        const readmePath = path.resolve(__dirname, "../../README.md");
+        const readmeContent = fs.readFileSync(readmePath, "utf-8");
+
+        const registeredChannels = listAlertChannels().map((ch) => ch.name.toLowerCase());
+        expect(registeredChannels.length).toBeGreaterThan(0);
+
+        // Verify that README contains a comparison table with entries for each registered channel
+        for (const channelName of registeredChannels) {
+            const regex = new RegExp(`\\|\\s*\\*\\*?${channelName}\\*\\*?\\s*\\|`, "i");
+            expect(readmeContent).toMatch(regex);
+        }
+
+        // Verify cross-link to docs/adding-an-alert-channel.md
+        expect(readmeContent).toContain("docs/adding-an-alert-channel.md");
+    });
 });
