@@ -480,22 +480,24 @@ describe("sendOpsgenieAlert", () => {
         it("aborts the request after the 10-second timeout", async () => {
             vi.useFakeTimers();
 
-            // fetch hangs indefinitely — only the abort signal resolves it
-            mockFetch.mockImplementation(
-                (_url: string, init: RequestInit) =>
-                    new Promise<Response>((_resolve, reject) => {
-                        init.signal?.addEventListener("abort", () =>
-                            reject(new DOMException("The operation was aborted.", "AbortError")),
-                        );
-                    }),
-            );
+            try {
+                // fetch hangs indefinitely — only the abort signal resolves it
+                mockFetch.mockImplementation(
+                    (_url: string, init: RequestInit) =>
+                        new Promise<Response>((_resolve, reject) => {
+                            init.signal?.addEventListener("abort", () =>
+                                reject(new DOMException("The operation was aborted.", "AbortError")),
+                            );
+                        }),
+                );
 
-            const promise = sendOpsgenieAlert("api-key", makeTTLEvent());
-            vi.advanceTimersByTime(10_000);
+                const promise = sendOpsgenieAlert("api-key", makeTTLEvent());
+                vi.advanceTimersByTime(10_000);
 
-            await expect(promise).rejects.toThrow(/abort/i);
-
-            vi.useRealTimers();
+                await expect(promise).rejects.toThrow(/abort/i);
+            } finally {
+                vi.useRealTimers();
+            }
         });
     });
 });
