@@ -1,12 +1,7 @@
-target/
-Cargo.lock
-
-# Rust toolchain
-*.rs.bk
-
 # Environment files
 .env
 .env.*
+!.env.example
 
 # Logs
 *.log
@@ -24,6 +19,14 @@ dist/
 build/
 node_modules/
 
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Config files with potential secrets
+config.yaml
+config.yml
 
 # Test / coverage output
 coverage/
@@ -33,4 +36,4 @@ PRODUCT_PITCH_Soroban-Sentinel.md
 PLANNED_ISSUES.md
 
 stdout
-prs.json  
+prs.json
