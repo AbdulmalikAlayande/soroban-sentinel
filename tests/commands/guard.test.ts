@@ -248,6 +248,31 @@ describe("Guard Command CLI", () => {
         expect(output).toContain("estimated monthly cost");
     });
 
+    it("shows lower estimated extensions/month for higher target TTL values", async () => {
+        vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
+        vi.spyOn(costs, "getExtensionCosts").mockReturnValue({
+            success: true,
+            data: {
+                summary: {
+                    totalExtensions: 10,
+                    totalCostXlm: 1.5,
+                },
+            },
+        } as any);
+
+        await runCostEstimateCommand("VALID_ID", { targetTtl: "100000,200000" });
+
+        const lines = mockLog.mock.calls.map((call) => String(call[0]));
+        const rowFor = (ttl: number) => lines.find((line) => line.startsWith(String(ttl)));
+        const getEstimatedExtensions = (ttl: number) => {
+            const row = rowFor(ttl);
+            const match = row?.match(/\s+([0-9.]+)\s+[0-9.]+ XLM/);
+            return match ? Number(match[1]) : NaN;
+        };
+
+        expect(getEstimatedExtensions(100000)).toBeGreaterThan(getEstimatedExtensions(200000));
+    });
+
     it("reports a clear message when there is no extension history", async () => {
         vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
         vi.spyOn(costs, "getExtensionCosts").mockReturnValue({
