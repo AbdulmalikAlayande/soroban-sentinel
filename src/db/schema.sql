@@ -68,6 +68,9 @@ CREATE TABLE IF NOT EXISTS alerts_fired (
 CREATE INDEX IF NOT EXISTS idx_alerts_fired_undelivered
     ON alerts_fired(delivered, retry_count);
 
+CREATE INDEX IF NOT EXISTS idx_alerts_fired_resolved_fired_at
+    ON alerts_fired(resolved, fired_at DESC);
+
 CREATE TABLE IF NOT EXISTS channel_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     public_key TEXT NOT NULL UNIQUE,
