@@ -3,6 +3,7 @@ import { Command } from "commander";
 import type Database from "better-sqlite3";
 import { getDatabaseForTesting } from "../../src/db/database";
 import { registerAlertsCommand } from "../../src/commands/alerts";
+import { registerAlertChannel } from "../../src/alerts/registry";
 import {
     insertContract,
     getAlertConfigsForContract,
@@ -759,6 +760,97 @@ describe("alerts command", () => {
             expect(consoleLogSpy).toHaveBeenCalledWith(
                 expect.stringContaining("Test alert delivered successfully")
             );
+        });
+    });
+
+    describe("alerts test-all", () => {
+        beforeEach(() => {
+            mockDeliverSingleAlert.mockReset();
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "webhook",
+                channel_target: "https://example.com/webhook",
+                threshold_ledgers: 1000,
+            });
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "slack",
+                channel_target: "#ops-alerts",
+                threshold_ledgers: 2000,
+            });
+        });
+
+        it("sends a test event to every configured channel for the contract", async () => {
+            mockDeliverSingleAlert.mockResolvedValue(true);
+
+            const program = new Command();
+            registerAlertsCommand(program);
+
+            await program.parseAsync([
+                "node", "sorokeep", "alerts", "test-all",
+                "--contract", contractID,
+            ]);
+
+            expect(mockDeliverSingleAlert).toHaveBeenCalledTimes(2);
+            expect(mockDeliverSingleAlert.mock.calls[0]![0]).toBe("webhook");
+            expect(mockDeliverSingleAlert.mock.calls[0]![1]).toBe("https://example.com/webhook");
+            expect(mockDeliverSingleAlert.mock.calls[1]![0]).toBe("slack");
+            expect(mockDeliverSingleAlert.mock.calls[1]![1]).toBe("#ops-alerts");
+
+            for (const [, , event] of mockDeliverSingleAlert.mock.calls) {
+                expect(event.type).toBe("threshold_crossed");
+                expect(event.contractId).toBe(contractID);
+            }
+        });
+
+        it("exits with 1 when any delivery fails", async () => {
+            mockDeliverSingleAlert.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+            const program = new Command();
+            registerAlertsCommand(program);
+
+            await expect(
+                program.parseAsync([
+                    "node", "sorokeep", "alerts", "test-all",
+                    "--contract", contractID,
+                ])
+            ).rejects.toThrow("process.exit called");
+
+            expect(mockDeliverSingleAlert).toHaveBeenCalledTimes(2);
+            expect(consoleErrorSpy).toHaveBeenCalledWith(
+                expect.stringContaining("1 channel(s) failed")
+            );
+            expect(exitSpy).toHaveBeenCalledWith(1);
+        });
+    });
+
+    describe("alerts channels", () => {
+        it("prints all five built-in channel names", () => {
+            parse(["alerts", "channels"]);
+
+            const output = consoleLogSpy.mock.calls.flat().join("\n");
+            expect(output).toContain("webhook");
+            expect(output).toContain("slack");
+            expect(output).toContain("pagerduty");
+            expect(output).toContain("discord");
+            expect(output).toContain("telegram");
+        });
+
+        it("includes dynamically registered plugin channels in the output", () => {
+            registerAlertChannel({
+                name: "matrix-listing-test",
+                channel: { send: vi.fn().mockResolvedValue(undefined) },
+                targetOption: "url",
+                missingTargetError: "Error: --url is required when --type is matrix-listing-test.",
+                supportsSigning: false,
+            });
+
+            parse(["alerts", "channels"]);
+
+            const output = consoleLogSpy.mock.calls.flat().join("\n");
+            expect(output).toContain("matrix-listing-test");
+            expect(output).toContain("url");
+            expect(output).toContain("no");
         });
     });
 });

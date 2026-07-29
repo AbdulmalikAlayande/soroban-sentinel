@@ -19,6 +19,21 @@ import { registerBuiltinChannels } from "../alerts/builtins.js";
 
 registerBuiltinChannels();
 
+function buildTestEvent(contractId: string, thresholdLedgers: number) {
+    return buildAlertEvent({
+        type: "threshold_crossed",
+        contractId,
+        contractName: null,
+        network: "testnet",
+        entryKeyXdr: "TEST_ENTRY_KEY",
+        entryType: "instance",
+        entryLabel: "test-entry",
+        configuredLedgers: thresholdLedgers,
+        remainingTTL: Math.floor(thresholdLedgers * 0.5),
+        firedAtLedger: 0,
+    });
+}
+
 export function registerAlertsCommand(program: Command): void {
     const alerts = program
         .command("alerts")
@@ -184,6 +199,31 @@ export function registerAlertsCommand(program: Command): void {
             console.log();
         });
 
+    // ── alerts channels ────────────────────────────────────────────────
+    alerts
+        .command("channels")
+        .description("List all registered alert channel plugins")
+        .action(() => {
+            const channels = listAlertChannels();
+
+            if (channels.length === 0) {
+                console.log(chalk.yellow("No alert channels are registered."));
+                return;
+            }
+
+            console.log();
+            console.log(chalk.bold("  Registered Alert Channels"));
+            console.log();
+            for (const channel of channels) {
+                console.log(
+                    `  Name: ${chalk.cyan(channel.name.padEnd(12))} | ` +
+                    `Target: ${chalk.yellow(channel.targetOption.padEnd(10))} | ` +
+                    `Signing: ${chalk.green(channel.supportsSigning ? "yes" : "no")}`
+                );
+            }
+            console.log();
+        });
+
     // ── alerts remove ──────────────────────────────────────────────────
     alerts
         .command("remove")
@@ -220,18 +260,7 @@ export function registerAlertsCommand(program: Command): void {
                 process.exit(1);
             }
 
-            const testEvent = buildAlertEvent({
-                type: "threshold_crossed",
-                contractId: config.contract_id,
-                contractName: null,
-                network: "testnet",
-                entryKeyXdr: "TEST_ENTRY_KEY",
-                entryType: "instance",
-                entryLabel: "test-entry",
-                configuredLedgers: config.threshold_ledgers,
-                remainingTTL: Math.floor(config.threshold_ledgers * 0.5),
-                firedAtLedger: 0,
-            });
+            const testEvent = buildTestEvent(config.contract_id, config.threshold_ledgers);
 
             console.log(`Sending test alert to ${config.channel_type}:${config.channel_target}...`);
 
@@ -246,6 +275,66 @@ export function registerAlertsCommand(program: Command): void {
                 console.log(chalk.green("Test alert delivered successfully."));
             } else {
                 console.error(chalk.red("Test alert delivery failed. Check logs for details."));
+                process.exit(1);
+            }
+        });
+
+    // ── alerts test-all ────────────────────────────────────────────────
+    alerts
+        .command("test-all")
+        .description("Send test alerts to every configured channel for a contract")
+        .requiredOption("--contract <id>", "The contract ID to test alerts for")
+        .action(async (options) => {
+            const contractId = options.contract;
+            const db = getDatabase();
+
+            const contract = getContract(db, contractId);
+            if (!contract) {
+                console.error(chalk.red(`Error: Contract ${formatContractID(contractId)} is not registered.`));
+                process.exit(1);
+            }
+
+            const configs = getAlertConfigsForContract(db, contractId);
+            if (configs.length === 0) {
+                console.log(chalk.yellow(`No alert configurations found for contract ${formatContractID(contractId)}.`));
+                return;
+            }
+
+            const results: Array<{ channelType: string; target: string; success: boolean; }> = [];
+
+            for (const config of configs) {
+                const testEvent = buildTestEvent(config.contract_id, config.threshold_ledgers);
+                console.log(`Sending test alert to ${config.channel_type}:${config.channel_target}...`);
+
+                const success = await deliverSingleAlert(
+                    config.channel_type,
+                    config.channel_target,
+                    testEvent,
+                    config.webhook_secret,
+                );
+
+                results.push({
+                    channelType: config.channel_type,
+                    target: config.channel_target,
+                    success,
+                });
+            }
+
+            console.log();
+            console.log(chalk.bold(`  Alert Connectivity Summary for ${contract.name ?? formatContractID(contractId)}`));
+            console.log();
+            for (const result of results) {
+                console.log(
+                    `  Type: ${chalk.cyan(result.channelType.padEnd(10))} | ` +
+                    `Target: ${chalk.yellow(result.target.padEnd(30))} | ` +
+                    `Status: ${result.success ? chalk.green("success") : chalk.red("failure")}`
+                );
+            }
+            console.log();
+
+            const failedCount = results.filter((result) => !result.success).length;
+            if (failedCount > 0) {
+                console.error(chalk.red(`${failedCount} channel(s) failed connectivity testing.`));
                 process.exit(1);
             }
         });
