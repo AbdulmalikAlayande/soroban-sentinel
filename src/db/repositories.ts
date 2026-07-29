@@ -41,11 +41,11 @@ export interface ExtensionPolicy {
 export interface AlertConfig {
     id: number;
     contract_id: string;
-    /** Any registered alert channel name (see src/alerts/registry.ts) — not a fixed enum. */
     channel_type: string;
     channel_target: string;
     threshold_ledgers: number;
     webhook_secret: string | null;
+    enabled: number; // NEW — 1 = enabled, 0 = disabled (SQLite integer boolean)
     created_at: Date;
 }
 
@@ -293,6 +293,10 @@ export function getAlertConfigsForContract(db: Database.Database, contractId: st
 
 export function deleteAlertConfig(db: Database.Database, id: number): void {
   db.prepare("DELETE FROM alert_configs WHERE id = ?").run(id);
+}
+
+export function setAlertConfigEnabled(db: Database.Database, id: number, enabled: boolean): void {
+  db.prepare("UPDATE alert_configs SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, id);
 }
 
 // ---------------------------- Database Access Functions For Other Schema: AlertFired----------------------------
