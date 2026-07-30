@@ -660,6 +660,11 @@ Email is not yet implemented. The CLI will reject `--type email` with a clear er
 
 ## Roadmap
 
+Track overall progress on the [Sorokeep Roadmap board](https://github.com/AbdulmalikAlayande/sorokeep/projects) — issues are grouped by phase (`phase-1` through `phase-15`) with Todo/In Progress/Done status.
+
+> **Note:** The board is configured via a proposal at [`docs/roadmap-board-proposal.md`](docs/roadmap-board-proposal.md).
+> If you're a maintainer, follow that doc to create and link the board.
+
 - Plugin interface for alert channels — so a new channel (Matrix, MS Teams, email) doesn't require touching core dispatch code or the DB schema
 - Prometheus `/metrics` endpoint for teams with existing observability stacks
 - Reusable GitHub Action wrapping `sorokeep check` for CI-integrated TTL checks
