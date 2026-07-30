@@ -8,6 +8,7 @@ import {
     formatContractID,
     formatFleetCSV,
     type FleetEntryRow,
+    type FleetStatus,
 } from "../utils/formatting.js";
 
 export function registerFleetCommand(program: Command): void {
@@ -17,9 +18,8 @@ export function registerFleetCommand(program: Command): void {
         .option("--format <format>", "Output format: 'pretty' (or 'table'), 'json', or 'csv'", "pretty")
         .option("--json", "Output machine-readable JSON (alias for --format json)")
         .action((options: { format?: string; json?: boolean } = {}) => {
-            const db = getDatabase();
-
             try {
+                const db = getDatabase();
                 const contracts = getAllContracts(db);
                 const rows: FleetEntryRow[] = [];
 
@@ -30,7 +30,7 @@ export function registerFleetCommand(program: Command): void {
                     for (const entry of entries) {
                         const liveUntilLedger = entry.live_until_ledger ?? null;
                         let remainingTTL: number | null = null;
-                        let status = "unknown";
+                        let status: FleetStatus = "unknown";
 
                         if (liveUntilLedger !== null && lastCheckedLedger !== null) {
                             remainingTTL = liveUntilLedger - lastCheckedLedger;
@@ -86,7 +86,7 @@ export function registerFleetCommand(program: Command): void {
                     const displayId = formatContractID(row.contractId, 16);
                     const typeStr = row.entryType;
                     const ttlStr = row.remainingTTL !== null ? row.remainingTTL.toLocaleString() : "unknown";
-                    const statusStr = statusIndicator(row.status as any);
+                    const statusStr = statusIndicator(row.status);
 
                     console.log(
                         `  ${displayId.padEnd(16)} | ${typeStr.padEnd(10)} | ${ttlStr.padStart(13)} | ${statusStr}`

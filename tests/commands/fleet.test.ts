@@ -157,4 +157,20 @@ describe("fleet command", () => {
         expect(output).toContain("instance");
         expect(output).not.toContain("contract_id,entry_key_xdr");
     });
+
+    it("logs an error and exits process with 1 when db initialization or query fails", () => {
+        const errorMsg = "Database connection failed";
+        vi.mocked(repoModule.getAllContracts).mockImplementation(() => {
+            throw new Error(errorMsg);
+        });
+
+        const mockConsoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+        actionFn({});
+
+        expect(mockConsoleError).toHaveBeenCalledWith(expect.stringContaining(errorMsg));
+        expect(mockExit).toHaveBeenCalledWith(1);
+
+        mockConsoleError.mockRestore();
+    });
 });

@@ -32,12 +32,15 @@ export function classifyTTL(remainingLedgers: number): TTLStatus {
     return "ok";
 }
 
-export function statusIndicator(status: TTLStatus): string {
+export type FleetStatus = TTLStatus | "unknown";
+
+export function statusIndicator(status: FleetStatus): string {
   switch (status) {
     case "ok": return chalk.bold.green("OK");
     case "warning": return chalk.bold.yellow("WARNING");
     case "critical": return chalk.bold.red("CRITICAL");
     case "expired": return chalk.bold.magenta("EXPIRED");
+    case "unknown": return chalk.bold.dim("UNKNOWN");
   }
 }
 
@@ -72,14 +75,19 @@ export interface FleetEntryRow {
     entryKeyXdr: string;
     entryType: string;
     remainingTTL: number | null;
-    status: string;
+    status: FleetStatus;
 }
 
-export function escapeCSVCell(value: any): string {
+export function escapeCSVCell(value: string | number | null | undefined): string {
     if (value === null || value === undefined) {
         return "";
     }
-    const str = String(value);
+    let str = String(value);
+    if (typeof value === "string") {
+        if (str.startsWith("=") || str.startsWith("+") || str.startsWith("-") || str.startsWith("@")) {
+            str = "'" + str;
+        }
+    }
     if (str.includes('"') || str.includes(",") || str.includes("\n") || str.includes("\r")) {
         return `"${str.replace(/"/g, '""')}"`;
     }

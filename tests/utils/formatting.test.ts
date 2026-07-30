@@ -207,4 +207,20 @@ describe("formatFleetCSV", () => {
         const result = formatFleetCSV(rows);
         expect(result).toContain('  C 1  ,,temporary,0,expired');
     });
+
+    it("protects against CSV formula injection on string values by prefixing with a single quote", () => {
+        const rows: FleetEntryRow[] = [
+            {
+                contractId: "=SUM(A1:A10)",
+                entryKeyXdr: "+123",
+                entryType: "-abc",
+                remainingTTL: -5000,
+                status: "@critical"
+            }
+        ];
+        const result = formatFleetCSV(rows);
+        // remainingTTL is a number so its negative value -5000 should NOT be prefixed with a single quote.
+        // String values starting with =, +, -, @ should be prefixed with a single quote.
+        expect(result).toContain('\'=SUM(A1:A10),\'+123,\'-abc,-5000,\'@critical');
+    });
 });
