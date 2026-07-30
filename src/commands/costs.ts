@@ -8,7 +8,7 @@ import {
     DEFAULT_FEE_PER_RENT_1KB,
 } from "../core/rent_projection.js";
 import type { RentWindowsResult } from "../core/rent_projection.js";
-import { StellarRpcClient } from "../rpc/client.js";
+import { StellarRpcClient, handleRpcUnreachableError } from "../rpc/client.js";
 import { formatContractID } from "../utils/formatting.js";
 import { loadConfig } from "../utils/config.js";
 import { getLogger } from "../logging/index.js";
@@ -193,6 +193,9 @@ export function registerCostsCommand(program: Command): void {
                 } catch (error) {
                     const message = error instanceof Error ? error.message : String(error);
                     logger.warn("Unable to fetch live fee stats; using historical projection", { error: message });
+                    if (handleRpcUnreachableError(error)) {
+                        process.exit(1);
+                    }
                 }
 
                 const multiResult = getMultiPeriodCosts(db, contractId, feeStats);
@@ -377,7 +380,9 @@ export function registerCostsCommand(program: Command): void {
             } catch (error: unknown) {
                 const msg = error instanceof Error ? error.message : String(error);
                 logger.error("Costs command failed", { error: msg });
-                console.error(chalk.red(`Error: ${msg}`));
+                if (!handleRpcUnreachableError(error)) {
+                    console.error(chalk.red(`Error: ${msg}`));
+                }
                 process.exit(1);
             }
         });

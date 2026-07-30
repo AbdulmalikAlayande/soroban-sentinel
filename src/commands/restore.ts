@@ -6,6 +6,7 @@ import { getContract, getEntriesForContract } from "../db/repositories.js";
 import { restoreEntries } from "../core/extension.js";
 import { formatContractID } from "../utils/formatting.js";
 import { getLogger } from "../logging/index.js";
+import { handleRpcUnreachableError } from "../rpc/client.js";
 
 const logger = getLogger().child({ component: "RestoreCommand" });
 
@@ -82,6 +83,7 @@ export function registerRestoreCommand(program: Command): void {
                     console.log(chalk.dim(`\n  Run 'sorokeep status ${formatContractID(contractId)}' to verify.`));
                 } else {
                     spinner.fail(chalk.red(`Restore failed: ${result.error}`));
+                    handleRpcUnreachableError(result.error);
                     if (result.txHash) {
                         console.log(`  Tx hash: ${result.txHash}`);
                     }
@@ -90,7 +92,9 @@ export function registerRestoreCommand(program: Command): void {
             } catch (error: unknown) {
                 const msg = error instanceof Error ? error.message : String(error);
                 logger.error("Restore command failed", { error: msg });
-                console.error(chalk.red(`Error: ${msg}`));
+                if (!handleRpcUnreachableError(error)) {
+                    console.error(chalk.red(`Error: ${msg}`));
+                }
                 process.exit(1);
             }
         });

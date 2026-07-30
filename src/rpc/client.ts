@@ -13,6 +13,7 @@ import {
     Asset,
 } from "@stellar/stellar-sdk";
 import { getLogger } from "../logging/index.js";
+import chalk from "chalk";
 // CostSummary removed — no longer exported from costs.js
 
 // ── Local helper types to replace `any` casts ──────────────────────────────
@@ -77,6 +78,94 @@ export function assertSimulationSuccess(sim: rpc.Api.SimulateTransactionResponse
     }
 }
 
+export class RpcUnreachableError extends Error {
+    public readonly url: string;
+    public readonly cause?: any;
+
+    constructor(url: string, options?: { cause?: any }) {
+        super(`RPC endpoint at ${url} is unreachable`);
+        this.name = "RpcUnreachableError";
+        this.url = url;
+        if (options && "cause" in options) {
+            this.cause = options.cause;
+            (this as any).cause = options.cause;
+        }
+    }
+}
+
+export function isNetworkError(error: any): boolean {
+    if (!error) return false;
+    const msg = String(error.message || "").toLowerCase();
+    const code = String(error.code || "").toUpperCase();
+
+    const networkCodes = [
+        "ECONNREFUSED",
+        "ENOTFOUND",
+        "ETIMEDOUT",
+        "EADDRNOTAVAIL",
+        "ECONNRESET",
+        "EPIPE",
+        "EHOSTUNREACH",
+        "ENETUNREACH"
+    ];
+
+    if (networkCodes.includes(code)) return true;
+
+    if (
+        msg.includes("fetch failed") ||
+        msg.includes("econnrefused") ||
+        msg.includes("enotfound") ||
+        msg.includes("etimedout") ||
+        msg.includes("econnreset") ||
+        msg.includes("timeout") ||
+        msg.includes("unreachable") ||
+        msg.includes("network error")
+    ) {
+        return true;
+    }
+
+    if (error.cause) {
+        return isNetworkError(error.cause);
+    }
+
+    return false;
+}
+
+export function handleRpcUnreachableError(error: any): boolean {
+    let url = "";
+    let hasMatch = false;
+
+    if (error && typeof error === "object") {
+        if (error.name === "RpcUnreachableError" || error.constructor?.name === "RpcUnreachableError") {
+            url = error.url || "";
+            hasMatch = true;
+        } else if (typeof error.message === "string" && error.message.includes("is unreachable")) {
+            const match = error.message.match(/RPC endpoint at (https?:\/\/[^\s]+) is unreachable/);
+            if (match) {
+                url = match[1];
+                hasMatch = true;
+            }
+        }
+    } else if (typeof error === "string" && error.includes("is unreachable")) {
+        const match = error.match(/RPC endpoint at (https?:\/\/[^\s]+) is unreachable/);
+        if (match) {
+            url = match[1];
+            hasMatch = true;
+        }
+    }
+
+    if (hasMatch) {
+        console.error(chalk.red(`\nError: RPC endpoint is unreachable: ${url}`));
+        console.error(chalk.yellow("\nSuggestions:"));
+        console.error(`- Check that the URL is correct and the endpoint is online.`);
+        console.error(`- Use the ${chalk.bold("--rpc-url")} flag to specify a different endpoint.`);
+        console.error(`- Verify your configuration in ${chalk.bold("~/.sorokeep/config.yaml")}.`);
+        console.error(`- Check Stellar network status: ${chalk.cyan("https://status.stellar.org")}\n`);
+        return true;
+    }
+    return false;
+}
+
 
 /**
  * Executes an RPC action with exponential backoff on network timeouts or 429/5xx errors.
@@ -90,9 +179,10 @@ export async function executeWithRetry<T>(action: () => Promise<T>): Promise<T> 
         try {
             return await action();
         } catch (error: unknown) {
-            const err = error as ErrorLike;
-            const isTimeout = err.code === "ETIMEDOUT" || err.code === "ECONNRESET" || err.message?.includes("timeout");
-            const status = err.response?.status ?? 0;
+            const err = error as any;
+            const originalErr = err.cause || err;
+            const isTimeout = originalErr.code === "ETIMEDOUT" || originalErr.code === "ECONNRESET" || originalErr.message?.includes("timeout");
+            const status = originalErr.response?.status ?? err.response?.status ?? 0;
             const isRetryableHttp = status === 429 || (status >= 500 && status < 600);
 
             if ((isTimeout || isRetryableHttp) && attempt < MAX_RETRIES) {
@@ -290,7 +380,34 @@ export class StellarRpcClient {
         if (!url) {
             throw new Error(`Unknown network "${network}". Use "testnet", "mainnet", or provide a custom URL.`);
         }
-        this.server = new rpc.Server(url, { allowHttp: url.startsWith("http://") });
+        const rawServer = new rpc.Server(url, { allowHttp: url.startsWith("http://") });
+        this.server = new Proxy(rawServer, {
+            get(target, prop, receiver) {
+                const value = Reflect.get(target, prop, receiver);
+                if (typeof value === "function") {
+                    return function (this: any, ...args: any[]) {
+                        try {
+                            const result = value.apply(target, args);
+                            if (result instanceof Promise) {
+                                return result.catch((error: any) => {
+                                    if (isNetworkError(error)) {
+                                        throw new RpcUnreachableError(url, { cause: error });
+                                    }
+                                    throw error;
+                                });
+                            }
+                            return result;
+                        } catch (error: any) {
+                            if (isNetworkError(error)) {
+                                throw new RpcUnreachableError(url, { cause: error });
+                            }
+                            throw error;
+                        }
+                    };
+                }
+                return value;
+            }
+        });
     }
 
     getNetwork(): string {

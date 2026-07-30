@@ -6,6 +6,7 @@ import { getContract, getEntriesForContract, upsertExtensionPolicy, getExtension
 import { simulateExtension, extendEntries, resolveSecretKey } from "../core/extension.js";
 import { formatContractID, formatTimeToCloseLedger, formatBytes, formatCpuInsns } from "../utils/formatting.js";
 import { getLogger } from "../logging/index.js";
+import { handleRpcUnreachableError } from "../rpc/client.js";
 
 const logger = getLogger().child({ component: "GuardCommand" });
 
@@ -153,6 +154,7 @@ export function registerGuardCommand(program: Command): void {
                         }
                     } else {
                          spinner.fail(chalk.red(`Simulation failed: ${result.error}`));
+                         handleRpcUnreachableError(result.error);
                      }
                      return;
 
@@ -182,6 +184,7 @@ export function registerGuardCommand(program: Command): void {
                         console.log(`  Ledger:   ${result.ledger}`);
                     } else {
                         spinner.fail(chalk.red(`Extension failed: ${result.error}`));
+                        handleRpcUnreachableError(result.error);
                         process.exit(1);
                     }
                     return;
@@ -207,7 +210,9 @@ export function registerGuardCommand(program: Command): void {
             } catch (error: unknown) {
                 const msg = error instanceof Error ? error.message : String(error);
                 logger.error("Guard command failed", { error: msg });
-                console.error(chalk.red(`Error: ${msg}`));
+                if (!handleRpcUnreachableError(error)) {
+                    console.error(chalk.red(`Error: ${msg}`));
+                }
                 process.exit(1);
             }
         });

@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { StellarRpcClient, extractResourceCosts, executeWithRetry } from "../../src/rpc/client";
+import { StellarRpcClient, extractResourceCosts, executeWithRetry, RpcUnreachableError } from "../../src/rpc/client";
 import { Contract, xdr, Keypair } from "@stellar/stellar-sdk";
 
 vi.mock("@stellar/stellar-sdk", async () =>  {
@@ -17,6 +17,11 @@ vi.mock("@stellar/stellar-sdk", async () =>  {
         }
 
         async getHealth() {
+            if (this.serverUrl && this.serverUrl.includes("refused")) {
+                const err = new TypeError("fetch failed");
+                (err as any).cause = { code: "ECONNREFUSED", message: "connect ECONNREFUSED" };
+                throw err;
+            }
             if (this.serverUrl && this.serverUrl.includes("timeout")) {
                 throw new Error("Timeout");
             }
@@ -655,6 +660,55 @@ describe("StellarRpcClient", () => {
 
             await expect(executeWithRetry(action)).rejects.toThrow("400 Bad Request");
             expect(action).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    describe("RPC unreachable errors", () => {
+        it("should wrap network failures in RpcUnreachableError", async () => {
+            const unreachableClient = new StellarRpcClient("testnet", "https://refused.com");
+            
+            let thrownError: any;
+            try {
+                await unreachableClient.checkHealth();
+            } catch (err) {
+                thrownError = err;
+            }
+
+            expect(thrownError).toBeDefined();
+            expect(thrownError.name).toBe("RpcUnreachableError");
+            expect(thrownError.url).toBe("https://refused.com");
+            expect(thrownError.cause).toBeDefined();
+            expect(thrownError.cause.message).toBe("fetch failed");
+            expect(thrownError.cause.cause.code).toBe("ECONNREFUSED");
+        });
+
+        it("should propagate the RpcUnreachableError cause so debuggers can view it", async () => {
+            const unreachableClient = new StellarRpcClient("testnet", "https://refused.com");
+            await expect(unreachableClient.checkHealth()).rejects.toThrowError(/RPC endpoint at https:\/\/refused\.com is unreachable/);
+        });
+
+        it("should retry on timeouts wrapped in RpcUnreachableError in executeWithRetry", async () => {
+            vi.useFakeTimers();
+            let attempts = 0;
+            const action = vi.fn().mockImplementation(async () => {
+                attempts++;
+                if (attempts < 3) {
+                    const cause = new Error("timeout");
+                    (cause as any).code = "ETIMEDOUT";
+                    throw new RpcUnreachableError("https://timeout-retry.com", { cause });
+                }
+                return "success";
+            });
+
+            const promise = executeWithRetry(action);
+            
+            await vi.advanceTimersByTimeAsync(1000);
+            await vi.advanceTimersByTimeAsync(2000);
+
+            const result = await promise;
+            expect(result).toBe("success");
+            expect(action).toHaveBeenCalledTimes(3);
+            vi.useRealTimers();
         });
     });
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { initLogger } from "./logging/index.js";
+import { handleRpcUnreachableError } from "./rpc/client.js";
 import { registerWatchCommand } from "./commands/watch.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerCheckCommand } from "./commands/check.js";
@@ -49,5 +50,19 @@ registerBudgetCommand(program);
 registerDbCommand(program);
 registerPauseCommand(program);
 registerResumeCommand(program);
+
+process.on("unhandledRejection", (reason: any) => {
+    if (handleRpcUnreachableError(reason)) {
+        process.exit(1);
+    }
+});
+
+process.on("uncaughtException", (error: any) => {
+    if (handleRpcUnreachableError(error)) {
+        process.exit(1);
+    }
+    console.error(error);
+    process.exit(1);
+});
 
 program.parse(process.argv);
