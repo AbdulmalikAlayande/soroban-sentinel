@@ -555,4 +555,207 @@ describe("Database Repositories", () => {
             expect(repo.getResourceAlertConfigsForContract(db, "C1").length).toBe(0);
         });
     });
+
+    // ─── Fleet Cost Rollup ────────────────────────────────────────────────────
+    describe("getFleetCostRollup", () => {
+        /**
+         * Helper: seed a contract with one instance entry and one extension
+         * recorded N days ago (so aggregateDailyCostSnapshots will pick it up).
+         */
+        function seedContractWithExtension(
+            database: typeof db,
+            contractId: string,
+            name: string,
+            tags: string | null,
+            costXlm: number,
+            daysAgo: number,
+        ) {
+            repo.insertContract(database, { id: contractId, name, network: "testnet", tags: tags ?? undefined });
+            repo.upsertEntry(database, {
+                contract_id: contractId,
+                entry_key_xdr: `xdr-${contractId}`,
+                entry_type: "instance",
+                label: "instance",
+                live_until_ledger: 500000,
+                last_modified_ledger: 400000,
+            });
+            const entryRow = database
+                .prepare("SELECT id FROM contract_entries WHERE contract_id = ? LIMIT 1")
+                .get(contractId) as { id: number };
+
+            database.prepare(`
+                INSERT INTO extension_history
+                    (contract_id, contract_entry_id, old_ttl_ledgers, new_ttl_ledgers,
+                     tx_hash, cost_xlm, cpu_insns, mem_bytes, is_anomaly,
+                     executed_at_ledger, executed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?))
+            `).run(
+                contractId,
+                entryRow.id,
+                10000,
+                20000,
+                `tx-${contractId}-${daysAgo}`,
+                costXlm,
+                0,
+                1024,
+                0,
+                400001,
+                `-${daysAgo} days`,
+            );
+        }
+
+        it("returns zero totals when no snapshots exist", () => {
+            // No contracts seeded — fleet rollup should return zeros
+            const rollup = repo.getFleetCostRollup(db);
+            expect(rollup.total_extensions).toBe(0);
+            expect(rollup.total_cost_xlm).toBe(0);
+            expect(rollup.contract_count).toBe(0);
+            expect(rollup.byType.instance.cost_xlm).toBe(0);
+            expect(rollup.byType.wasm.cost_xlm).toBe(0);
+            expect(rollup.byType.persistent.cost_xlm).toBe(0);
+            expect(rollup.byType.temporary.cost_xlm).toBe(0);
+        });
+
+        it("fleet total equals sum of individual contract costs (AC1)", () => {
+            // Seed two contracts with known costs
+            seedContractWithExtension(db, "CA", "Contract A", null, 1.5, 1);
+            seedContractWithExtension(db, "CB", "Contract B", null, 2.5, 1);
+
+            // Aggregate snapshots so cost_daily_snapshots is populated
+            repo.aggregateDailyCostSnapshots(db);
+
+            const summaryA = repo.getContractCostSummary(db, "CA");
+            const summaryB = repo.getContractCostSummary(db, "CB");
+            const expectedTotal = summaryA.total_cost_xlm + summaryB.total_cost_xlm;
+
+            const rollup = repo.getFleetCostRollup(db);
+
+            expect(rollup.total_cost_xlm).toBeCloseTo(expectedTotal, 7);
+            expect(rollup.contract_count).toBe(2);
+        });
+
+        it("includes today's live extensions in fleet totals", () => {
+            // Seed a contract with a same-day extension (not yet snapshotted)
+            repo.insertContract(db, { id: "CT", name: "Today Contract", network: "testnet" });
+            repo.upsertEntry(db, {
+                contract_id: "CT",
+                entry_key_xdr: "xdr-CT",
+                entry_type: "instance",
+                label: "instance",
+                live_until_ledger: 500000,
+                last_modified_ledger: 400000,
+            });
+            const entryRow = db
+                .prepare("SELECT id FROM contract_entries WHERE contract_id = ? LIMIT 1")
+                .get("CT") as { id: number };
+
+            // Insert today's extension (date = 'now')
+            db.prepare(`
+                INSERT INTO extension_history
+                    (contract_id, contract_entry_id, old_ttl_ledgers, new_ttl_ledgers,
+                     tx_hash, cost_xlm, cpu_insns, mem_bytes, is_anomaly,
+                     executed_at_ledger, executed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            `).run("CT", entryRow.id, 10000, 20000, "tx-today", 3.0, 0, 1024, 0, 400001);
+
+            // Do NOT aggregate — no snapshots yet, only live today's data
+            const rollup = repo.getFleetCostRollup(db);
+
+            expect(rollup.total_cost_xlm).toBeCloseTo(3.0, 7);
+            expect(rollup.total_extensions).toBe(1);
+        });
+
+        it("filters by tag — excludes contracts outside the tag set (AC2)", () => {
+            // Seed three contracts: two with tag 'defi', one with 'infra'
+            seedContractWithExtension(db, "CA", "Contract A", "defi", 1.0, 1);
+            seedContractWithExtension(db, "CB", "Contract B", "defi", 2.0, 1);
+            seedContractWithExtension(db, "CC", "Contract C", "infra", 5.0, 1);
+
+            repo.aggregateDailyCostSnapshots(db);
+
+            const rollup = repo.getFleetCostRollup(db, { tag: "defi" });
+
+            // Should only include CA + CB = 3.0 XLM, not CC's 5.0
+            expect(rollup.total_cost_xlm).toBeCloseTo(3.0, 7);
+            expect(rollup.contract_count).toBe(2);
+        });
+
+        it("tag filter with a comma-separated tags field matches correctly", () => {
+            // Contract with multiple tags (comma-separated as per schema comment)
+            seedContractWithExtension(db, "CM", "Multi-tag", "defi,bridge", 4.0, 1);
+            seedContractWithExtension(db, "CO", "Other", "infra", 1.0, 1);
+
+            repo.aggregateDailyCostSnapshots(db);
+
+            const rollup = repo.getFleetCostRollup(db, { tag: "defi" });
+
+            // CM has "defi" in its tags — should be included
+            expect(rollup.total_cost_xlm).toBeCloseTo(4.0, 7);
+            expect(rollup.contract_count).toBe(1);
+        });
+
+        it("returns zero when tag filter matches no contracts", () => {
+            seedContractWithExtension(db, "CA", "Contract A", "defi", 1.0, 1);
+            repo.aggregateDailyCostSnapshots(db);
+
+            const rollup = repo.getFleetCostRollup(db, { tag: "nonexistent-tag" });
+
+            expect(rollup.total_cost_xlm).toBe(0);
+            expect(rollup.contract_count).toBe(0);
+        });
+
+        it("respects the days filter to limit the rollup period", () => {
+            // One extension 3 days ago, one 20 days ago
+            seedContractWithExtension(db, "CA", "Contract A", null, 1.0, 3);
+            seedContractWithExtension(db, "CB", "Contract B", null, 10.0, 20);
+
+            repo.aggregateDailyCostSnapshots(db);
+
+            // 7-day window should only include CA's extension
+            const rollup7 = repo.getFleetCostRollup(db, { days: 7 });
+            expect(rollup7.total_cost_xlm).toBeCloseTo(1.0, 7);
+
+            // No period filter includes both
+            const rollupAll = repo.getFleetCostRollup(db);
+            // aggregateDailyCostSnapshots only captures the last 7 days, so
+            // the 20-day-old extension is outside the snapshot window — only CA
+            expect(rollupAll.total_cost_xlm).toBeCloseTo(1.0, 7);
+        });
+
+        it("includes per-entry-type breakdown at fleet level", () => {
+            // Seed a wasm extension for contract A
+            repo.insertContract(db, { id: "CW", name: "Wasm Contract", network: "testnet" });
+            repo.upsertEntry(db, {
+                contract_id: "CW",
+                entry_key_xdr: "xdr-wasm-CW",
+                entry_type: "wasm",
+                label: "wasm",
+                live_until_ledger: 500000,
+                last_modified_ledger: 400000,
+            });
+            const wasmEntry = db
+                .prepare("SELECT id FROM contract_entries WHERE contract_id = ? LIMIT 1")
+                .get("CW") as { id: number };
+
+            db.prepare(`
+                INSERT INTO extension_history
+                    (contract_id, contract_entry_id, old_ttl_ledgers, new_ttl_ledgers,
+                     tx_hash, cost_xlm, cpu_insns, mem_bytes, is_anomaly,
+                     executed_at_ledger, executed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-1 day'))
+            `).run("CW", wasmEntry.id, 10000, 20000, "tx-wasm", 3.0, 0, 1024, 0, 400001);
+
+            // Seed an instance extension for contract B
+            seedContractWithExtension(db, "CI", "Instance Contract", null, 2.0, 1);
+
+            repo.aggregateDailyCostSnapshots(db);
+
+            const rollup = repo.getFleetCostRollup(db);
+
+            expect(rollup.byType.wasm.cost_xlm).toBeCloseTo(3.0, 7);
+            expect(rollup.byType.instance.cost_xlm).toBeCloseTo(2.0, 7);
+            expect(rollup.byType.persistent.cost_xlm).toBe(0);
+            expect(rollup.byType.temporary.cost_xlm).toBe(0);
+        });
+    });
 });

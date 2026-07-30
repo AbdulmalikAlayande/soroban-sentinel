@@ -277,3 +277,206 @@ describe("costs command — Forecasted Rent section", () => {
     });
 
 });
+
+// ─── Fleet flag tests ─────────────────────────────────────────────────────────
+
+const CONTRACT_A = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
+const CONTRACT_B = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
+
+/**
+ * Seed a contract with a single instance extension recorded `daysAgo` days
+ * ago, so aggregateDailyCostSnapshots will capture it.
+ */
+function seedFleetContract(
+    database: ReturnType<typeof getDatabaseForTesting>,
+    contractId: string,
+    name: string,
+    tags: string | null,
+    costXlm: number,
+    daysAgo: number,
+) {
+    insertContract(database, { id: contractId, name, network: "testnet", tags: tags ?? undefined });
+    upsertEntry(database, {
+        contract_id: contractId,
+        entry_key_xdr: `xdr-fleet-${contractId}`,
+        entry_type: "instance",
+        label: "instance",
+        live_until_ledger: 500000,
+        last_modified_ledger: 400000,
+        discovery_source: "deterministic",
+    });
+    const entryRow = database
+        .prepare("SELECT id FROM contract_entries WHERE contract_id = ? LIMIT 1")
+        .get(contractId) as { id: number };
+
+    database.prepare(`
+        INSERT INTO extension_history
+            (contract_id, contract_entry_id, old_ttl_ledgers, new_ttl_ledgers,
+             tx_hash, cost_xlm, cpu_insns, mem_bytes, is_anomaly,
+             executed_at_ledger, executed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?))
+    `).run(
+        contractId,
+        entryRow.id,
+        10000,
+        20000,
+        `tx-fleet-${contractId}`,
+        costXlm,
+        0,
+        1024,
+        0,
+        400001,
+        `-${daysAgo} days`,
+    );
+}
+
+describe("costs command — --fleet flag", () => {
+    let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+    let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+    let exitSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+        mockDb = getDatabaseForTesting();
+        consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+        consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+            throw new Error("process.exit called");
+        });
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    // ── Fleet: basic output ───────────────────────────────────────────────────
+    it("prints fleet cost rollup header when --fleet is passed", async () => {
+        seedFleetContract(mockDb, CONTRACT_A, "Contract A", null, 1.0, 1);
+        seedFleetContract(mockDb, CONTRACT_B, "Contract B", null, 2.0, 1);
+
+        // Aggregate snapshots
+        const { aggregateDailyCostSnapshots } = await import("../../src/db/repositories.js");
+        aggregateDailyCostSnapshots(mockDb);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", "--fleet"]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(allOutput).toMatch(/fleet/i);
+    });
+
+    // ── Fleet: total cost equals sum of individual contracts ─────────────────
+    it("fleet total XLM equals sum of all individual contract costs (AC1)", async () => {
+        seedFleetContract(mockDb, CONTRACT_A, "Contract A", null, 1.5, 1);
+        seedFleetContract(mockDb, CONTRACT_B, "Contract B", null, 2.5, 1);
+
+        const { aggregateDailyCostSnapshots } = await import("../../src/db/repositories.js");
+        aggregateDailyCostSnapshots(mockDb);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", "--fleet"]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        // Total should be 4.0 XLM (1.5 + 2.5)
+        expect(allOutput).toMatch(/4\.0000000|4\.00000/);
+    });
+
+    // ── Fleet: --fleet with --json outputs machine-readable data ─────────────
+    it("outputs JSON when --fleet and --json are both passed", async () => {
+        seedFleetContract(mockDb, CONTRACT_A, "Contract A", null, 1.0, 1);
+
+        const { aggregateDailyCostSnapshots } = await import("../../src/db/repositories.js");
+        aggregateDailyCostSnapshots(mockDb);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", "--fleet", "--json"]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        // Should be valid JSON
+        let parsed: Record<string, unknown>;
+        expect(() => { parsed = JSON.parse(allOutput); }).not.toThrow();
+        expect(allOutput).toMatch(/total_cost_xlm/);
+    });
+
+    // ── Fleet: --fleet with --tag filters to matching contracts ──────────────
+    it("filters fleet rollup to a specific tag when --tag is passed (AC2)", async () => {
+        seedFleetContract(mockDb, CONTRACT_A, "Contract A", "defi", 1.0, 1);
+        seedFleetContract(mockDb, CONTRACT_B, "Contract B", "infra", 5.0, 1);
+
+        const { aggregateDailyCostSnapshots } = await import("../../src/db/repositories.js");
+        aggregateDailyCostSnapshots(mockDb);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        // Only defi tag — should exclude CONTRACT_B (infra, 5.0 XLM)
+        await program.parseAsync(["node", "sorokeep", "costs", "--fleet", "--tag", "defi"]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        // CONTRACT_A's cost (1.0) should appear, CONTRACT_B's (5.0) should not
+        expect(allOutput).toMatch(/1\.0000000|1\.00000/);
+        expect(allOutput).not.toMatch(/5\.0000000|6\.0000000/);
+    });
+
+    // ── Fleet: --fleet with --period limits the time window ──────────────────
+    it("respects --period when used with --fleet", async () => {
+        seedFleetContract(mockDb, CONTRACT_A, "Contract A", null, 1.0, 1);
+
+        const { aggregateDailyCostSnapshots } = await import("../../src/db/repositories.js");
+        aggregateDailyCostSnapshots(mockDb);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", "--fleet", "--period", "7"]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(allOutput).toMatch(/fleet/i);
+    });
+
+    // ── Fleet: --fleet requires no contractId argument ────────────────────────
+    it("does not require a contractId argument when --fleet is passed", async () => {
+        const program = new Command();
+        registerCostsCommand(program);
+
+        // Should NOT throw because of a missing required argument
+        await expect(
+            program.parseAsync(["node", "sorokeep", "costs", "--fleet"])
+        ).resolves.toBeDefined();
+    });
+
+    // ── Fleet: per-entry-type breakdown is shown ──────────────────────────────
+    it("shows per-entry-type breakdown in fleet output", async () => {
+        seedFleetContract(mockDb, CONTRACT_A, "Contract A", null, 1.0, 1);
+
+        const { aggregateDailyCostSnapshots } = await import("../../src/db/repositories.js");
+        aggregateDailyCostSnapshots(mockDb);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", "--fleet"]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        // The breakdown section should show entry type names
+        expect(allOutput).toMatch(/instance|wasm|persistent|temporary/i);
+    });
+
+    // ── Fleet: empty fleet shows a helpful message ────────────────────────────
+    it("shows a friendly message when no contracts have cost data", async () => {
+        // No contracts seeded at all
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", "--fleet"]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        // Should not crash, should show something about 0 cost / no data
+        expect(allOutput).toMatch(/0\.0000000|no data|no extensions|0 extensions/i);
+    });
+});

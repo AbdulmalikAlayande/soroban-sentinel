@@ -569,6 +569,202 @@ export function getContractCostSummary(db: Database.Database, contractId: string
     };
 }
 
+// ─── Fleet Cost Rollup ────────────────────────────────────────────────────────
+
+/**
+ * Aggregated cost data for an entire fleet of contracts.
+ */
+export interface FleetCostRollup {
+    /** Total number of extension operations across the fleet in the period. */
+    total_extensions: number;
+    /** Total XLM spent on extensions across the fleet in the period. */
+    total_cost_xlm: number;
+    /** Number of distinct contracts contributing to this rollup. */
+    contract_count: number;
+    /** Per-entry-type breakdown at the fleet level. */
+    byType: {
+        instance: { count: number; cost_xlm: number };
+        wasm: { count: number; cost_xlm: number };
+        persistent: { count: number; cost_xlm: number };
+        temporary: { count: number; cost_xlm: number };
+    };
+}
+
+/**
+ * Return a single aggregated cost row that sums `cost_daily_snapshots` across
+ * ALL registered contracts, optionally filtered by tag and/or time window.
+ *
+ * The result mirrors the structure of {@link ContractCostSummary} but spans
+ * the entire fleet rather than a single contract.  Like getContractCostSummary,
+ * it combines:
+ *  1. Daily snapshots already written to `cost_daily_snapshots` (yesterday and
+ *     earlier, within the requested window).
+ *  2. Today's live data read directly from `extension_history`.
+ *
+ * Tag filtering uses a simple `LIKE '%<tag>%'` pattern against the
+ * `contracts.tags` TEXT column (comma-separated).  This is intentionally
+ * liberal — "defi" will match "defi", "defi,bridge", and "bridge,defi".
+ *
+ * @param db      - The SQLite database connection.
+ * @param options - Optional filters:
+ *   - `tag`  — Restrict rollup to contracts whose `tags` field contains this
+ *               value.
+ *   - `days` — Restrict rollup to the last N days (inclusive of today's live
+ *               data).  Omit for all-time.
+ */
+export function getFleetCostRollup(
+    db: Database.Database,
+    options?: { tag?: string; days?: number },
+): FleetCostRollup {
+    interface AggregateRow {
+        total_extensions: number;
+        total_cost_xlm: number;
+        instance_extensions: number;
+        instance_cost_xlm: number;
+        wasm_extensions: number;
+        wasm_cost_xlm: number;
+        persistent_extensions: number;
+        persistent_cost_xlm: number;
+        temporary_extensions: number;
+        temporary_cost_xlm: number;
+        contract_count: number;
+    }
+
+    const tag = options?.tag;
+    const days = options?.days;
+
+    // ── 1. Aggregate from cost_daily_snapshots (historical, before today) ──
+    const snapshotConditions: string[] = [];
+    const snapshotParams: (string | number)[] = [];
+
+    if (tag) {
+        snapshotConditions.push(`c.tags LIKE ?`);
+        snapshotParams.push(`%${tag}%`);
+    }
+    if (days !== undefined) {
+        snapshotConditions.push(`cds.snapshot_date >= date('now', ?)`);
+        snapshotParams.push(`-${Math.max(days - 1, 0)} days`);
+    }
+
+    const snapshotWhere =
+        snapshotConditions.length > 0
+            ? `WHERE ${snapshotConditions.join(" AND ")}`
+            : "";
+
+    const snapshotRow = db.prepare(`
+        SELECT
+            COALESCE(SUM(cds.total_extensions), 0)     AS total_extensions,
+            COALESCE(SUM(cds.total_cost_xlm), 0.0)     AS total_cost_xlm,
+            COALESCE(SUM(cds.instance_extensions), 0)  AS instance_extensions,
+            COALESCE(SUM(cds.instance_cost_xlm), 0.0)  AS instance_cost_xlm,
+            COALESCE(SUM(cds.wasm_extensions), 0)      AS wasm_extensions,
+            COALESCE(SUM(cds.wasm_cost_xlm), 0.0)      AS wasm_cost_xlm,
+            COALESCE(SUM(cds.persistent_extensions), 0) AS persistent_extensions,
+            COALESCE(SUM(cds.persistent_cost_xlm), 0.0) AS persistent_cost_xlm,
+            COALESCE(SUM(cds.temporary_extensions), 0) AS temporary_extensions,
+            COALESCE(SUM(cds.temporary_cost_xlm), 0.0) AS temporary_cost_xlm,
+            COUNT(DISTINCT cds.contract_id)             AS contract_count
+        FROM cost_daily_snapshots cds
+        JOIN contracts c ON c.id = cds.contract_id
+        ${snapshotWhere}
+    `).get(...snapshotParams) as AggregateRow;
+
+    // ── 2. Aggregate today's live data from extension_history ──────────────
+    const liveConditions: string[] = [`date(eh.executed_at) = date('now')`];
+    const liveParams: (string | number)[] = [];
+
+    if (tag) {
+        liveConditions.push(`c.tags LIKE ?`);
+        liveParams.push(`%${tag}%`);
+    }
+
+    const liveRow = db.prepare(`
+        SELECT
+            COUNT(*)                                        AS total_extensions,
+            COALESCE(SUM(COALESCE(eh.cost_xlm, 0.0)), 0.0) AS total_cost_xlm,
+            COALESCE(SUM(CASE WHEN ce.entry_type = 'instance'   THEN 1    ELSE 0   END), 0) AS instance_extensions,
+            COALESCE(SUM(CASE WHEN ce.entry_type = 'instance'   THEN COALESCE(eh.cost_xlm, 0.0) ELSE 0 END), 0.0) AS instance_cost_xlm,
+            COALESCE(SUM(CASE WHEN ce.entry_type = 'wasm'       THEN 1    ELSE 0   END), 0) AS wasm_extensions,
+            COALESCE(SUM(CASE WHEN ce.entry_type = 'wasm'       THEN COALESCE(eh.cost_xlm, 0.0) ELSE 0 END), 0.0) AS wasm_cost_xlm,
+            COALESCE(SUM(CASE WHEN ce.entry_type = 'persistent' THEN 1    ELSE 0   END), 0) AS persistent_extensions,
+            COALESCE(SUM(CASE WHEN ce.entry_type = 'persistent' THEN COALESCE(eh.cost_xlm, 0.0) ELSE 0 END), 0.0) AS persistent_cost_xlm,
+            COALESCE(SUM(CASE WHEN ce.entry_type = 'temporary'  THEN 1    ELSE 0   END), 0) AS temporary_extensions,
+            COALESCE(SUM(CASE WHEN ce.entry_type = 'temporary'  THEN COALESCE(eh.cost_xlm, 0.0) ELSE 0 END), 0.0) AS temporary_cost_xlm,
+            COUNT(DISTINCT eh.contract_id)                  AS contract_count
+        FROM extension_history eh
+        JOIN contract_entries ce ON ce.id = eh.contract_entry_id
+        JOIN contracts c ON c.id = eh.contract_id
+        WHERE ${liveConditions.join(" AND ")}
+    `).get(...liveParams) as AggregateRow;
+
+    // ── 3. Merge snapshot + live ───────────────────────────────────────────
+    // contract_count: use COUNT(DISTINCT) over the union — simpler to add the
+    // two distinct counts and subtract overlap.  Since we can't easily do that
+    // in two separate queries, we use MAX of the snapshot count (which already
+    // counts all historical contracts) and only add the live count for contracts
+    // not represented in snapshots.  A conservative but correct approach is to
+    // run a lightweight UNION COUNT query here.
+    const contractCountRow = db.prepare(`
+        SELECT COUNT(DISTINCT contract_id) AS n
+        FROM (
+            SELECT DISTINCT cds.contract_id
+            FROM cost_daily_snapshots cds
+            JOIN contracts c ON c.id = cds.contract_id
+            ${tag ? `WHERE c.tags LIKE ?` : ""}
+            UNION
+            SELECT DISTINCT eh.contract_id
+            FROM extension_history eh
+            JOIN contracts c ON c.id = eh.contract_id
+            WHERE date(eh.executed_at) = date('now')
+            ${tag ? `AND c.tags LIKE ?` : ""}
+        ) combined
+    `).get(...(tag ? [`%${tag}%`, `%${tag}%`] : [])) as { n: number };
+
+    return {
+        total_extensions: Number(
+            (snapshotRow.total_extensions ?? 0) + (liveRow.total_extensions ?? 0),
+        ),
+        total_cost_xlm: Number(
+            (snapshotRow.total_cost_xlm ?? 0) + (liveRow.total_cost_xlm ?? 0),
+        ),
+        contract_count: contractCountRow.n ?? 0,
+        byType: {
+            instance: {
+                count: Number(
+                    (snapshotRow.instance_extensions ?? 0) + (liveRow.instance_extensions ?? 0),
+                ),
+                cost_xlm: Number(
+                    (snapshotRow.instance_cost_xlm ?? 0) + (liveRow.instance_cost_xlm ?? 0),
+                ),
+            },
+            wasm: {
+                count: Number(
+                    (snapshotRow.wasm_extensions ?? 0) + (liveRow.wasm_extensions ?? 0),
+                ),
+                cost_xlm: Number(
+                    (snapshotRow.wasm_cost_xlm ?? 0) + (liveRow.wasm_cost_xlm ?? 0),
+                ),
+            },
+            persistent: {
+                count: Number(
+                    (snapshotRow.persistent_extensions ?? 0) + (liveRow.persistent_extensions ?? 0),
+                ),
+                cost_xlm: Number(
+                    (snapshotRow.persistent_cost_xlm ?? 0) + (liveRow.persistent_cost_xlm ?? 0),
+                ),
+            },
+            temporary: {
+                count: Number(
+                    (snapshotRow.temporary_extensions ?? 0) + (liveRow.temporary_extensions ?? 0),
+                ),
+                cost_xlm: Number(
+                    (snapshotRow.temporary_cost_xlm ?? 0) + (liveRow.temporary_cost_xlm ?? 0),
+                ),
+            },
+        },
+    };
+}
+
 /**
  * Count the number of auto-extension transactions that were executed for the
  * given contract within the last hour.
