@@ -10,6 +10,7 @@ import {
     insertResourceAlertConfig,
     getContract,
     getAlertHistory,
+    getContractsInGroup,
 } from "../db/repositories.js";
 import { formatContractID, formatTimeToCloseLedger } from "../utils/formatting.js";
 import { deliverSingleAlert } from "../alerts/dispatcher.js";
@@ -195,37 +196,55 @@ export function registerAlertsCommand(program: Command): void {
     alerts
         .command("list")
         .description("List alert configurations for a contract")
-        .requiredOption("--contract <id>", "The contract ID to list alerts for")
+        .option("--contract <id>", "The contract ID to list alerts for")
+        .option("--group <name>", "Filter by contract group")
         .action((options) => {
-            const contractId = options.contract;
             const db = getDatabase();
 
-            const contract = getContract(db, contractId);
-            if (!contract) {
-                console.error(chalk.red(`Error: Contract ${formatContractID(contractId)} is not registered.`));
+            let targetContracts: string[] = [];
+            if (options.group) {
+                targetContracts = getContractsInGroup(db, options.group);
+                if (targetContracts.length === 0) {
+                    console.error(chalk.red(`Group '${options.group}' not found or empty.`));
+                    process.exit(1);
+                    return;
+                }
+            } else if (options.contract) {
+                targetContracts = [options.contract];
+            } else {
+                console.error(chalk.red("You must specify either --contract or --group."));
                 process.exit(1);
-            }
-
-            const configs = getAlertConfigsForContract(db, contractId);
-            if (configs.length === 0) {
-                console.log(chalk.yellow(`No alert configurations found for contract ${formatContractID(contractId)}.`));
                 return;
             }
 
-            console.log();
-            console.log(chalk.bold(`  Alert Configurations for ${contract.name ?? formatContractID(contractId)}`));
-            console.log();
-            for (const config of configs) {
-                const signed = config.webhook_secret ? chalk.green(" [signed]") : "";
-                console.log(
-                    `  ID: ${chalk.cyan(config.id.toString().padEnd(4))} | ` +
-                    `Type: ${chalk.yellow(config.channel_type.padEnd(8))} | ` +
-                    `Target: ${chalk.green(config.channel_target.padEnd(30))} | ` +
-                    `Threshold: ${chalk.magenta(config.threshold_ledgers.toLocaleString())} ledgers` +
-                    signed
-                );
+            for (const contractId of targetContracts) {
+                const contract = getContract(db, contractId);
+                if (!contract) {
+                    console.error(chalk.red(`Error: Contract ${formatContractID(contractId)} is not registered.`));
+                    process.exit(1);
+                }
+
+                const configs = getAlertConfigsForContract(db, contractId);
+                if (configs.length === 0) {
+                    console.log(chalk.yellow(`No alert configurations found for contract ${formatContractID(contractId)}.`));
+                    continue;
+                }
+
+                console.log();
+                console.log(chalk.bold(`  Alert Configurations for ${contract.name ?? formatContractID(contractId)}`));
+                console.log();
+                for (const config of configs) {
+                    const signed = config.webhook_secret ? chalk.green(" [signed]") : "";
+                    console.log(
+                        `  ID: ${chalk.cyan(config.id.toString().padEnd(4))} | ` +
+                        `Type: ${chalk.yellow(config.channel_type.padEnd(8))} | ` +
+                        `Target: ${chalk.green(config.channel_target.padEnd(30))} | ` +
+                        `Threshold: ${chalk.magenta(config.threshold_ledgers.toLocaleString())} ledgers` +
+                        signed
+                    );
+                }
+                console.log();
             }
-            console.log();
         });
 
     // ── alerts remove ──────────────────────────────────────────────────
@@ -298,44 +317,62 @@ export function registerAlertsCommand(program: Command): void {
     alerts
         .command("history")
         .description("Show alert history for a contract")
-        .requiredOption("--contract <id>", "The contract ID to show history for")
+        .option("--contract <id>", "The contract ID to show history for")
+        .option("--group <name>", "Filter by contract group")
         .option("--limit <n>", "Max number of records to show", "20")
         .action((options) => {
-            const contractId = options.contract;
             const limit = parseInt(options.limit, 10);
             const db = getDatabase();
 
-            const contract = getContract(db, contractId);
-            if (!contract) {
-                console.error(chalk.red(`Error: Contract ${formatContractID(contractId)} is not registered.`));
+            let targetContracts: string[] = [];
+            if (options.group) {
+                targetContracts = getContractsInGroup(db, options.group);
+                if (targetContracts.length === 0) {
+                    console.error(chalk.red(`Group '${options.group}' not found or empty.`));
+                    process.exit(1);
+                    return;
+                }
+            } else if (options.contract) {
+                targetContracts = [options.contract];
+            } else {
+                console.error(chalk.red("You must specify either --contract or --group."));
                 process.exit(1);
-            }
-
-            const history = getAlertHistory(db, contractId, limit > 0 ? limit : undefined);
-            if (history.length === 0) {
-                console.log(chalk.yellow("No alert history found."));
                 return;
             }
 
-            const displayName = contract.name ?? formatContractID(contractId);
-            console.log(`\n${chalk.bold("Alert History")} — ${chalk.cyan(displayName)}\n`);
-
-            for (const record of history) {
-                const statusIcon = record.resolved ? chalk.green("✓") : chalk.yellow("●");
-                const deliveryIcon = record.delivered ? chalk.green("✓") : chalk.red("✗");
-                const label = record.entryLabel ?? record.entryType;
-                const ttlDisplay = formatTimeToCloseLedger(record.ttlAtFire);
-
-                console.log(
-                    `  ${statusIcon} ${chalk.dim(record.firedAt)} | ` +
-                    `${label} | TTL: ${record.ttlAtFire.toLocaleString()} (${ttlDisplay}) | ` +
-                    `${record.channelType}→${deliveryIcon} | ` +
-                    `retries: ${record.retryCount}`
-                );
-                if (record.resolvedAt) {
-                    console.log(chalk.dim(`    Resolved: ${record.resolvedAt}`));
+            for (const contractId of targetContracts) {
+                const contract = getContract(db, contractId);
+                if (!contract) {
+                    console.error(chalk.red(`Error: Contract ${formatContractID(contractId)} is not registered.`));
+                    process.exit(1);
                 }
+
+                const history = getAlertHistory(db, contractId, limit > 0 ? limit : undefined);
+                if (history.length === 0) {
+                    console.log(chalk.yellow(`No alert history found for ${contract.name ?? formatContractID(contractId)}.`));
+                    continue;
+                }
+
+                const displayName = contract.name ?? formatContractID(contractId);
+                console.log(`\n${chalk.bold("Alert History")} — ${chalk.cyan(displayName)}\n`);
+
+                for (const record of history) {
+                    const statusIcon = record.resolved ? chalk.green("✓") : chalk.yellow("●");
+                    const deliveryIcon = record.delivered ? chalk.green("✓") : chalk.red("✗");
+                    const label = record.entryLabel ?? record.entryType;
+                    const ttlDisplay = formatTimeToCloseLedger(record.ttlAtFire);
+
+                    console.log(
+                        `  ${statusIcon} ${chalk.dim(record.firedAt)} | ` +
+                        `${label} | TTL: ${record.ttlAtFire.toLocaleString()} (${ttlDisplay}) | ` +
+                        `${record.channelType}→${deliveryIcon} | ` +
+                        `retries: ${record.retryCount}`
+                    );
+                    if (record.resolvedAt) {
+                        console.log(chalk.dim(`    Resolved: ${record.resolvedAt}`));
+                    }
+                }
+                console.log();
             }
-            console.log();
         });
 }
