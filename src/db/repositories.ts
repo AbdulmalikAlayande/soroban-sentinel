@@ -1327,3 +1327,6 @@ export function getLatestResourceUsageLog(
     `).get(contractId) as ResourceUsageLog | undefined;
 }
 
+
+export function getContractsInGroup(db: any, groupName: string): string[] { return []; }
+
