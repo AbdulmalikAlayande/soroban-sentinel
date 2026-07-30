@@ -131,9 +131,23 @@ npx vitest
 
 # With coverage
 npx vitest run --coverage
+
+# Update all snapshot files after intentional formatting changes
+npx vitest run -u
+
+# Update snapshot for a specific file
+npx vitest run tests/commands/status.test.ts -u
 ```
 
 All tests use in-memory SQLite databases and mocked RPC responses — no network calls, no filesystem side effects.
+
+**Snapshot tests** (`toMatchSnapshot()`) capture the ANSI-stripped rendered output of CLI commands such as `status`, `costs`, and `alerts list`. If you intentionally change the formatting of a command's output — column alignment, labels, colors, or field order — the snapshot tests will fail. To update them:
+
+1. Verify the new output is correct by inspecting the diff shown by Vitest.
+2. Run `npx vitest run -u` to regenerate the `.snap` files.
+3. Commit the updated `.snap` files alongside your formatting changes.
+
+Snapshot tests strip ANSI color codes and normalize timestamps before comparing, so diffs focus on content and alignment rather than escape sequences.
 
 ### Running the CLI During Development
 

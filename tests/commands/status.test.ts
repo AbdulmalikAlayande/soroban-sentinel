@@ -1,9 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Command } from "commander";
+import stripAnsi from "strip-ansi";
 import * as dbLib from "../../src/db/database";
 import { ContractNotFoundError } from "../../src/core/status";
 import * as statusModule from "../../src/core/status";
 import { registerStatusCommand } from "../../src/commands/status";
+
+const SNAPSHOT_TIMESTAMP = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/g;
+function normalizeOutput(output: string): string {
+    return stripAnsi(output).replace(SNAPSHOT_TIMESTAMP, "YYYY-MM-DD HH:MM:SS");
+}
 
 vi.mock("../../src/db/database", () => ({
     getDatabase: vi.fn(),
@@ -119,5 +125,115 @@ describe("status command", () => {
         });
 
         expect(() => actionFn("VALID_ID", { json: false })).toThrow("DB Corrupt");
+    });
+
+    // ── Snapshot tests ──────────────────────────────────────────────────
+
+    it("matches snapshot for human-readable output", () => {
+        vi.mocked(statusModule.getContractStatus).mockReturnValue({
+            contractId: contractID,
+            name: "sample-contract",
+            network: "testnet",
+            lastCheckedLedger: 400000,
+            entries: [
+                {
+                    label: "Instance",
+                    entryType: "instance",
+                    entryKeyXdr: "AAAAA",
+                    liveUntilLedger: 500000,
+                    remainingTTL: 100000,
+                    approximateTimeRemaining: "~1 day",
+                    status: "ok",
+                },
+            ],
+        } as any);
+
+        actionFn(contractID, { json: false });
+
+        const output = mockLog.mock.calls.map((args) => args.join(" ")).join("\n");
+        expect(normalizeOutput(output)).toMatchSnapshot();
+    });
+
+    it("matches snapshot when no entries are tracked", () => {
+        vi.mocked(statusModule.getContractStatus).mockReturnValue({
+            contractId: contractID,
+            name: "sample-contract",
+            network: "testnet",
+            lastCheckedLedger: 400000,
+            entries: [],
+        } as any);
+
+        actionFn(contractID, { json: false });
+
+        const output = mockLog.mock.calls.map((args) => args.join(" ")).join("\n");
+        expect(normalizeOutput(output)).toMatchSnapshot();
+    });
+
+    it("matches snapshot for contracts with mixed TTL statuses", () => {
+        vi.mocked(statusModule.getContractStatus).mockReturnValue({
+            contractId: contractID,
+            name: "sample-contract",
+            network: "testnet",
+            lastCheckedLedger: 400000,
+            entries: [
+                {
+                    label: "Instance",
+                    entryType: "instance",
+                    entryKeyXdr: "AAAAA",
+                    liveUntilLedger: 500000,
+                    remainingTTL: 100000,
+                    approximateTimeRemaining: "~1 day",
+                    status: "ok",
+                },
+                {
+                    label: "WASM Code",
+                    entryType: "wasm",
+                    entryKeyXdr: "BBBBB",
+                    liveUntilLedger: 410000,
+                    remainingTTL: 10000,
+                    approximateTimeRemaining: "~15 hours",
+                    status: "warning",
+                },
+                {
+                    label: "Temporary",
+                    entryType: "temporary",
+                    entryKeyXdr: "CCCCC",
+                    liveUntilLedger: 404000,
+                    remainingTTL: 4000,
+                    approximateTimeRemaining: "~6 hours",
+                    status: "critical",
+                },
+            ],
+        } as any);
+
+        actionFn(contractID, { json: false });
+
+        const output = mockLog.mock.calls.map((args) => args.join(" ")).join("\n");
+        expect(normalizeOutput(output)).toMatchSnapshot();
+    });
+
+    it("matches snapshot for unknown entry status", () => {
+        vi.mocked(statusModule.getContractStatus).mockReturnValue({
+            contractId: contractID,
+            name: "sample-contract",
+            network: "testnet",
+            lastCheckedLedger: null,
+            entries: [
+                {
+                    label: "Instance",
+                    entryType: "instance",
+                    entryKeyXdr: "AAAAA",
+                    liveUntilLedger: null,
+                    remainingTTL: null,
+                    approximateTimeRemaining: null,
+                    status: "unknown",
+                },
+            ],
+        } as any);
+
+        actionFn(contractID, { json: false });
+
+        const output = mockLog.mock.calls.map((args) => args.join(" ")).join("\n");
+        expect(normalizeOutput(output)).toMatchSnapshot();
     });
 });

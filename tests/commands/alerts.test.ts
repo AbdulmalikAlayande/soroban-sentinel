@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import stripAnsi from "strip-ansi";
 import { Command } from "commander";
 import type Database from "better-sqlite3";
 import { getDatabaseForTesting } from "../../src/db/database";
@@ -8,7 +9,13 @@ import {
     getAlertConfigsForContract,
     insertAlertConfig,
     getResourceAlertConfigsForContract,
+    upsertEntry,
 } from "../../src/db/repositories";
+
+const SNAPSHOT_TIMESTAMP = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/g;
+function normalizeOutput(output: string): string {
+    return stripAnsi(output).replace(SNAPSHOT_TIMESTAMP, "YYYY-MM-DD HH:MM:SS");
+}
 
 let mockDb: Database.Database;
 
@@ -759,6 +766,86 @@ describe("alerts command", () => {
             expect(consoleLogSpy).toHaveBeenCalledWith(
                 expect.stringContaining("Test alert delivered successfully")
             );
+        });
+    });
+
+    // ── Snapshot tests ──────────────────────────────────────────────
+    describe("snapshot tests", () => {
+        it("matches snapshot for alerts list table", () => {
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "webhook",
+                channel_target: "https://example.com/webhook",
+                threshold_ledgers: 1000,
+            });
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "slack",
+                channel_target: "#ops-alerts",
+                threshold_ledgers: 2000,
+            });
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "discord",
+                channel_target: "https://discord.com/api/webhooks/123/abc",
+                threshold_ledgers: 500,
+                webhook_secret: "my-signing-secret",
+            });
+
+            parse(["alerts", "list", "--contract", contractID]);
+
+            const output = consoleLogSpy.mock.calls.flat().join("\n");
+            expect(normalizeOutput(output)).toMatchSnapshot();
+        });
+
+        it("matches snapshot when no alerts configured", () => {
+            parse(["alerts", "list", "--contract", contractID]);
+
+            const output = consoleLogSpy.mock.calls.flat().join("\n");
+            expect(normalizeOutput(output)).toMatchSnapshot();
+        });
+
+        it("matches snapshot for alerts history table", () => {
+            upsertEntry(mockDb, {
+                contract_id: contractID,
+                entry_key_xdr: "AAAAA",
+                entry_type: "instance",
+                label: "instance",
+                live_until_ledger: 500000,
+                last_modified_ledger: 400000,
+                discovery_source: "deterministic",
+            });
+
+            const entryRow = mockDb
+                .prepare("SELECT id FROM contract_entries WHERE contract_id = ? LIMIT 1")
+                .get(contractID) as { id: number };
+
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "webhook",
+                channel_target: "https://example.com/webhook",
+                threshold_ledgers: 1000,
+            });
+
+            const configRows = mockDb
+                .prepare("SELECT id FROM alert_configs WHERE contract_id = ?")
+                .all(contractID) as { id: number }[];
+
+            // Insert fired alerts with deterministic timestamps
+            mockDb.prepare(`
+                INSERT INTO alerts_fired (alert_config_id, contract_entry_id, fired_at_ledger, ttl_at_fire, fired_at, delivered, retry_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            `).run(configRows[0]!.id, entryRow.id, 500000, 800, "2024-06-15 10:30:00", 1, 0);
+
+            mockDb.prepare(`
+                INSERT INTO alerts_fired (alert_config_id, contract_entry_id, fired_at_ledger, ttl_at_fire, fired_at, delivered, retry_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            `).run(configRows[0]!.id, entryRow.id, 510000, 200, "2024-06-20 14:15:00", 0, 2);
+
+            parse(["alerts", "history", "--contract", contractID]);
+
+            const output = consoleLogSpy.mock.calls.flat().join("\n");
+            expect(normalizeOutput(output)).toMatchSnapshot();
         });
     });
 });
