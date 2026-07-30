@@ -124,7 +124,7 @@ async function postJson(url: string, apiKey: string, body: unknown): Promise<voi
         // Distinguish our own timeout abort from other network errors so
         // callers (and operators) get a message that names the duration.
         if (err instanceof DOMException && err.name === "AbortError") {
-            throw new Error(`Opsgenie API request timed out after ${TIMEOUT_MS / 1000} seconds`);
+            throw new Error(`Opsgenie API request timed out after ${TIMEOUT_MS / 1000} seconds`, { cause: err });
         }
         throw err;
     }
