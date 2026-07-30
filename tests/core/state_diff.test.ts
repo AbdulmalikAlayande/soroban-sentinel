@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import { getDatabaseForTesting } from "../../src/db/database";
 import {
@@ -10,12 +10,8 @@ import {
     getLatestSnapshot,
     getStateChanges,
 } from "../../src/db/repositories";
-import {
-    computeValueHash,
-    diffStateValues,
-    processStateDiff,
-    type StateDiffResult,
-} from "../../src/core/state_diff";
+import * as stateDiff from "../../src/core/state_diff";
+import type { StateDiffResult } from "../../src/core/state_diff";
 
 describe("State Diff Engine", () => {
     let db: Database.Database;
@@ -33,20 +29,20 @@ describe("State Diff Engine", () => {
     // =========================================================================
     describe("computeValueHash", () => {
         it("returns a consistent SHA-256 hex string for identical inputs", () => {
-            const hash1 = computeValueHash("AAAAAQ==");
-            const hash2 = computeValueHash("AAAAAQ==");
+            const hash1 = stateDiff.computeValueHash("AAAAAQ==");
+            const hash2 = stateDiff.computeValueHash("AAAAAQ==");
             expect(hash1).toBe(hash2);
             expect(hash1).toMatch(/^[a-f0-9]{64}$/);
         });
 
         it("returns different hashes for different inputs", () => {
-            const hash1 = computeValueHash("AAAAAQ==");
-            const hash2 = computeValueHash("AAAAAg==");
+            const hash1 = stateDiff.computeValueHash("AAAAAQ==");
+            const hash2 = stateDiff.computeValueHash("AAAAAg==");
             expect(hash1).not.toBe(hash2);
         });
 
         it("handles empty string input", () => {
-            const hash = computeValueHash("");
+            const hash = stateDiff.computeValueHash("");
             expect(hash).toMatch(/^[a-f0-9]{64}$/);
         });
     });
@@ -55,35 +51,67 @@ describe("State Diff Engine", () => {
     // 2. diffStateValues
     // =========================================================================
     describe("diffStateValues", () => {
-        it("returns 'created' when old value is null", () => {
-            const result = diffStateValues(null, "AAAAAQ==");
-            expect(result.diffType).toBe("created");
-            expect(result.oldValueXdr).toBeNull();
-            expect(result.newValueXdr).toBe("AAAAAQ==");
-        });
+        it("returns null and does not hash when both values are null", () => {
+            const spy = vi.spyOn(stateDiff, "computeValueHash");
+            const result = stateDiff.diffStateValues(null, null);
 
-        it("returns 'deleted' when new value is null", () => {
-            const result = diffStateValues("AAAAAQ==", null);
-            expect(result.diffType).toBe("deleted");
-            expect(result.oldValueXdr).toBe("AAAAAQ==");
-            expect(result.newValueXdr).toBeNull();
-        });
-
-        it("returns 'updated' when both values present and different", () => {
-            const result = diffStateValues("AAAAAQ==", "AAAAAg==");
-            expect(result.diffType).toBe("updated");
-            expect(result.oldValueXdr).toBe("AAAAAQ==");
-            expect(result.newValueXdr).toBe("AAAAAg==");
-        });
-
-        it("returns null when both values present and identical", () => {
-            const result = diffStateValues("AAAAAQ==", "AAAAAQ==");
             expect(result).toBeNull();
+            expect(spy).not.toHaveBeenCalled();
+            spy.mockRestore();
         });
 
-        it("returns null when both values are null", () => {
-            const result = diffStateValues(null, null);
+        it("returns null and does not hash when both values are identical", () => {
+            const spy = vi.spyOn(stateDiff, "computeValueHash");
+            const result = stateDiff.diffStateValues("AAAAAQ==", "AAAAAQ==");
+
             expect(result).toBeNull();
+            expect(spy).not.toHaveBeenCalled();
+            spy.mockRestore();
+        });
+
+        it("returns 'created' when old value is null and hashes only the new value", () => {
+            const spy = vi.spyOn(stateDiff, "computeValueHash");
+            const result = stateDiff.diffStateValues(null, "AAAAAQ==");
+
+            expect(result).not.toBeNull();
+            expect(result!.diffType).toBe("created");
+            expect(result!.oldValueXdr).toBeNull();
+            expect(result!.newValueXdr).toBe("AAAAAQ==");
+            expect(result!.oldHash).toBeNull();
+            expect(result!.newHash).toBe(stateDiff.computeValueHash("AAAAAQ=="));
+            expect(spy).toHaveBeenCalledTimes(1);
+            expect(spy).toHaveBeenCalledWith("AAAAAQ==");
+            spy.mockRestore();
+        });
+
+        it("returns 'deleted' when new value is null and hashes only the old value", () => {
+            const spy = vi.spyOn(stateDiff, "computeValueHash");
+            const result = stateDiff.diffStateValues("AAAAAQ==", null);
+
+            expect(result).not.toBeNull();
+            expect(result!.diffType).toBe("deleted");
+            expect(result!.oldValueXdr).toBe("AAAAAQ==");
+            expect(result!.newValueXdr).toBeNull();
+            expect(result!.oldHash).toBe(stateDiff.computeValueHash("AAAAAQ=="));
+            expect(result!.newHash).toBeNull();
+            expect(spy).toHaveBeenCalledTimes(1);
+            expect(spy).toHaveBeenCalledWith("AAAAAQ==");
+            spy.mockRestore();
+        });
+
+        it("returns 'updated' when both values are different and hashes both values", () => {
+            const spy = vi.spyOn(stateDiff, "computeValueHash");
+            const result = stateDiff.diffStateValues("AAAAAQ==", "AAAAAg==");
+
+            expect(result).not.toBeNull();
+            expect(result!.diffType).toBe("updated");
+            expect(result!.oldValueXdr).toBe("AAAAAQ==");
+            expect(result!.newValueXdr).toBe("AAAAAg==");
+            expect(result!.oldHash).toBe(stateDiff.computeValueHash("AAAAAQ=="));
+            expect(result!.newHash).toBe(stateDiff.computeValueHash("AAAAAg=="));
+            expect(spy).toHaveBeenCalledTimes(2);
+            expect(spy.mock.calls).toEqual([["AAAAAQ=="], ["AAAAAg=="]]);
+            spy.mockRestore();
         });
     });
 
@@ -104,7 +132,7 @@ describe("State Diff Engine", () => {
         });
 
         it("creates a snapshot and 'created' change on first-ever value", () => {
-            const result = processStateDiff(db, entryId, "AAAAAQ==", 1000);
+            const result = stateDiff.processStateDiff(db, entryId, "AAAAAQ==", 1000);
 
             expect(result).not.toBeNull();
             expect(result!.diffType).toBe("created");
@@ -124,10 +152,10 @@ describe("State Diff Engine", () => {
 
         it("creates snapshot and 'updated' change when value changes", () => {
             // First call — initial value
-            processStateDiff(db, entryId, "AAAAAQ==", 1000);
+            stateDiff.processStateDiff(db, entryId, "AAAAAQ==", 1000);
 
             // Second call — different value
-            const result = processStateDiff(db, entryId, "AAAAAg==", 1001);
+            const result = stateDiff.processStateDiff(db, entryId, "AAAAAg==", 1001);
 
             expect(result).not.toBeNull();
             expect(result!.diffType).toBe("updated");
@@ -145,22 +173,41 @@ describe("State Diff Engine", () => {
         });
 
         it("does NOT create records when hash is unchanged (storage optimization)", () => {
-            processStateDiff(db, entryId, "AAAAAQ==", 1000);
+            stateDiff.processStateDiff(db, entryId, "AAAAAQ==", 1000);
 
             // Same value again
-            const result = processStateDiff(db, entryId, "AAAAAQ==", 1001);
+            const result = stateDiff.processStateDiff(db, entryId, "AAAAAQ==", 1001);
 
             expect(result).toBeNull();
 
-            // Only one snapshot and one change should exist
+            const snapshotCount = db.prepare(
+                "SELECT COUNT(*) as count FROM state_snapshots WHERE contract_entry_id = ?"
+            ).get(entryId).count as number;
+            expect(snapshotCount).toBe(1);
+
             const changes = getStateChanges(db, entryId);
             expect(changes).toHaveLength(1);
         });
 
+        it("links updated state changes to the prior snapshot via old_snapshot_id", () => {
+            stateDiff.processStateDiff(db, entryId, "AAAAAQ==", 1000);
+            const firstSnapshot = getLatestSnapshot(db, entryId);
+            expect(firstSnapshot).toBeDefined();
+
+            stateDiff.processStateDiff(db, entryId, "AAAAAg==", 1001);
+            const changes = getStateChanges(db, entryId);
+            expect(changes).toHaveLength(2);
+
+            const updatedChange = changes[0]!;
+            expect(updatedChange.diff_type).toBe("updated");
+            expect(updatedChange.old_snapshot_id).toBe(firstSnapshot!.id);
+            expect(updatedChange.new_snapshot_id).toBeGreaterThan(0);
+        });
+
         it("correctly handles multiple sequential value changes", () => {
-            processStateDiff(db, entryId, "val1", 1000);
-            processStateDiff(db, entryId, "val2", 1001);
-            processStateDiff(db, entryId, "val3", 1002);
+            stateDiff.processStateDiff(db, entryId, "val1", 1000);
+            stateDiff.processStateDiff(db, entryId, "val2", 1001);
+            stateDiff.processStateDiff(db, entryId, "val3", 1002);
 
             const changes = getStateChanges(db, entryId);
             expect(changes).toHaveLength(3);
@@ -171,7 +218,7 @@ describe("State Diff Engine", () => {
         });
 
         it("handles empty XDR string as a valid value", () => {
-            const result = processStateDiff(db, entryId, "", 1000);
+            const result = stateDiff.processStateDiff(db, entryId, "", 1000);
             expect(result).not.toBeNull();
             expect(result!.diffType).toBe("created");
 
@@ -180,8 +227,8 @@ describe("State Diff Engine", () => {
         });
 
         it("diff_json in state_change contains old and new value info", () => {
-            processStateDiff(db, entryId, "old-xdr", 1000);
-            processStateDiff(db, entryId, "new-xdr", 1001);
+            stateDiff.processStateDiff(db, entryId, "old-xdr", 1000);
+            stateDiff.processStateDiff(db, entryId, "new-xdr", 1001);
 
             const changes = getStateChanges(db, entryId);
             const updatedChange = changes[0]!;
@@ -193,8 +240,8 @@ describe("State Diff Engine", () => {
         });
 
         it("stores correct snapshot references in state_change", () => {
-            processStateDiff(db, entryId, "val-a", 1000);
-            processStateDiff(db, entryId, "val-b", 1001);
+            stateDiff.processStateDiff(db, entryId, "val-a", 1000);
+            stateDiff.processStateDiff(db, entryId, "val-b", 1001);
 
             const changes = getStateChanges(db, entryId);
             const updatedChange = changes[0]!;
@@ -206,7 +253,7 @@ describe("State Diff Engine", () => {
         });
 
         it("'created' change has null old_snapshot_id", () => {
-            processStateDiff(db, entryId, "val-a", 1000);
+            stateDiff.processStateDiff(db, entryId, "val-a", 1000);
 
             const changes = getStateChanges(db, entryId);
             expect(changes[0]!.old_snapshot_id).toBeNull();
