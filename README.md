@@ -64,6 +64,12 @@ npx tsx src/index.ts --help
 # Or link globally after building
 npm link
 sorokeep --help
+
+# Install the local man page
+mkdir -p ~/.local/share/man/man1
+cp man/sorokeep.1 ~/.local/share/man/man1/
+mandb 2>/dev/null || true
+man sorokeep
 ```
 
 <!--
