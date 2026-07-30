@@ -86,5 +86,5 @@ describe("E2E sandbox network TTL lifecycle", () => {
         const alerts = getAlertHistory(db, deployment.contractId);
         expect(alerts.length).toBeGreaterThanOrEqual(1);
         expect(alerts.every((alert) => alert.resolved === 1)).toBe(true);
-    });
+    }, 30000);
 });

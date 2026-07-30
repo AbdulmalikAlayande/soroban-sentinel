@@ -1,217 +1,265 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// We will import after mocking
-const mockFetch = vi.fn();
-vi.stubGlobal("fetch", mockFetch);
+vi.mock("../../src/logging/index.js", () => ({
+    getLogger: () => ({
+        child: () => ({
+            debug: vi.fn(),
+            error: vi.fn(),
+            warn: vi.fn(),
+        }),
+    }),
+}));
 
-const makeStellarSecret = (suffix: string): string => `S${suffix.padEnd(55, "0")}`;
+import {
+    VaultAuthError,
+    VaultResolver,
+    VaultSecretError,
+    VaultSecretNotFoundError,
+} from "../../src/core/vault.js";
 
-const VALID_STELLAR_SECRET = makeStellarSecret("0");
-const VALID_STELLAR_SECRET_2 = makeStellarSecret("1");
-const VALID_STELLAR_SECRET_3 = makeStellarSecret("2");
-const VALID_STELLAR_SECRET_4 = makeStellarSecret("3");
-const VALID_STELLAR_SECRET_5 = makeStellarSecret("4");
-const TEST_VAULT_TOKEN = "test-vault-token";
+const VALID_SECRET = "S".repeat(56);
 
 describe("VaultResolver", () => {
+    const originalFetch = global.fetch;
+
     beforeEach(() => {
-        vi.clearAllMocks();
+        global.fetch = vi.fn();
     });
 
     afterEach(() => {
+        global.fetch = originalFetch;
         vi.restoreAllMocks();
     });
 
-    it("fetches valid secret keys from Vault endpoint (KV v2)", async () => {
-        const { VaultResolver, VaultAuthError } = await import("../../src/core/vault.js");
-
-        mockFetch.mockResolvedValue({
-            ok: true,
-            status: 200,
-            json: async () => ({
-                data: {
-                    data: {
-                        secret_key: VALID_STELLAR_SECRET
-                    },
-                    metadata: { version: 1 }
-                }
-            })
-        } as any);
-
-        const resolver = new VaultResolver({
-            url: "https://vault.example.com",
-            token: TEST_VAULT_TOKEN
-        });
-
-        const secret = await resolver.getSecret("secret/data/stellar/mykey");
-
-        expect(secret).toBe(VALID_STELLAR_SECRET);
-        expect(mockFetch).toHaveBeenCalledOnce();
-        const [url, init] = mockFetch.mock.calls[0];
-        expect(url).toBe("https://vault.example.com/v1/secret/data/stellar/mykey");
-        expect((init as any).headers["X-Vault-Token"]).toBe(TEST_VAULT_TOKEN);
+    it("requires a Vault URL", () => {
+        expect(() => new VaultResolver({ url: "", token: "token" })).toThrow(VaultSecretError);
     });
 
-    it("fetches valid secret keys from Vault endpoint (KV v1)", async () => {
-        const { VaultResolver } = await import("../../src/core/vault.js");
-
-        mockFetch.mockResolvedValue({
-            ok: true,
-            status: 200,
-            json: async () => ({
-                data: {
-                    private_key: VALID_STELLAR_SECRET_2
-                }
-            })
-        } as any);
-
-        const resolver = new VaultResolver({
-            url: "https://vault.example.com",
-            token: "test-vault-token"
-        });
-
-        const secret = await resolver.getSecret("secret/stellar/mykey");
-        expect(secret).toBe(VALID_STELLAR_SECRET_2);
+    it("requires a Vault token", () => {
+        expect(() => new VaultResolver({ url: "https://vault.example", token: "" })).toThrow(VaultAuthError);
     });
 
-    it("raises error on invalid authentication credentials", async () => {
-        const { VaultResolver, VaultAuthError } = await import("../../src/core/vault.js");
-
-        mockFetch.mockResolvedValue({
-            ok: false,
-            status: 403,
-            json: async () => ({ errors: ["permission denied"] })
-        } as any);
-
-        const resolver = new VaultResolver({
-            url: "https://vault.example.com",
-            token: "bad-token"
-        });
-
-        await expect(resolver.getSecret("secret/data/stellar/mykey"))
-            .rejects.toThrow(VaultAuthError);
-
-        try {
-            await resolver.getSecret("secret/data/stellar/mykey");
-        } catch (e: any) {
-            expect(e.message).toMatch(/authentication|permission|403/i);
-        }
-    });
-
-    it("raises error when secret is not found", async () => {
-        const { VaultResolver, VaultSecretNotFoundError } = await import("../../src/core/vault.js");
-
-        mockFetch.mockResolvedValue({
-            ok: false,
-            status: 404,
-            json: async () => ({ errors: [] })
-        } as any);
-
-        const resolver = new VaultResolver({
-            url: "https://vault.example.com",
-            token: TEST_VAULT_TOKEN
-        });
-
-        await expect(resolver.getSecret("secret/data/missing"))
-            .rejects.toThrow(VaultSecretNotFoundError);
-    });
-
-    it("extracts secret from multiple common field names", async () => {
-        const { VaultResolver } = await import("../../src/core/vault.js");
-
-        const testCases = [
-            { field: "secret", value: VALID_STELLAR_SECRET },
-            { field: "value", value: VALID_STELLAR_SECRET_3 },
-            { field: "stellar_secret", value: VALID_STELLAR_SECRET_4 },
-        ];
-
-        for (const tc of testCases) {
-            mockFetch.mockResolvedValueOnce({
-                ok: true,
+    it("reads a KV v1 secret using a default candidate field and normalizes the URL", async () => {
+        vi.mocked(global.fetch).mockResolvedValue(
+            new Response(JSON.stringify({ data: { secret_key: VALID_SECRET } }), {
                 status: 200,
-                json: async () => ({ data: { data: { [tc.field]: tc.value } } })
-            } as any);
-
-            const resolver = new VaultResolver({ url: "https://vault.example.com", token: "t" });
-            const secret = await resolver.getSecret("secret/data/x");
-            expect(secret).toBe(tc.value);
-        }
-    });
-
-    it("supports field selection via #fragment", async () => {
-        const { VaultResolver } = await import("../../src/core/vault.js");
-
-        mockFetch.mockResolvedValue({
-            ok: true,
-            status: 200,
-            json: async () => ({
-                data: { data: { my_custom_field: VALID_STELLAR_SECRET_4 } }
-            })
-        } as any);
-
-        const resolver = new VaultResolver({ url: "https://vault.example.com", token: "test-vault-token" });
-        const secret = await resolver.getSecret("secret/data/stellar/mykey#my_custom_field");
-        expect(secret).toBe(VALID_STELLAR_SECRET_4);
-    });
-
-    it("validates Stellar secret key format", async () => {
-        const { VaultResolver, VaultSecretError } = await import("../../src/core/vault.js");
-
-        mockFetch.mockResolvedValue({
-            ok: true,
-            status: 200,
-            json: async () => ({ data: { data: { secret: "not-a-stellar-key" } } })
-        } as any);
-
-        const resolver = new VaultResolver({ url: "https://vault.example.com", token: "t" });
-        await expect(resolver.getSecret("secret/data/x")).rejects.toThrow(VaultSecretError);
-    });
-
-    it("includes Vault namespace header when configured", async () => {
-        const { VaultResolver } = await import("../../src/core/vault.js");
-
-        mockFetch.mockResolvedValue({
-            ok: true,
-            status: 200,
-            json: async () => ({ data: { data: { secret: VALID_STELLAR_SECRET_5 } } })
-        } as any);
+                headers: { "Content-Type": "application/json" },
+            }),
+        );
 
         const resolver = new VaultResolver({
-            url: "https://vault.example.com",
-            token: "test-vault-token",
-            namespace: "admin"
+            url: "https://vault.example/",
+            token: "token-123",
         });
 
-        await resolver.getSecret("secret/data/x");
-        const [, init] = mockFetch.mock.calls[0];
-        expect((init as any).headers["X-Vault-Namespace"]).toBe("admin");
+        await expect(resolver.getSecret("secret/app")).resolves.toBe(VALID_SECRET);
+        expect(global.fetch).toHaveBeenCalledWith(
+            "https://vault.example/v1/secret/app",
+            {
+                headers: {
+                    "X-Vault-Token": "token-123",
+                    Accept: "application/json",
+                },
+            },
+        );
     });
 
-    it("resolves secret via resolveSecretKey with vault: prefix", async () => {
-        // Mock config loader to return vault config
-        vi.mock("../../src/utils/config.js", () => ({
-            loadConfig: () => ({
-                network: "testnet",
-                pollingIntervalSeconds: 300,
-                vault: {
-                    url: "https://vault.example.com",
-                    token: TEST_VAULT_TOKEN
-                }
-            })
-        }));
+    it("reads a KV v2 secret with an explicit field and namespace header", async () => {
+        vi.mocked(global.fetch).mockResolvedValue(
+            new Response(JSON.stringify({ data: { data: { custom_field: VALID_SECRET } } }), {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+            }),
+        );
 
-        mockFetch.mockResolvedValue({
-            ok: true,
-            status: 200,
-            json: async () => ({ data: { data: { secret: VALID_STELLAR_SECRET_5 } } })
-        } as any);
+        const resolver = new VaultResolver({
+            url: "https://vault.example",
+            token: "token-456",
+            namespace: "team-a",
+        });
 
-        // Need to re-import extension module to pick up mocked config
-        vi.resetModules();
-        const { resolveSecretKey } = await import("../../src/core/extension.js");
+        await expect(resolver.getSecret("/kv/data/app#custom_field")).resolves.toBe(VALID_SECRET);
+        expect(global.fetch).toHaveBeenCalledWith(
+            "https://vault.example/v1/kv/data/app",
+            {
+                headers: {
+                    "X-Vault-Token": "token-456",
+                    "X-Vault-Namespace": "team-a",
+                    Accept: "application/json",
+                },
+            },
+        );
+    });
 
-        const secret = await resolveSecretKey("vault:secret/data/stellar/mykey");
-        expect(secret).toBe(VALID_STELLAR_SECRET_5);
+    it("wraps network failures as VaultSecretError", async () => {
+        vi.mocked(global.fetch).mockRejectedValue(new Error("connect ECONNREFUSED"));
+
+        const resolver = new VaultResolver({
+            url: "https://vault.example",
+            token: "token",
+        });
+
+        await expect(resolver.getSecret("secret/app")).rejects.toThrow(
+            'Vault request failed: connect ECONNREFUSED',
+        );
+    });
+
+    it("throws VaultAuthError for 401 and 403 responses", async () => {
+        const resolver = new VaultResolver({
+            url: "https://vault.example",
+            token: "token",
+        });
+
+        vi.mocked(global.fetch).mockResolvedValueOnce(new Response("", { status: 401 }));
+        await expect(resolver.getSecret("secret/app")).rejects.toThrow(VaultAuthError);
+
+        vi.mocked(global.fetch).mockResolvedValueOnce(new Response("", { status: 403 }));
+        await expect(resolver.getSecret("secret/app")).rejects.toThrow(VaultAuthError);
+    });
+
+    it("throws VaultSecretNotFoundError for 404 responses", async () => {
+        vi.mocked(global.fetch).mockResolvedValue(new Response("", { status: 404 }));
+
+        const resolver = new VaultResolver({
+            url: "https://vault.example",
+            token: "token",
+        });
+
+        await expect(resolver.getSecret("secret/missing")).rejects.toThrow(VaultSecretNotFoundError);
+    });
+
+    it("includes the response body for non-auth HTTP failures", async () => {
+        vi.mocked(global.fetch).mockResolvedValue(new Response("kaboom", { status: 500 }));
+
+        const resolver = new VaultResolver({
+            url: "https://vault.example",
+            token: "token",
+        });
+
+        await expect(resolver.getSecret("secret/app")).rejects.toThrow(
+            "Vault request failed with status 500: kaboom",
+        );
+    });
+
+    it("fails when the Vault response is not valid JSON", async () => {
+        vi.mocked(global.fetch).mockResolvedValue(
+            new Response("not-json", {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+            }),
+        );
+
+        const resolver = new VaultResolver({
+            url: "https://vault.example",
+            token: "token",
+        });
+
+        await expect(resolver.getSecret("secret/app")).rejects.toThrow(
+            "Failed to parse Vault response as JSON",
+        );
+    });
+
+    it("fails when no secret data is present in the response", async () => {
+        vi.mocked(global.fetch).mockResolvedValue(
+            new Response(JSON.stringify({ metadata: {} }), {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+            }),
+        );
+
+        const resolver = new VaultResolver({
+            url: "https://vault.example",
+            token: "token",
+        });
+
+        await expect(resolver.getSecret("secret/app")).rejects.toThrow(
+            "No secret data found at Vault path: secret/app",
+        );
+    });
+
+    it("fails when an explicit field is requested but not found", async () => {
+        vi.mocked(global.fetch).mockResolvedValue(
+            new Response(JSON.stringify({ data: { other_field: VALID_SECRET } }), {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+            }),
+        );
+
+        const resolver = new VaultResolver({
+            url: "https://vault.example",
+            token: "token",
+        });
+
+        await expect(resolver.getSecret("secret/app#missing_field")).rejects.toThrow(
+            "Field 'missing_field' not found in Vault secret at path: secret/app",
+        );
+    });
+
+    it("falls back to the only available string field when no standard field name exists", async () => {
+        vi.mocked(global.fetch).mockResolvedValue(
+            new Response(JSON.stringify({ data: { custom: VALID_SECRET } }), {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+            }),
+        );
+
+        const resolver = new VaultResolver({
+            url: "https://vault.example",
+            token: "token",
+        });
+
+        await expect(resolver.getSecret("secret/app")).resolves.toBe(VALID_SECRET);
+    });
+
+    it("falls back to a Stellar-looking secret among multiple string fields", async () => {
+        vi.mocked(global.fetch).mockResolvedValue(
+            new Response(JSON.stringify({ data: { username: "ops", api_key: VALID_SECRET } }), {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+            }),
+        );
+
+        const resolver = new VaultResolver({
+            url: "https://vault.example",
+            token: "token",
+        });
+
+        await expect(resolver.getSecret("secret/app")).resolves.toBe(VALID_SECRET);
+    });
+
+    it("fails when no valid secret field can be identified", async () => {
+        vi.mocked(global.fetch).mockResolvedValue(
+            new Response(JSON.stringify({ data: { username: "ops", password: "plain-text" } }), {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+            }),
+        );
+
+        const resolver = new VaultResolver({
+            url: "https://vault.example",
+            token: "token",
+        });
+
+        await expect(resolver.getSecret("secret/app")).rejects.toThrow(
+            "No valid secret key found in Vault response at path: secret/app.",
+        );
+    });
+
+    it("fails when the chosen secret does not match Stellar secret format", async () => {
+        vi.mocked(global.fetch).mockResolvedValue(
+            new Response(JSON.stringify({ data: { secret_key: "not-a-stellar-secret" } }), {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+            }),
+        );
+
+        const resolver = new VaultResolver({
+            url: "https://vault.example",
+            token: "token",
+        });
+
+        await expect(resolver.getSecret("secret/app")).rejects.toThrow(
+            "Secret retrieved from Vault is not a valid Stellar secret key format.",
+        );
     });
 });

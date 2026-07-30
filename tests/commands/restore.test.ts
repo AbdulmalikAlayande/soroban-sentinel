@@ -1,13 +1,24 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { registerRestoreCommand } from "../../src/commands/restore";
 import { Command } from "commander";
+
+// Mock modules before importing them
+vi.mock("../../src/db/database", () => ({
+  getDatabase: vi.fn(() => ({}))
+}));
+
+vi.mock("../../src/db/repositories", () => ({
+  getContract: vi.fn(),
+  getEntriesForContract: vi.fn()
+}));
+
+vi.mock("../../src/core/extension", () => ({
+  restoreEntries: vi.fn()
+}));
+
 import * as dbLib from "../../src/db/database";
 import * as repos from "../../src/db/repositories";
 import * as extensionLib from "../../src/core/extension";
-
-vi.mock("../../src/db/database");
-vi.mock("../../src/db/repositories");
-vi.mock("../../src/core/extension");
 
 describe("Restore Command CLI", () => {
     let program: Command;
@@ -29,7 +40,7 @@ describe("Restore Command CLI", () => {
         mockExit = vi.spyOn(process, "exit").mockImplementation((() => {}) as any);
         mockError = vi.spyOn(console, "error").mockImplementation(() => {});
         mockLog = vi.spyOn(console, "log").mockImplementation(() => {});
-        vi.spyOn(dbLib, "getDatabase").mockReturnValue({} as any);
+        vi.mocked(dbLib.getDatabase).mockReturnValue({} as any);
     });
 
     afterEach(() => {

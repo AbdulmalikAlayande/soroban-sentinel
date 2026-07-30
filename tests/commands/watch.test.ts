@@ -1,16 +1,30 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { registerWatchCommand } from "../../src/commands/watch";
 import { Command } from "commander";
+import readline from "node:readline";
+
+// Mock modules before importing them
+vi.mock("../../src/db/database", () => ({
+  getDatabase: vi.fn(() => ({ close: vi.fn() }))
+}));
+
+vi.mock("../../src/core/watch", () => ({
+  watchContract: vi.fn()
+}));
+
+vi.mock("../../src/utils/watch-config", () => ({
+  loadWatchContractsFile: vi.fn()
+}));
+
+vi.mock("../../src/db/repositories", () => ({
+  getContract: vi.fn(),
+  deleteContract: vi.fn()
+}));
+
 import * as dbLib from "../../src/db/database";
 import * as watchCore from "../../src/core/watch";
 import * as watchConfig from "../../src/utils/watch-config";
 import * as repositories from "../../src/db/repositories";
-import readline from "node:readline";
-
-vi.mock("../../src/db/database");
-vi.mock("../../src/core/watch");
-vi.mock("../../src/utils/watch-config");
-vi.mock("../../src/db/repositories");
 
 describe("Watch Command CLI", () => {
   let program: Command;
@@ -36,6 +50,7 @@ describe("Watch Command CLI", () => {
     mockLog = vi.spyOn(console, "log").mockImplementation(() => {});
     mockWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(dbLib, "getDatabase").mockReturnValue({} as any);
+    vi.mocked(watchCore.watchContract).mockReset();
   });
 
   afterEach(() => {
@@ -183,6 +198,7 @@ describe("Watch Command CLI", () => {
       network: "testnet",
     });
 
+    expect(watchCore.watchContract).toHaveBeenCalledTimes(2);
     expect(watchCore.watchContract).toHaveBeenNthCalledWith(
       1,
       expect.anything(),
@@ -274,6 +290,7 @@ describe("Unwatch Command CLI", () => {
       close: vi.fn()
     };
     vi.spyOn(readline, "createInterface").mockReturnValue(mockRl as any);
+    vi.mocked(repositories.deleteContract).mockReset();
   });
 
   afterEach(() => {
@@ -302,10 +319,14 @@ describe("Unwatch Command CLI", () => {
 
   it("prompts for confirmation when --yes is not passed and deletes if confirmed", async () => {
     vi.mocked(repositories.getContract).mockReturnValue({ id: "CDEF1234" } as any);
-    mockRl.question.mockImplementation((query: string, cb: (ans: string) => void) => {
-        cb("yes");
+    let questionCallback: (answer: string) => void;
+    mockRl.question.mockImplementationOnce((query: string, callback: (answer: string) => void) => {
+        questionCallback = callback;
     });
-    await unwatchActionFn("CDEF1234", {});
+    const promise = unwatchActionFn("CDEF1234", {});
+    // Simulate user answering "yes"
+    questionCallback!("yes");
+    await promise;
     expect(mockRl.question).toHaveBeenCalled();
     expect(repositories.deleteContract).toHaveBeenCalledWith(expect.anything(), "CDEF1234");
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("Successfully unwatched"));
@@ -313,12 +334,16 @@ describe("Unwatch Command CLI", () => {
 
   it("does not delete if confirmation is denied", async () => {
     vi.mocked(repositories.getContract).mockReturnValue({ id: "CDEF1234" } as any);
-    mockRl.question.mockImplementation((query: string, cb: (ans: string) => void) => {
-        cb("no");
+    let questionCallback: (answer: string) => void;
+    mockRl.question.mockImplementationOnce((query: string, callback: (answer: string) => void) => {
+        questionCallback = callback;
     });
-    await unwatchActionFn("CDEF1234", {});
+    const promise = unwatchActionFn("CDEF1234", {});
+    // Simulate user answering "no"
+    questionCallback!("no");
+    await promise;
     expect(mockRl.question).toHaveBeenCalled();
-    expect(repositories.deleteContract).not.toHaveBeenCalled();
+    expect(repositories.deleteContract).toHaveBeenCalledTimes(0);
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("Unwatch cancelled"));
   });
 });

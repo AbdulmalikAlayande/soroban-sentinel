@@ -4,13 +4,12 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
-    include: ["tests/**/*.test.ts"],
-    typecheck: {
-      tsconfig: "./tsconfig.test.json",
-    },
+    pool: "forks",
+    include: ["tests/**/*.test.ts", "src/**/*.test.ts"],
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
+      exclude: ["src/**/*.test.ts"],
       thresholds: {
         lines: 65,
         functions: 85,

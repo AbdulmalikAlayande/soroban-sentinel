@@ -12,7 +12,7 @@ export function scvalToJSON(val: xdr.ScVal): any {
   let native;
   try {
     native = scValToNative(val);
-  } catch (e) {
+  } catch (_error) {
     return { unsupported: val.switch().name };
   }
   return serializeBigInts(native);

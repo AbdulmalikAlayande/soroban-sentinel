@@ -1,7 +1,10 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { StellarRpcClient, extractResourceCosts, executeWithRetry } from "../../src/rpc/client";
-import { Contract, xdr, Keypair } from "@stellar/stellar-sdk";
+import { StellarRpcClient, extractResourceCosts, executeWithRetry, parseResourceEstimate, assertSimulationSuccess, parseFeeStat, safeParseNumber } from "../../src/rpc/client";
+import { Contract, xdr, Keypair, StrKey } from "@stellar/stellar-sdk";
+
+const FIXTURE_CONTRACT_ID = StrKey.encodeContract(Buffer.alloc(32, 7));
+const MISSING_CONTRACT_ID = StrKey.encodeContract(Buffer.from("missing".padEnd(32, "a")));
 
 vi.mock("@stellar/stellar-sdk", async () =>  {
     const actualModule = await vi.importActual<any>("@stellar/stellar-sdk");
@@ -114,18 +117,29 @@ vi.mock("@stellar/stellar-sdk", async () =>  {
             return new actualModule.Account(publicKey, "123");
         }
 
-        async simulateTransaction() {
+        async simulateTransaction(tx?: any) {
             if (this.serverUrl && this.serverUrl.includes("sim-fail")) return { error: "Simulation failed" };
+            if (this.serverUrl && this.serverUrl.includes("simulation-fail")) return { error: "Contract method not found" };
+            if (this.serverUrl && this.serverUrl.includes("method-not-found")) return { error: "Method not found" };
             return {
                 cost: { cpuInsns: "1000", memBytes: "100" },
                 transactionData: new actualModule.SorobanDataBuilder().build(),
                 minResourceFee: "100",
+                result: {
+                    retval: actualModule.xdr.ScVal.scvU32(7) // Mock decimals return
+                }
             };
         }
 
         async sendTransaction() {
             if (this.serverUrl && this.serverUrl.includes("send-error")) {
                 return { status: "ERROR", errorResult: "Something went wrong", hash: "error-hash" };
+            }
+            if (this.serverUrl && this.serverUrl.includes("send-fail")) {
+                return { status: "ERROR", errorResult: "Transaction send error", hash: "send-fail-hash" };
+            }
+            if (this.serverUrl && this.serverUrl.includes("payment-fail")) {
+                return { status: "ERROR", errorResult: "Payment failed", hash: "payment-fail-hash" };
             }
             return { status: "PENDING", hash: "mock-tx-hash" };
         }
@@ -138,7 +152,7 @@ vi.mock("@stellar/stellar-sdk", async () =>  {
             Server: MockRPCServer,
             assembleTransaction: vi.fn(() => ({ build: () => ({ sign: vi.fn() }) })),
             Api: {
-                ...moduleRPC.Api,
+                ...(moduleRPC.Api as any),
                 isSimulationError: vi.fn((sim: any) => !!sim.error)
             }
         },
@@ -217,7 +231,7 @@ describe("StellarRpcClient", () => {
 
     describe("Contract Instance Entries Operations with `getContractInstanceEntry(contractID)`", () => {
         it('should return an instance entry with TTL data for a valid contract', async () => {
-            const contractID = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
+            const contractID = FIXTURE_CONTRACT_ID;
             const retrievedContractInstanceEntry = await client.getContractInstanceEntry(contractID);
 
             expect(retrievedContractInstanceEntry).toBeDefined();
@@ -242,7 +256,7 @@ describe("StellarRpcClient", () => {
         
         it('should reject if RPC times out during getContractInstanceEntry', async () => {
             const timeoutClient = new StellarRpcClient("testnet", "https://timeout.com");
-            await expect(timeoutClient.getContractInstanceEntry("CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6")).rejects.toThrow();
+            await expect(timeoutClient.getContractInstanceEntry(FIXTURE_CONTRACT_ID)).rejects.toThrow();
         });
     });
 
@@ -265,7 +279,7 @@ describe("StellarRpcClient", () => {
 
     describe("getEntryTTLs", () => {
         it("accepts an array of base64 XDR keys and returns TTL data", async () => {
-            const contract = new Contract("CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6");
+            const contract = new Contract(FIXTURE_CONTRACT_ID);
             const xdrKey = contract.getFootprint().toXDR("base64");
             const retrievedEntryTTLs = await client.getEntryTTLs([xdrKey]);
             expect(retrievedEntryTTLs).toBeDefined();
@@ -279,9 +293,9 @@ describe("StellarRpcClient", () => {
         });
         
         it("handles missing entries in the array response", async () => {
-            const validXdr = new Contract("CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6").getFootprint().toXDR("base64");
+            const validXdr = new Contract(FIXTURE_CONTRACT_ID).getFootprint().toXDR("base64");
             const xdrObj = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
-                contract: new xdr.ScAddress.scAddressTypeContract(Buffer.from("missing".padEnd(32, "a"))),
+                contract: xdr.ScAddress.scAddressTypeContract(Buffer.from("missing".padEnd(32, "a")) as any),
                 key: xdr.ScVal.scvLedgerKeyContractInstance(),
                 durability: xdr.ContractDataDurability.persistent()
             }));
@@ -345,7 +359,7 @@ describe("StellarRpcClient", () => {
 
     describe("Transaction Submissions", () => {
         const dummyKey = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
-            contract: new xdr.ScAddress.scAddressTypeContract(Buffer.from("a".repeat(32))),
+            contract: xdr.ScAddress.scAddressTypeContract(Buffer.from("a".repeat(32)) as any),
             key: xdr.ScVal.scvLedgerKeyContractInstance(),
             durability: xdr.ContractDataDurability.persistent()
         })).toXDR("base64");
@@ -396,7 +410,7 @@ describe("StellarRpcClient", () => {
 
         it("pollTransaction handles NOT_FOUND and timeout", async () => {
             const mockClient = new StellarRpcClient("testnet", "https://testnet.stellar.org");
-            mockClient.server.getTransaction = vi.fn().mockResolvedValue({ status: "NOT_FOUND" });
+            (mockClient as any).server.getTransaction = vi.fn().mockResolvedValue({ status: "NOT_FOUND" });
             const result = await mockClient["pollTransaction"]("missing", 2, 10);
             expect(result.success).toBe(false);
             expect(result.error).toContain("Transaction polling timed out after 2 attempts");
@@ -519,7 +533,7 @@ describe("StellarRpcClient", () => {
     });
     describe("ExtendFootprintTTLOp — Simulation and Fee Parsing", () => {
         const dummyKey = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
-            contract: new xdr.ScAddress.scAddressTypeContract(Buffer.from("a".repeat(32))),
+            contract: xdr.ScAddress.scAddressTypeContract(Buffer.from("a".repeat(32)) as any),
             key: xdr.ScVal.scvLedgerKeyContractInstance(),
             durability: xdr.ContractDataDurability.persistent()
         })).toXDR("base64");
@@ -591,6 +605,156 @@ describe("StellarRpcClient", () => {
     });
 
 
+    describe("parseResourceEstimate", () => {
+        it("returns null for null input", () => {
+            expect(parseResourceEstimate(null)).toBeNull();
+        });
+
+        it("returns null for undefined input", () => {
+            expect(parseResourceEstimate(undefined)).toBeNull();
+        });
+
+        it("returns null for array input", () => {
+            expect(parseResourceEstimate([1, 2, 3])).toBeNull();
+        });
+
+        it("returns null for non-object input", () => {
+            expect(parseResourceEstimate("string")).toBeNull();
+            expect(parseResourceEstimate(123)).toBeNull();
+            expect(parseResourceEstimate(true)).toBeNull();
+        });
+
+        it("returns null when error field is present", () => {
+            const response = { error: "Simulation failed" };
+            expect(parseResourceEstimate(response)).toBeNull();
+        });
+
+        it("returns null when error field is empty string", () => {
+            const response = { error: "" };
+            expect(parseResourceEstimate(response)).toBeNull();
+        });
+
+        it("returns null when neither cost nor minResourceFee are present", () => {
+            const response = { otherField: "value" };
+            expect(parseResourceEstimate(response)).toBeNull();
+        });
+
+        it("parses minResourceFee when present as number", () => {
+            const response = { minResourceFee: 100 };
+            const result = parseResourceEstimate(response);
+            expect(result).toEqual({ cpuInstructions: 0, memoryBytes: 0, minResourceFee: 100 });
+        });
+
+        it("parses minResourceFee when present as string", () => {
+            const response = { minResourceFee: "100" };
+            const result = parseResourceEstimate(response);
+            expect(result).toEqual({ cpuInstructions: 0, memoryBytes: 0, minResourceFee: 100 });
+        });
+
+        it("defaults minResourceFee to 0 when not present but cost is", () => {
+            const response = { cost: { cpuInsns: 1000, memBytes: 100 } };
+            const result = parseResourceEstimate(response);
+            expect(result).toEqual({ cpuInstructions: 1000, memoryBytes: 100, minResourceFee: 0 });
+        });
+
+        it("parses cost fields when cost is an object", () => {
+            const response = { cost: { cpuInsns: "5000", memBytes: "200" } };
+            const result = parseResourceEstimate(response);
+            expect(result).toEqual({ cpuInstructions: 5000, memoryBytes: 200, minResourceFee: 0 });
+        });
+
+        it("handles cost as array", () => {
+            const response = { cost: [1, 2, 3] };
+            const result = parseResourceEstimate(response);
+            expect(result).toEqual({ cpuInstructions: 0, memoryBytes: 0, minResourceFee: 0 });
+        });
+
+        it("handles missing cpuInsns in cost object", () => {
+            const response = { cost: { memBytes: "200" } };
+            const result = parseResourceEstimate(response);
+            expect(result).toEqual({ cpuInstructions: 0, memoryBytes: 200, minResourceFee: 0 });
+        });
+
+        it("handles missing memBytes in cost object", () => {
+            const response = { cost: { cpuInsns: "5000" } };
+            const result = parseResourceEstimate(response);
+            expect(result).toEqual({ cpuInstructions: 5000, memoryBytes: 0, minResourceFee: 0 });
+        });
+
+        it("handles both cost and minResourceFee present", () => {
+            const response = { cost: { cpuInsns: "5000", memBytes: "200" }, minResourceFee: "150" };
+            const result = parseResourceEstimate(response);
+            expect(result).toEqual({ cpuInstructions: 5000, memoryBytes: 200, minResourceFee: 150 });
+        });
+
+        it("defaults to 0 for invalid numeric values", () => {
+            const response = { cost: { cpuInsns: "invalid", memBytes: -100 } };
+            const result = parseResourceEstimate(response);
+            expect(result).toEqual({ cpuInstructions: 0, memoryBytes: 0, minResourceFee: 0 });
+        });
+
+        it("handles null cost field", () => {
+            const response = { cost: null };
+            const result = parseResourceEstimate(response);
+            expect(result).toEqual({ cpuInstructions: 0, memoryBytes: 0, minResourceFee: 0 });
+        });
+
+        it("handles undefined cost field", () => {
+            const response = { cost: undefined };
+            const result = parseResourceEstimate(response);
+            expect(result).toEqual({ cpuInstructions: 0, memoryBytes: 0, minResourceFee: 0 });
+        });
+
+        it("handles null minResourceFee field", () => {
+            const response = { minResourceFee: null };
+            const result = parseResourceEstimate(response);
+            expect(result).toEqual({ cpuInstructions: 0, memoryBytes: 0, minResourceFee: 0 });
+        });
+
+        it("handles undefined minResourceFee field", () => {
+            const response = { minResourceFee: undefined };
+            const result = parseResourceEstimate(response);
+            expect(result).toEqual({ cpuInstructions: 0, memoryBytes: 0, minResourceFee: 0 });
+        });
+    });
+
+    describe("assertSimulationSuccess", () => {
+        it("does not throw when simulation is successful", () => {
+            const sim = { result: { retval: {} } };
+            expect(() => assertSimulationSuccess(sim as any)).not.toThrow();
+        });
+
+        it("throws error for txBadSeq", () => {
+            const sim = { error: "txBadSeq" };
+            expect(() => assertSimulationSuccess(sim as any)).toThrow("Expired sequence number");
+        });
+
+        it("throws error for txInsufficientBalance", () => {
+            const sim = { error: "txInsufficientBalance" };
+            expect(() => assertSimulationSuccess(sim as any)).toThrow("Insufficient wallet balance");
+        });
+
+        it("throws error for invalid footprint", () => {
+            const sim = { error: "invalid footprint" };
+            expect(() => assertSimulationSuccess(sim as any)).toThrow("Invalid footprint key");
+        });
+
+        it("throws generic error for unknown simulation error", () => {
+            const sim = { error: "some other error" };
+            expect(() => assertSimulationSuccess(sim as any)).toThrow("Simulation failed: some other error");
+        });
+
+        it("throws generic error when error field is undefined", () => {
+            const sim = { error: undefined };
+            expect(() => assertSimulationSuccess(sim as any)).toThrow("Simulation failed: unknown error");
+        });
+
+        it("throws generic error when error field is null", () => {
+            const sim = { error: null };
+            expect(() => assertSimulationSuccess(sim as any)).toThrow("Simulation failed: unknown error");
+        });
+    });
+
     describe("executeWithRetry", () => {
         beforeEach(() => {
             vi.useFakeTimers();
@@ -614,13 +778,13 @@ describe("StellarRpcClient", () => {
             });
 
             const promise = executeWithRetry(action);
-            
+
             // Advance timers for backoff
             await vi.advanceTimersByTimeAsync(1000); // 1st retry
             await vi.advanceTimersByTimeAsync(2000); // 2nd retry
 
             const result = await promise;
-            
+
             expect(result).toBe("success");
             expect(action).toHaveBeenCalledTimes(3);
         });
@@ -645,7 +809,78 @@ describe("StellarRpcClient", () => {
             expect(error.message).toBe("timeout");
             expect(action).toHaveBeenCalledTimes(4); // 1 initial + 3 retries
         });
-        
+
+        it("Retries on ECONNRESET error", async () => {
+            const action = vi.fn().mockImplementation(async () => {
+                const error = new Error("connection reset");
+                (error as any).code = "ECONNRESET";
+                throw error;
+            });
+
+            let error: any;
+            const promise = executeWithRetry(action).catch(e => { error = e; });
+
+            await vi.advanceTimersByTimeAsync(1000);
+            await vi.advanceTimersByTimeAsync(2000);
+            await vi.advanceTimersByTimeAsync(4000);
+
+            await promise;
+            expect(action).toHaveBeenCalledTimes(4);
+        });
+
+        it("Retries on timeout in error message", async () => {
+            const action = vi.fn().mockImplementation(async () => {
+                const error = new Error("request timeout");
+                throw error;
+            });
+
+            let error: any;
+            const promise = executeWithRetry(action).catch(e => { error = e; });
+
+            await vi.advanceTimersByTimeAsync(1000);
+            await vi.advanceTimersByTimeAsync(2000);
+            await vi.advanceTimersByTimeAsync(4000);
+
+            await promise;
+            expect(action).toHaveBeenCalledTimes(4);
+        });
+
+        it("Retries on 429 rate limit error", async () => {
+            const action = vi.fn().mockImplementation(async () => {
+                const error = new Error("Too many requests");
+                (error as any).response = { status: 429 };
+                throw error;
+            });
+
+            let error: any;
+            const promise = executeWithRetry(action).catch(e => { error = e; });
+
+            await vi.advanceTimersByTimeAsync(1000);
+            await vi.advanceTimersByTimeAsync(2000);
+            await vi.advanceTimersByTimeAsync(4000);
+
+            await promise;
+            expect(action).toHaveBeenCalledTimes(4);
+        });
+
+        it("Retries on 500 server error", async () => {
+            const action = vi.fn().mockImplementation(async () => {
+                const error = new Error("Internal server error");
+                (error as any).response = { status: 500 };
+                throw error;
+            });
+
+            let error: any;
+            const promise = executeWithRetry(action).catch(e => { error = e; });
+
+            await vi.advanceTimersByTimeAsync(1000);
+            await vi.advanceTimersByTimeAsync(2000);
+            await vi.advanceTimersByTimeAsync(4000);
+
+            await promise;
+            expect(action).toHaveBeenCalledTimes(4);
+        });
+
         it("Does not retry on non-transient errors like 400 Bad Request", async () => {
             const action = vi.fn().mockImplementation(async () => {
                 const error = new Error("400 Bad Request");
@@ -655,6 +890,320 @@ describe("StellarRpcClient", () => {
 
             await expect(executeWithRetry(action)).rejects.toThrow("400 Bad Request");
             expect(action).toHaveBeenCalledTimes(1);
+        });
+
+        it("Does not retry on 404 Not Found", async () => {
+            const action = vi.fn().mockImplementation(async () => {
+                const error = new Error("Not found");
+                (error as any).response = { status: 404 };
+                throw error;
+            });
+
+            await expect(executeWithRetry(action)).rejects.toThrow("Not found");
+            expect(action).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    describe("getContractStorageEntries", () => {
+        it("returns storage entries with TTL data for valid XDR keys", async () => {
+            const xdrKey = new Contract(FIXTURE_CONTRACT_ID).getFootprint().toXDR("base64");
+            const entries = await client.getContractStorageEntries([xdrKey]);
+            expect(entries).toBeDefined();
+            expect(entries).toHaveLength(1);
+            expect(entries[0]!.latestLedger).toBe(2443398);
+        });
+
+        it("handles empty array gracefully", async () => {
+            const entries = await client.getContractStorageEntries([]);
+            expect(entries).toHaveLength(0);
+        });
+
+        it("handles malformed XDR gracefully", async () => {
+            await expect(client.getContractStorageEntries(["invalid-xdr"])).rejects.toThrow();
+        });
+    });
+
+    describe("getSacDecimals", () => {
+        it("returns decimals from SAC contract simulation", async () => {
+            const decimals = await client.getSacDecimals(FIXTURE_CONTRACT_ID);
+            expect(decimals).toBe(7); // Standard SAC decimals
+        });
+
+        it("falls back to default decimals when simulation fails", async () => {
+            const simulationFailClient = new StellarRpcClient("testnet", "https://simulation-fail.com");
+            const decimals = await simulationFailClient.getSacDecimals(FIXTURE_CONTRACT_ID);
+            expect(decimals).toBe(7); // Fallback value
+        });
+    });
+
+    describe("getMonitoredKeys", () => {
+        it("calls get_monitored_keys view method and returns XDR array", async () => {
+            const keys = await client.getMonitoredKeys(FIXTURE_CONTRACT_ID);
+            expect(Array.isArray(keys)).toBe(true);
+            expect(keys.length).toBeGreaterThanOrEqual(0);
+        });
+
+        it("throws error when contract doesn't have get_monitored_keys method", async () => {
+            const errorClient = new StellarRpcClient("testnet", "https://method-not-found.com");
+            await expect(errorClient.getMonitoredKeys("INVALID_CONTRACT")).rejects.toThrow();
+        });
+    });
+
+    describe("simulateRestore", () => {
+        it("simulates restore operation successfully", async () => {
+            const dummyKey = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
+                contract: xdr.ScAddress.scAddressTypeContract(Buffer.from("a".repeat(32)) as any),
+                key: xdr.ScVal.scvLedgerKeyContractInstance(),
+                durability: xdr.ContractDataDurability.persistent()
+            })).toXDR("base64");
+
+            const publicKey = Keypair.random().publicKey();
+            const result = await client.simulateRestore([dummyKey], publicKey);
+            expect(result.success).toBe(true);
+            expect(typeof result.minResourceFee).toBe("number");
+        });
+
+        it("handles simulation failure gracefully", async () => {
+            const simFailClient = new StellarRpcClient("testnet", "https://sim-fail-restore.com");
+            const dummyKey = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
+                contract: xdr.ScAddress.scAddressTypeContract(Buffer.from("b".repeat(32)) as any),
+                key: xdr.ScVal.scvLedgerKeyContractInstance(),
+                durability: xdr.ContractDataDurability.persistent()
+            })).toXDR("base64");
+
+            const publicKey = Keypair.random().publicKey();
+            const result = await simFailClient.simulateRestore([dummyKey], publicKey);
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Simulation failed");
+        });
+    });
+
+    describe("Edge Case Branch Coverage", () => {
+        it("exercises network validation branches", () => {
+            // Test different network configurations
+            expect(() => new StellarRpcClient("testnet")).not.toThrow();
+            expect(() => new StellarRpcClient("mainnet")).not.toThrow();
+            // futurenet is not supported in this version - test it as invalid
+            expect(() => new StellarRpcClient("futurenet" as any)).toThrow();
+            expect(() => new StellarRpcClient("invalid-network" as any)).toThrow();
+            expect(() => new StellarRpcClient("" as any, "https://custom.url")).not.toThrow();
+        });
+        
+        it("exercises URL construction branches", () => {
+            // Test custom URL handling
+            const client1 = new StellarRpcClient("testnet", "https://custom.stellar.org");
+            expect(client1.getNetwork()).toBe("testnet");
+            
+            // Test default URL branches
+            const client2 = new StellarRpcClient("mainnet");
+            expect(client2.getNetwork()).toBe("mainnet");
+            
+            // futurenet not supported - skip that test
+            // const client3 = new StellarRpcClient("futurenet");
+            // expect(client3.getNetwork()).toBe("futurenet");
+        });
+        
+        it("exercises rate limiting initialization branches", () => {
+            // Test rate limiting with different configurations
+            const client1 = new StellarRpcClient("testnet", undefined, { maxRequestsPerSecond: 1 });
+            expect(client1.getNetwork()).toBe("testnet");
+            
+            const client2 = new StellarRpcClient("testnet", undefined, { maxRequestsPerSecond: 10 });
+            expect(client2.getNetwork()).toBe("testnet");
+            
+            const client3 = new StellarRpcClient("testnet", undefined, { maxRequestsPerSecond: 0 });
+            expect(client3.getNetwork()).toBe("testnet");
+            
+            const client4 = new StellarRpcClient("testnet"); // No rate limiting
+            expect(client4.getNetwork()).toBe("testnet");
+        });
+        
+        it("exercises error parsing branches with different error types", async () => {
+            // Create clients that will produce different error scenarios
+            const timeoutClient = new StellarRpcClient("testnet", "https://timeout.com");
+            const simFailClient = new StellarRpcClient("testnet", "https://sim-fail.com");
+            
+            // Test different error conditions
+            await expect(timeoutClient.checkHealth()).rejects.toThrow();
+            
+            const publicKey = Keypair.random().publicKey();
+            const secretKey = Keypair.random().secret();
+            const dummyKey = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
+                contract: xdr.ScAddress.scAddressTypeContract(Buffer.from("a".repeat(32)) as any),
+                key: xdr.ScVal.scvLedgerKeyContractInstance(),
+                durability: xdr.ContractDataDurability.persistent()
+            })).toXDR("base64");
+            
+            // Test simulation failure branches
+            const result = await simFailClient.simulateExtension([dummyKey], 100000, publicKey);
+            expect(result.success).toBe(false);
+        });
+        
+        it("exercises transaction result parsing branches", async () => {
+            const secretKey = Keypair.random().secret();
+            const dummyKey = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
+                contract: xdr.ScAddress.scAddressTypeContract(Buffer.from("a".repeat(32)) as any),
+                key: xdr.ScVal.scvLedgerKeyContractInstance(),
+                durability: xdr.ContractDataDurability.persistent()
+            })).toXDR("base64");
+            
+            // Test successful submission
+            const result1 = await client.submitExtension([dummyKey], 100000, secretKey);
+            expect(result1.success).toBe(true);
+            expect(result1.txHash).toBe("mock-tx-hash");
+            expect(result1.feeCharged).toBe(1234);
+            
+            // Test error handling branches
+            const errorClient = new StellarRpcClient("testnet", "https://send-error.com");
+            const result2 = await errorClient.submitExtension([dummyKey], 100000, secretKey);
+            expect(result2.success).toBe(false);
+            expect(result2.error).toContain("Something went wrong");
+            
+            const failClient = new StellarRpcClient("testnet", "https://send-fail.com");
+            const result3 = await failClient.submitExtension([dummyKey], 100000, secretKey);
+            expect(result3.success).toBe(false);
+            expect(result3.error).toContain("Transaction send error");
+            
+            const paymentFailClient = new StellarRpcClient("testnet", "https://payment-fail.com");
+            const result4 = await paymentFailClient.submitExtension([dummyKey], 100000, secretKey);
+            expect(result4.success).toBe(false);
+            expect(result4.error).toContain("Payment failed");
+        });
+        
+        it("exercises ledger entry type detection branches", async () => {
+            // Test different entry types
+            const tokenContractId = FIXTURE_CONTRACT_ID;
+            const entry = await client.getContractInstanceEntry(tokenContractId);
+            expect(entry).toBeDefined();
+            
+            // Test missing contract - use a properly formatted but non-existent contract ID
+            const missingContractId = MISSING_CONTRACT_ID;
+            try {
+                const missingEntry = await client.getContractInstanceEntry(missingContractId);
+                expect(missingEntry).toBeNull();
+            } catch (error) {
+                // Contract ID validation may throw - that's also a valid branch
+                expect(error).toBeDefined();
+            }
+        });
+        
+        it("exercises XDR parsing error branches", () => {
+            // Test XDR parsing with different invalid inputs
+            const invalidXdrs = [
+                "", // Empty string
+                "invalid-base64", // Invalid base64
+                "QUE=", // Valid base64 but invalid XDR
+                null as any, // Null
+                undefined as any, // Undefined
+            ];
+            
+            for (const invalidXdr of invalidXdrs) {
+                const result = extractResourceCosts(invalidXdr);
+                expect(result).toBeNull();
+            }
+        });
+        
+        it("exercises fee stats normalization branches", async () => {
+            // Test different fee stat scenarios
+            const feeStats = await client.getFeeStats();
+            expect(feeStats).toBeDefined();
+            expect(typeof feeStats.baseFeeStroops).toBe("number");
+            expect(typeof feeStats.surgeFeeStroops).toBe("number");
+            expect(typeof feeStats.surgePricingMultiplier).toBe("number");
+            
+            // Test timeout scenario
+            const timeoutClient = new StellarRpcClient("testnet", "https://timeout.com");
+            await expect(timeoutClient.getFeeStats()).rejects.toThrow();
+        });
+        
+        it("exercises getEntryTTLs with various key formats", async () => {
+            // Test with different key combinations
+            const contract = new Contract(FIXTURE_CONTRACT_ID);
+            const validKey = contract.getFootprint().toXDR("base64");
+            
+            // Test single key
+            const result1 = await client.getEntryTTLs([validKey]);
+            expect(result1.entries).toHaveLength(1);
+            
+            // Test multiple keys
+            const result2 = await client.getEntryTTLs([validKey, validKey]);
+            expect(result2.entries).toHaveLength(2);
+            
+            // Test empty array
+            const result3 = await client.getEntryTTLs([]);
+            expect(result3.entries).toHaveLength(0);
+            
+            // Test with mixed valid/invalid keys
+            const invalidKey = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
+                contract: xdr.ScAddress.scAddressTypeContract(Buffer.from("missing".padEnd(32, "a")) as any),
+                key: xdr.ScVal.scvLedgerKeyContractInstance(),
+                durability: xdr.ContractDataDurability.persistent()
+            })).toXDR("base64");
+            
+            const result4 = await client.getEntryTTLs([validKey, invalidKey]);
+            expect(result4.entries.length).toBeGreaterThanOrEqual(1);
+        });
+        
+        it("exercises contract decimals retrieval branches", async () => {
+            // Test successful decimals retrieval
+            const decimals1 = await client.getSacDecimals(FIXTURE_CONTRACT_ID);
+            expect(decimals1).toBe(7);
+            
+            // Test failure fallback
+            const failClient = new StellarRpcClient("testnet", "https://simulation-fail.com");
+            const decimals2 = await failClient.getSacDecimals("INVALID_CONTRACT");
+            expect(decimals2).toBe(7); // Fallback value
+        });
+        
+        it("exercises monitored keys retrieval branches", async () => {
+            // Test successful monitored keys retrieval
+            const keys = await client.getMonitoredKeys(FIXTURE_CONTRACT_ID);
+            expect(Array.isArray(keys)).toBe(true);
+            
+            // Test method not found error
+            const errorClient = new StellarRpcClient("testnet", "https://method-not-found.com");
+            await expect(errorClient.getMonitoredKeys("INVALID_CONTRACT")).rejects.toThrow();
+        });
+    });
+
+    describe("Helper Functions", () => {
+        describe("parseFeeStat", () => {
+            it("parses various fee stat input types", () => {
+                expect(parseFeeStat("100")).toBe(100);
+                expect(parseFeeStat(200)).toBe(200);
+                expect(parseFeeStat(BigInt(300))).toBe(300);
+                expect(parseFeeStat(undefined)).toBe(0);
+                expect(parseFeeStat("invalid")).toBe(0);
+                expect(parseFeeStat(null as any)).toBe(0);
+                expect(parseFeeStat("")).toBe(0);
+                expect(parseFeeStat(-100)).toBe(-100); // Negative values are allowed
+                expect(parseFeeStat("0")).toBe(0);
+                expect(parseFeeStat(0)).toBe(0);
+                expect(parseFeeStat(NaN)).toBe(0);
+                expect(parseFeeStat(Infinity)).toBe(0);
+                expect(parseFeeStat(-Infinity)).toBe(0);
+            });
+        });
+
+        describe("safeParseNumber", () => {
+            it("parses numbers safely with all edge cases", () => {
+                expect(safeParseNumber("123")).toBe(123);
+                expect(safeParseNumber(456)).toBe(456);
+                expect(safeParseNumber("invalid")).toBe(0);
+                expect(safeParseNumber(null)).toBe(0);
+                expect(safeParseNumber(undefined)).toBe(0);
+                expect(safeParseNumber("")).toBe(0);
+                expect(safeParseNumber("0")).toBe(0);
+                expect(safeParseNumber(0)).toBe(0);
+                expect(safeParseNumber(-123)).toBe(0);
+                expect(safeParseNumber("-123")).toBe(0);
+                expect(safeParseNumber(NaN)).toBe(0);
+                expect(safeParseNumber(Infinity)).toBe(0);
+                expect(safeParseNumber(-Infinity)).toBe(0);
+                expect(safeParseNumber("123.456")).toBe(123);
+                expect(safeParseNumber(123.456)).toBe(123);
+                expect(safeParseNumber(BigInt(789))).toBe(789);
+            });
         });
     });
 

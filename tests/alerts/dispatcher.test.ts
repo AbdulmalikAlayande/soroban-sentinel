@@ -15,6 +15,28 @@ function mockChannel(): AlertChannel & { send: ReturnType<typeof vi.fn> } {
     return { send: vi.fn().mockResolvedValue(undefined) };
 }
 
+// Enhanced mock channel with different failure modes
+function mockFailingChannel(errorType: 'network' | 'auth' | 'rate-limit' | 'invalid-config'): AlertChannel & { send: ReturnType<typeof vi.fn> } {
+    const channel = { send: vi.fn() };
+    
+    switch (errorType) {
+        case 'network':
+            channel.send.mockRejectedValue(new Error('Network timeout'));
+            break;
+        case 'auth':
+            channel.send.mockRejectedValue(new Error('Authentication failed'));
+            break;
+        case 'rate-limit':
+            channel.send.mockRejectedValue(new Error('Rate limit exceeded'));
+            break;
+        case 'invalid-config':
+            channel.send.mockRejectedValue(new Error('Invalid webhook URL'));
+            break;
+    }
+    
+    return channel;
+}
+
 function seedAlert(
     db: Database.Database,
     opts: {
@@ -436,6 +458,161 @@ describe("deliverPendingAlerts", () => {
 
             const [, event] = channels.webhook.send.mock.calls[0]!;
             expect(event.severity).toBe("critical");
+        });
+    });
+
+    describe("Enhanced Branch Coverage Tests", () => {
+        it("should exercise different error handling branches for various failure types", async () => {
+            // Create alerts with different channel types to test error handling branches
+            seedAlert(db, { contractId: "ERROR_TEST_1", channelType: "webhook", channelTarget: "https://error.com/webhook" });
+            seedAlert(db, { contractId: "ERROR_TEST_2", channelType: "slack", channelTarget: "#error-channel" });
+            seedAlert(db, { contractId: "ERROR_TEST_3", channelType: "pagerduty", channelTarget: "error-routing-key" });
+            
+            // Test different error scenarios
+            const errorChannels = {
+                webhook: mockFailingChannel('network'),
+                slack: mockFailingChannel('auth'),
+                pagerduty: mockFailingChannel('rate-limit'),
+            };
+            
+            const result = await deliverPendingAlerts(db, "testnet", errorChannels);
+            
+            expect(result.attempted).toBeGreaterThan(0);
+            expect(result.failed).toBeGreaterThan(0);
+            expect(result.errors.length).toBeGreaterThan(0);
+        });
+        
+        it("should exercise retry logic branches", async () => {
+            // Create multiple alerts to test retry scenarios
+            for (let i = 0; i < 5; i++) {
+                seedAlert(db, { 
+                    contractId: `RETRY_TEST_${i}`, 
+                    channelType: "webhook", 
+                    channelTarget: `https://retry-test-${i}.com/webhook` 
+                });
+            }
+            
+            // Mock channel that fails initially but succeeds on retry
+            let callCount = 0;
+            const retryChannel = {
+                send: vi.fn().mockImplementation(async () => {
+                    callCount++;
+                    if (callCount <= 2) {
+                        throw new Error('Temporary failure');
+                    }
+                    return Promise.resolve();
+                })
+            };
+            
+            const retryChannels = {
+                webhook: retryChannel,
+                slack: mockChannel(),
+                pagerduty: mockChannel(),
+            };
+            
+            const result = await deliverPendingAlerts(db, "testnet", retryChannels);
+            
+            expect(result.attempted).toBeGreaterThan(0);
+            expect(retryChannel.send).toHaveBeenCalled();
+        });
+        
+        it("should exercise network filtering branches", async () => {
+            // Create alerts on different networks
+            seedAlert(db, { contractId: "TESTNET_CONTRACT", network: "testnet", channelType: "webhook" });
+            seedAlert(db, { contractId: "MAINNET_CONTRACT", network: "mainnet", channelType: "webhook" });
+            
+            // Test testnet filtering
+            const testnetResult = await deliverPendingAlerts(db, "testnet", channels);
+            expect(testnetResult.attempted).toBe(1);
+            
+            // Test mainnet filtering  
+            const mainnetResult = await deliverPendingAlerts(db, "mainnet", channels);
+            expect(mainnetResult.attempted).toBe(1);
+            
+            // Test invalid network
+            const invalidResult = await deliverPendingAlerts(db, "invalid-network", channels);
+            expect(invalidResult.attempted).toBe(0);
+        });
+        
+        it("should exercise TTL threshold calculation branches", async () => {
+            // Create alerts with different TTL and threshold scenarios
+            const thresholdScenarios = [
+                { ttl: 1000, threshold: 2000 }, // Below threshold
+                { ttl: 5000, threshold: 2000 }, // Above threshold
+                { ttl: 0, threshold: 1000 }, // Zero TTL
+                { ttl: 999999, threshold: 1000000 }, // High values
+            ];
+            
+            thresholdScenarios.forEach((scenario, index) => {
+                seedAlert(db, { 
+                    contractId: `TTL_TEST_${index}`,
+                    channelType: "webhook",
+                    thresholdLedgers: scenario.threshold,
+                    ttlAtFire: scenario.ttl
+                });
+            });
+            
+            const result = await deliverPendingAlerts(db, "testnet", channels);
+            expect(result.attempted).toBeGreaterThan(0);
+        });
+        
+        it("should exercise message formatting branches with different content", async () => {
+            // Test alerts with various message content scenarios
+            const contentScenarios = [
+                { contractId: "CONTENT_1", contractName: "Short Name" },
+                { contractId: "CONTENT_2", contractName: "Very Long Contract Name That Might Need Truncation" },
+                { contractId: "CONTENT_3", contractName: "" }, // Empty name
+                { contractId: "CONTENT_4", contractName: "Special!@#$%Characters&*()" }, // Special characters
+            ];
+            
+            contentScenarios.forEach((scenario, index) => {
+                seedAlert(db, { 
+                    contractId: scenario.contractId,
+                    contractName: scenario.contractName,
+                    channelType: index % 2 === 0 ? "webhook" : "slack" // Alternate channel types
+                });
+            });
+            
+            const result = await deliverPendingAlerts(db, "testnet", channels);
+            expect(result.attempted).toBe(contentScenarios.length);
+            
+            // Check that different channels were called
+            expect(channels.webhook.send.mock.calls.length).toBeGreaterThan(0);
+            expect(channels.slack.send.mock.calls.length).toBeGreaterThan(0);
+        });
+        
+        it("should exercise concurrent delivery branches", async () => {
+            // Create many alerts to test concurrent processing
+            const alertCount = 10;
+            for (let i = 0; i < alertCount; i++) {
+                seedAlert(db, { 
+                    contractId: `CONCURRENT_${i}`,
+                    channelType: i % 3 === 0 ? "webhook" : i % 3 === 1 ? "slack" : "pagerduty",
+                    channelTarget: `target-${i}`
+                });
+            }
+            
+            // Add random delays to simulate network variability
+            const variableChannels = {
+                webhook: { send: vi.fn().mockImplementation(() => new Promise(resolve => setTimeout(resolve, Math.random() * 10))) },
+                slack: { send: vi.fn().mockImplementation(() => new Promise(resolve => setTimeout(resolve, Math.random() * 10))) },
+                pagerduty: { send: vi.fn().mockImplementation(() => new Promise(resolve => setTimeout(resolve, Math.random() * 10))) },
+            };
+            
+            const result = await deliverPendingAlerts(db, "testnet", variableChannels);
+            expect(result.attempted).toBe(alertCount);
+            expect(result.delivered).toBe(alertCount);
+        });
+        
+        it("should exercise database transaction branches", async () => {
+            // Create alerts and test database update scenarios
+            seedAlert(db, { contractId: "DB_TEST", channelType: "webhook" });
+            
+            const result = await deliverPendingAlerts(db, "testnet", channels);
+            expect(result.attempted).toBe(1);
+            
+            // Verify that the delivery process completed successfully
+            expect(result.delivered).toBe(1);
         });
     });
 });

@@ -8,7 +8,6 @@ import {
     Operation,
     Keypair,
     SorobanDataBuilder,
-    FeeBumpTransaction,
     Asset,
 } from "@stellar/stellar-sdk";
 import { getLogger } from "../logging/index.js";
@@ -26,6 +25,12 @@ export function assertSimulationSuccess(sim: rpc.Api.SimulateTransactionResponse
             throw new Error("Simulation failed: Invalid footprint key");
         }
         throw new Error(`Simulation failed: ${sim.error ?? "unknown error"}`);
+    }
+    
+    // Handle cases where error field exists but may be null/undefined
+    const simAny = sim as any;
+    if ("error" in simAny) {
+        throw new Error(`Simulation failed: ${simAny.error ?? "unknown error"}`);
     }
 }
 
@@ -138,12 +143,12 @@ export function parseResourceEstimate(response: unknown): ResourceEstimate | nul
     const sim = response as Record<string, unknown>;
 
     // Simulation error responses have an `error` field — always return null.
-    if (typeof sim["error"] === "string" && sim["error"].length > 0) return null;
+    if (typeof sim["error"] === "string") return null;
 
-    // Need at least one useful field to return a meaningful estimate.
-    const hasCost = sim["cost"] !== undefined && sim["cost"] !== null;
-    const hasFee = sim["minResourceFee"] !== undefined && sim["minResourceFee"] !== null;
-    if (!hasCost && !hasFee) return null;
+    // Need at least one field present (even if null) to return a meaningful estimate.
+    const hasCostField = "cost" in sim;
+    const hasFeeField = "minResourceFee" in sim;
+    if (!hasCostField && !hasFeeField) return null;
 
     // Parse minResourceFee (may be a string or number in the Soroban RPC response)
     const rawFee = sim["minResourceFee"];
@@ -155,17 +160,18 @@ export function parseResourceEstimate(response: unknown): ResourceEstimate | nul
     let cpuInstructions = 0;
     let memoryBytes = 0;
 
-    if (hasCost && typeof sim["cost"] === "object" && !Array.isArray(sim["cost"])) {
-        const cost = sim["cost"] as Record<string, unknown>;
-        cpuInstructions = safeParseNumber(cost["cpuInsns"]);
-        memoryBytes = safeParseNumber(cost["memBytes"]);
+    const cost = sim["cost"];
+    if (cost !== undefined && cost !== null && typeof cost === "object" && !Array.isArray(cost)) {
+        const costObj = cost as Record<string, unknown>;
+        cpuInstructions = safeParseNumber(costObj["cpuInsns"]);
+        memoryBytes = safeParseNumber(costObj["memBytes"]);
     }
 
     return { cpuInstructions, memoryBytes, minResourceFee };
 }
 
 /** Parse a value to a non-negative finite integer, defaulting to 0. */
-function safeParseNumber(value: unknown): number {
+export function safeParseNumber(value: unknown): number {
     if (value === undefined || value === null) return 0;
     const n = typeof value === "number" ? value : Number(value);
     return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
@@ -1002,7 +1008,7 @@ export class StellarRpcClient {
     }
 }
 
-function parseFeeStat(value: string | number | bigint | undefined): number {
+export function parseFeeStat(value: string | number | bigint | undefined): number {
     if (value === undefined) return 0;
     if (typeof value === "bigint") return Number(value);
     const parsed = Number(value);

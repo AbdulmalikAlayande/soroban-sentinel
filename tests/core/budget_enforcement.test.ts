@@ -13,30 +13,31 @@ import {
 
 // Mock dependencies
 vi.mock('../../src/rpc/client', () => {
+    class StellarRpcClient {
+        getCurrentLedger = vi.fn().mockResolvedValue(1000);
+        simulateExtension = vi.fn().mockResolvedValue({
+            success: true,
+            minResourceFee: 15000000 // 1.5 XLM in stroops
+        });
+        submitExtension = vi.fn().mockResolvedValue({
+            success: true,
+            txHash: '0x123',
+            ledger: 1001,
+            cpuInsns: 100,
+            memBytes: 100
+        });
+        getEntryTTLs = vi.fn().mockResolvedValue({
+            latestLedger: 1001,
+            entries: [{
+                entryKeyXdr: 'AAAA',
+                remainingTTL: 50000,
+                liveUntilLedgerSeq: 51001,
+                lastModifiedLedgerSeq: 1001
+            }]
+        });
+    }
     return {
-        StellarRpcClient: vi.fn().mockImplementation(() => ({
-            getCurrentLedger: vi.fn().mockResolvedValue(1000),
-            simulateExtension: vi.fn().mockResolvedValue({
-                success: true,
-                minResourceFee: 15000000 // 1.5 XLM in stroops
-            }),
-            submitExtension: vi.fn().mockResolvedValue({
-                success: true,
-                txHash: '0x123',
-                ledger: 1001,
-                cpuInsns: 100,
-                memBytes: 100
-            }),
-            getEntryTTLs: vi.fn().mockResolvedValue({
-                latestLedger: 1001,
-                entries: [{
-                    entryKeyXdr: 'AAAA',
-                    remainingTTL: 50000,
-                    liveUntilLedgerSeq: 51001,
-                    lastModifiedLedgerSeq: 1001
-                }]
-            })
-        }))
+        StellarRpcClient
     };
 });
 

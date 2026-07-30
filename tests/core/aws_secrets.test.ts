@@ -7,23 +7,24 @@ import { AWSSecretsResolver } from "../../src/core/aws_secrets.js";
 
 // Mock the dynamic import of @aws-sdk/client-secrets-manager
 vi.mock("@aws-sdk/client-secrets-manager", async () => {
-    const SecretsManagerClient = vi.fn().mockImplementation(() => {
-        return {
-            send: vi.fn().mockImplementation(async (command) => {
-                if (command.input.SecretId === "my-stellar-key") {
-                    return { SecretString: "SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" };
-                }
-                if (command.input.SecretId === "missing-string-key") {
-                    return {}; // Missing SecretString
-                }
-                throw new Error("Secret not found");
-            }),
-        };
-    });
+    class SecretsManagerClient {
+        send = vi.fn().mockImplementation(async (command) => {
+            if (command.input.SecretId === "my-stellar-key") {
+                return { SecretString: "SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" };
+            }
+            if (command.input.SecretId === "missing-string-key") {
+                return {}; // Missing SecretString
+            }
+            throw new Error("Secret not found");
+        });
+    }
     
-    const GetSecretValueCommand = vi.fn().mockImplementation((args) => {
-        return { input: args };
-    });
+    class GetSecretValueCommand {
+        input: any;
+        constructor(args: any) {
+            this.input = args;
+        }
+    }
 
     return {
         SecretsManagerClient,

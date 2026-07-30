@@ -1,5 +1,6 @@
 import type { AlertEvent } from "./types.js";
 import { getLogger } from "../logging/index.js";
+import { loadConfig } from "../utils/config.js";
 import { renderAlertTemplate } from "./templates.js";
 
 const logger = getLogger().child({ component: "SlackHandler" });
@@ -116,6 +117,50 @@ function buildFallbackText(event: AlertEvent): string {
         );
     } else {
         return `${icon} Alert Resolved — ${contractDisplay} (${event.network})`;
+    }
+}
+
+function resolveSlackToken(): string {
+    const token = process.env.SOROKEEP_SLACK_TOKEN || loadConfig().slackToken;
+    if (!token) {
+        throw new Error("Slack token not configured. Set SOROKEEP_SLACK_TOKEN or slackToken in config.");
+    }
+    return token;
+}
+
+export async function sendSlackAlert(channel: string, event: AlertEvent): Promise<void> {
+    const token = resolveSlackToken();
+    const payload = {
+        channel,
+        text: buildFallbackText(event),
+        blocks: buildBlocks(event),
+    };
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+    let response: Response;
+    try {
+        response = await fetch("https://slack.com/api/chat.postMessage", {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+        });
+    } finally {
+        clearTimeout(timeout);
+    }
+
+    if (!response.ok) {
+        throw new Error(`Slack API request failed: HTTP ${response.status}`);
+    }
+
+    const data = await response.json() as { ok?: boolean; error?: string };
+    if (!data.ok) {
+        throw new Error(`Slack API error: ${data.error ?? "unknown_error"}`);
     }
 }
 
