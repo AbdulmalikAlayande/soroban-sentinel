@@ -1,6 +1,5 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import readline from "node:readline";
 import ora from "ora";
 import { getDatabase } from "../db/database.js";
 import { deleteContract, getContract } from "../db/repositories.js";
@@ -11,6 +10,7 @@ import {
   formatTimeToCloseLedger,
   statusIndicator,
 } from "../utils/formatting.js";
+import { confirmPrompt } from "../utils/prompt.js";
 import { watchContract } from "../core/watch.js";
 import { loadWatchContractsFile } from "../utils/watch-config.js";
 
@@ -169,8 +169,7 @@ export const registerWatchCommand = (program: Command): void => {
   program
     .command("unwatch <contract-id>")
     .description("Remove a registered contract and clean up associated logs")
-    .option("-y, --yes", "Skip confirmation prompt")
-    .action(async (contractId: string, options: { yes?: boolean }) => {
+    .action(async (contractId: string) => {
       try {
         const db = getDatabase();
         const contract = getContract(db, contractId);
@@ -186,25 +185,14 @@ export const registerWatchCommand = (program: Command): void => {
           console.log(chalk.green(`Successfully unwatched contract ${formatContractID(contractId)}.`));
         };
 
-        if (options.yes) {
+        const confirmed = await confirmPrompt(
+          chalk.yellow(`Are you sure you want to unwatch ${formatContractID(contractId)}? All associated logs, alerts, and policies will be permanently deleted. (y/N): `),
+        );
+
+        if (confirmed) {
           await proceedWithDeletion();
         } else {
-          const rl = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout,
-          });
-
-          rl.question(
-            chalk.yellow(`Are you sure you want to unwatch ${formatContractID(contractId)}? All associated logs, alerts, and policies will be permanently deleted. (y/N): `),
-            async (answer) => {
-              rl.close();
-              if (answer.toLowerCase() === "y" || answer.toLowerCase() === "yes") {
-                await proceedWithDeletion();
-              } else {
-                console.log("Unwatch cancelled.");
-              }
-            }
-          );
+          console.log("Unwatch cancelled.");
         }
       } catch (error: any) {
         const errorMessage = error instanceof Error ? error.message : String(error);

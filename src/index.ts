@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { initLogger } from "./logging/index.js";
+import { setYesOverride } from "./utils/prompt.js";
 import { registerWatchCommand } from "./commands/watch.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerCheckCommand } from "./commands/check.js";
@@ -29,7 +30,12 @@ program
   .description(
     "Sorokeep — The missing operations layer for deployed Soroban smart contracts",
   )
-  .version("0.1.2");
+  .version("0.1.2")
+  .option("-y, --yes", "Skip confirmation prompts on destructive commands");
+
+program.hook("preAction", (thisCommand) => {
+  setYesOverride(thisCommand.opts().yes ?? false);
+});
 
 registerWatchCommand(program);
 registerStatusCommand(program);
