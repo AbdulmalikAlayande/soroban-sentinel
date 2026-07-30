@@ -1,4 +1,4 @@
--- Migration 002: add contract_groups and contract_group_members tables (issue #394)
+-- Migration 003: add contract_groups and contract_group_members tables (issue #394)
 --
 -- Organises contracts into named groups (a "fleet") so that operators can
 -- apply group-level filters and settings without relying on free-text tags.
