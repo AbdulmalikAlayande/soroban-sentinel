@@ -271,6 +271,8 @@ If you're new to the project, look for issues tagged `good first issue`. These a
 - Documentation improvements
 - Adding test coverage for edge cases
 
+> **New Contributor?** Check out our [First PR Tutorial](docs/first-pr-tutorial.md) where we walk through picking a real trivial issue, writing the failing test, implementing the fix, and creating the PR.
+
 ### Larger Contributions
 
 For anything beyond small fixes, open an issue first to discuss the approach. This is especially important for:
