@@ -6,12 +6,40 @@ import YAML from "yaml";
 const ROOT = path.resolve(import.meta.dirname, "../..");
 const COMPOSE_FILE = path.join(ROOT, "docker-compose.yaml");
 
-let composeConfig: any;
+type ComposeScalar = string | number | boolean;
+type ComposeList = ComposeScalar[];
+type ComposeEnvironment = Record<string, ComposeScalar> | string[];
+
+interface ComposeService {
+    image?: string;
+    command?: string | ComposeList;
+    ports?: ComposeList;
+    volumes?: ComposeList;
+    healthcheck?: {
+        test?: string | ComposeList;
+    };
+    build?: string | {
+        context?: string;
+        dockerfile?: string;
+    };
+    depends_on?: string[] | Record<string, {
+        condition?: string;
+    }>;
+    environment?: ComposeEnvironment;
+}
+
+interface DockerComposeConfig {
+    services: Record<string, ComposeService>;
+    volumes?: Record<string, unknown>;
+    networks?: Record<string, unknown>;
+}
+
+let composeConfig: DockerComposeConfig;
 
 beforeAll(() => {
     if (fs.existsSync(COMPOSE_FILE)) {
         const raw = fs.readFileSync(COMPOSE_FILE, "utf8");
-        composeConfig = YAML.parse(raw);
+        composeConfig = YAML.parse(raw) as DockerComposeConfig;
     }
 });
 

@@ -2,6 +2,7 @@ import { registerAlertChannel, type ChannelDefinition } from "./registry.js";
 import { sendWebhookAlert } from "./webhook.js";
 import { SlackChannel } from "./slack.js";
 import { sendPagerDutyAlert } from "./pagerduty.js";
+import { sendOpsgenieAlert } from "./opsgenie.js";
 
 let registered = false;
 
@@ -62,6 +63,13 @@ export function registerBuiltinChannels(): void {
             },
             targetOption: "channel",
             missingTargetError: "Error: --channel is required when --type is telegram (use chat ID or @channelname).",
+            supportsSigning: false,
+        },
+        {
+            name: "opsgenie",
+            channel: { send: (target, event) => sendOpsgenieAlert(target, event) },
+            targetOption: "routingKey",
+            missingTargetError: "Error: --routing-key is required when --type is opsgenie (use your Opsgenie API key).",
             supportsSigning: false,
         },
     ];
