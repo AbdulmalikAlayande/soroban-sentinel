@@ -120,4 +120,49 @@ describe("database backup", () => {
         sourceDb.close();
         restoredDb.close();
     });
+
+    it("importDatabase rejects when schema version mismatches", () => {
+        const sourceDb = getDatabaseForTesting();
+        const exported = exportDatabase(sourceDb);
+        exported.schema_version = 99999;
+
+        const restoredDb = getDatabaseForTesting();
+        expect(() => importDatabase(restoredDb, exported)).toThrowError(/schema version/i);
+
+        sourceDb.close();
+        restoredDb.close();
+    });
+
+    it("importDatabase rejects when schema version is missing", () => {
+        const sourceDb = getDatabaseForTesting();
+        const exported = exportDatabase(sourceDb);
+        delete exported.schema_version;
+
+        const restoredDb = getDatabaseForTesting();
+        expect(() => importDatabase(restoredDb, exported as any)).toThrowError(/schema version/i);
+
+        sourceDb.close();
+        restoredDb.close();
+    });
+
+    it("importDatabase leaves db untouched if an insert fails (atomic rollback)", () => {
+        const sourceDb = getDatabaseForTesting();
+        insertContract(sourceDb, { id: "C1", name: "Alpha", network: "testnet" });
+        const exported = exportDatabase(sourceDb);
+        
+        // Corrupt the backup to cause a database constraint error (id is NOT NULL)
+        exported.contracts.push({ id: null, name: "Bad", network: "testnet" });
+
+        const restoredDb = getDatabaseForTesting();
+        insertContract(restoredDb, { id: "ORIGINAL", name: "Original", network: "testnet" });
+
+        expect(() => importDatabase(restoredDb, exported)).toThrowError();
+
+        const contracts = getAllContracts(restoredDb);
+        expect(contracts).toHaveLength(1);
+        expect(contracts[0].id).toBe("ORIGINAL");
+
+        sourceDb.close();
+        restoredDb.close();
+    });
 });
