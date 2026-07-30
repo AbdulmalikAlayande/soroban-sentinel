@@ -7,8 +7,19 @@ import {
     insertContract,
     getAlertConfigsForContract,
     insertAlertConfig,
+    insertResourceAlertConfig,
+    deleteAlertConfig,
+    getContractsInGroup,
     getResourceAlertConfigsForContract,
-} from "../../src/db/repositories";
+} from "../../src/db/repositories.js";
+
+vi.mock("../../src/db/repositories.js", async (importOriginal) => {
+    const actual = await importOriginal() as Record<string, unknown>;
+    return {
+        ...actual,
+        getContractsInGroup: vi.fn(),
+    };
+});
 
 let mockDb: Database.Database;
 
@@ -513,6 +524,36 @@ describe("alerts command", () => {
             );
         });
 
+        it("errors when both --contract and --group are missing", () => {
+            parseExpectExit(["alerts", "list"]);
+            expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("must specify either --contract or --group"));
+            expect(exitSpy).toHaveBeenCalledWith(1);
+        });
+
+        it("errors when --group is provided and returns empty array", () => {
+            vi.mocked(getContractsInGroup).mockReturnValue([]);
+            parseExpectExit(["alerts", "list", "--group", "nonexistent"]);
+            expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("Group 'nonexistent' not found or empty"));
+            expect(exitSpy).toHaveBeenCalledWith(1);
+        });
+
+        it("lists alerts for all contracts in a group", () => {
+            insertContract(mockDb, { id: "CONTRACT_A", name: "Contract A", network: "testnet" });
+            insertContract(mockDb, { id: "CONTRACT_B", name: "Contract B", network: "testnet" });
+            vi.mocked(getContractsInGroup).mockReturnValue(["CONTRACT_A", "CONTRACT_B"]);
+            
+            insertAlertConfig(mockDb, { contract_id: "CONTRACT_A", channel_type: "webhook", channel_target: "hook-A", threshold_ledgers: 100 });
+            insertAlertConfig(mockDb, { contract_id: "CONTRACT_B", channel_type: "webhook", channel_target: "hook-B", threshold_ledgers: 200 });
+            
+            parse(["alerts", "list", "--group", "mygroup"]);
+            
+            expect(getContractsInGroup).toHaveBeenCalledWith(expect.anything(), "mygroup");
+            expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Alert Configurations for Contract A"));
+            expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Alert Configurations for Contract B"));
+            expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("hook-A"));
+            expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("hook-B"));
+        });
+
         it("exits with 1 when the contract is not registered", () => {
             parseExpectExit([
                 "alerts", "list",
@@ -759,6 +800,28 @@ describe("alerts command", () => {
             expect(consoleLogSpy).toHaveBeenCalledWith(
                 expect.stringContaining("Test alert delivered successfully")
             );
+        });
+});
+
+    describe("alerts history", () => {
+        it("errors when both --contract and --group are missing", () => {
+            parseExpectExit(["alerts", "history"]);
+            expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("must specify either --contract or --group"));
+            expect(exitSpy).toHaveBeenCalledWith(1);
+        });
+
+        it("errors when --group is provided and returns empty array", () => {
+            vi.mocked(getContractsInGroup).mockReturnValue([]);
+            parseExpectExit(["alerts", "history", "--group", "nonexistent"]);
+            expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("Group 'nonexistent' not found or empty"));
+            expect(exitSpy).toHaveBeenCalledWith(1);
+        });
+
+        it("lists history for all contracts in a group", () => {
+            insertContract(mockDb, { id: "CONTRACT_A", name: "Contract A", network: "testnet" });
+            vi.mocked(getContractsInGroup).mockReturnValue(["CONTRACT_A"]);
+            parse(["alerts", "history", "--group", "mygroup"]);
+            expect(getContractsInGroup).toHaveBeenCalledWith(expect.anything(), "mygroup");
         });
     });
 });
