@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { getDatabase } from "../db/database.js";
 import {
     insertAlertConfig,
+    insertAlertConfigBulk,
     getAlertConfigsForContract,
     getAlertConfigById,
     deleteAlertConfig,
@@ -28,7 +29,8 @@ export function registerAlertsCommand(program: Command): void {
     alerts
         .command("add")
         .description("Add a new alert configuration (TTL-based or resource-based)")
-        .requiredOption("--contract <id>", "The contract ID to alert on")
+        .option("--contract <id>", "The contract ID to alert on (mutually exclusive with --tag)")
+        .option("--tag <tag>", "Apply to all contracts with this tag (mutually exclusive with --contract)")
         .requiredOption("--type <type>", "The notification channel type ('webhook', 'slack', 'discord', 'telegram', or 'pagerduty')")
         .option("--url <url>", "Webhook URL (required if --type is webhook or discord)")
         .option("--channel <channel>", "Slack channel (required if --type is slack)")
@@ -38,7 +40,18 @@ export function registerAlertsCommand(program: Command): void {
         .option("--cpu-limit <instructions>", "CPU instruction limit for resource alerts (default: 100,000,000)", (val) => parseInt(val, 10))
         .option("--mem-limit <bytes>", "Memory byte limit for resource alerts (default: 50,000,000)", (val) => parseInt(val, 10))
         .action((options) => {
-            const contractId = options.contract;
+            const contractId: string | undefined = options.contract;
+            const tag: string | undefined = options.tag;
+
+            // Exactly one of --contract or --tag must be provided.
+            if (!contractId && !tag) {
+                console.error(chalk.red("Error: You must specify either --contract <id> or --tag <tag>."));
+                process.exit(1);
+            }
+            if (contractId && tag) {
+                console.error(chalk.red("Error: --contract and --tag are mutually exclusive."));
+                process.exit(1);
+            }
 
             // Determine if this is a TTL alert or resource alert
             const isTTLAlert = typeof options.threshold !== "undefined";
@@ -54,40 +67,74 @@ export function registerAlertsCommand(program: Command): void {
                 process.exit(1);
             }
 
-            const db = getDatabase();
-            const contract = getContract(db, contractId);
-            if (!contract) {
-                console.error(chalk.red(`Error: Contract ${formatContractID(contractId)} is not registered.`));
-                console.error(chalk.dim("Run 'sorokeep watch <contractId>' first."));
-                process.exit(1);
-            }
-
-            let target = "";
-            let webhookSecret: string | undefined;
-
             if (options.type === "email") {
-                // Not a registered channel — called out explicitly since it's a
-                // common ask, so the error is more helpful than a generic "unknown type".
                 console.error(chalk.red("Error: Email alerting is not yet implemented. Use 'webhook', 'slack', 'discord', 'telegram', or 'pagerduty'."));
                 process.exit(1);
             }
 
+            // Validate channel type BEFORE any DB writes (required by issue #393 acceptance criteria).
             const channelDef = getAlertChannel(options.type);
             if (!channelDef) {
                 const known = listAlertChannels().map((d) => d.name).join(", ");
                 console.error(chalk.red(`Error: --type must be one of: ${known}.`));
                 process.exit(1);
-            } else {
-                const targetValue = (options as Record<string, string | undefined>)[channelDef.targetOption];
-                if (!targetValue) {
-                    console.error(chalk.red(channelDef.missingTargetError));
+            }
+
+            const targetValue = (options as Record<string, string | undefined>)[channelDef.targetOption];
+            if (!targetValue) {
+                console.error(chalk.red(channelDef.missingTargetError));
+                process.exit(1);
+            }
+            const target = targetValue as string;
+            const webhookSecret: string | undefined = channelDef.supportsSigning
+                ? (options.secret ?? randomBytes(32).toString("hex"))
+                : undefined;
+
+            const db = getDatabase();
+
+            // ── --tag bulk path ────────────────────────────────────────────────
+            if (tag) {
+                if (!isTTLAlert) {
+                    console.error(chalk.red("Error: --tag only supports TTL alerts (--threshold). Use --contract for resource alerts."));
                     process.exit(1);
                 }
-                target = targetValue as string;
 
-                if (channelDef.supportsSigning) {
-                    webhookSecret = options.secret ?? randomBytes(32).toString("hex");
+                const threshold = options.threshold as number;
+                if (isNaN(threshold) || threshold <= 0) {
+                    console.error(chalk.red("Error: --threshold must be a positive integer."));
+                    process.exit(1);
                 }
+
+                const count = insertAlertConfigBulk(db, tag, {
+                    channel_type: options.type,
+                    channel_target: target,
+                    threshold_ledgers: threshold,
+                    webhook_secret: webhookSecret,
+                });
+
+                if (count === 0) {
+                    console.log(chalk.yellow(`No contracts found with tag "${tag}". No alert configs created.`));
+                } else {
+                    console.log(
+                        chalk.green(
+                            `Successfully added alert config to ${count} contract(s) with tag "${tag}": type=${options.type}, target=${target}, threshold=${threshold} ledgers`
+                        )
+                    );
+                }
+
+                if (webhookSecret) {
+                    console.log(`  ${chalk.bold("Webhook secret:")} ${webhookSecret}`);
+                    console.log(chalk.dim("  Save this secret — it signs payloads via X-Sorokeep-Signature header."));
+                }
+                return;
+            }
+
+            // ── --contract single path ─────────────────────────────────────────
+            const contract = getContract(db, contractId!);
+            if (!contract) {
+                console.error(chalk.red(`Error: Contract ${formatContractID(contractId!)} is not registered.`));
+                console.error(chalk.dim("Run 'sorokeep watch <contractId>' first."));
+                process.exit(1);
             }
 
             if (isTTLAlert) {
@@ -98,7 +145,7 @@ export function registerAlertsCommand(program: Command): void {
                 }
 
                 insertAlertConfig(db, {
-                    contract_id: contractId,
+                    contract_id: contractId!,
                     channel_type: options.type,
                     channel_target: target,
                     threshold_ledgers: threshold,
@@ -126,7 +173,7 @@ export function registerAlertsCommand(program: Command): void {
                 }
 
                 insertResourceAlertConfig(db, {
-                    contract_id: contractId,
+                    contract_id: contractId!,
                     channel_type: options.type,
                     channel_target: target,
                     cpu_limit: cpuLimit,

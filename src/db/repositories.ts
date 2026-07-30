@@ -1327,3 +1327,66 @@ export function getLatestResourceUsageLog(
     `).get(contractId) as ResourceUsageLog | undefined;
 }
 
+
+/**
+ * Insert an alert config for every contract whose `tags` column contains the
+ * given tag (comma-separated list).  A tag match is performed as an exact
+ * word match — splitting on commas and trimming whitespace — so `"defi"` does
+ * not accidentally match `"defi-pro"`.
+ *
+ * All inserts are wrapped in a single SQLite transaction: either every row is
+ * written or none are (atomic bulk operation).
+ *
+ * @param db       - The SQLite database connection.
+ * @param tag      - The tag string to match against `contracts.tags`.
+ * @param config   - Alert channel/threshold settings applied to each matching contract.
+ * @returns        The number of alert_configs rows inserted.
+ */
+export function insertAlertConfigBulk(
+    db: Database.Database,
+    tag: string,
+    config: {
+        channel_type: string;
+        channel_target: string;
+        threshold_ledgers: number;
+        webhook_secret?: string;
+    },
+): number {
+    // Fetch all contracts that carry the tag.
+    const contracts = (
+        db.prepare("SELECT id, tags FROM contracts").all() as Array<{
+            id: string;
+            tags: string | null;
+        }>
+    ).filter((c) => {
+        if (!c.tags) return false;
+        return c.tags
+            .split(",")
+            .map((t) => t.trim())
+            .includes(tag);
+    });
+
+    if (contracts.length === 0) return 0;
+
+    const insert = db.prepare(`
+        INSERT INTO alert_configs (contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret)
+        VALUES (@contract_id, @channel_type, @channel_target, @threshold_ledgers, @webhook_secret)
+    `);
+
+    const runAll = db.transaction(
+        (rows: Array<{ id: string }>) => {
+            for (const row of rows) {
+                insert.run({
+                    contract_id: row.id,
+                    channel_type: config.channel_type,
+                    channel_target: config.channel_target,
+                    threshold_ledgers: config.threshold_ledgers,
+                    webhook_secret: config.webhook_secret ?? null,
+                });
+            }
+        },
+    );
+
+    runAll(contracts);
+    return contracts.length;
+}
