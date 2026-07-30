@@ -210,3 +210,10 @@ CREATE INDEX IF NOT EXISTS idx_resource_usage_logs_contract_id
 CREATE INDEX IF NOT EXISTS idx_resource_usage_logs_recorded_at
     ON resource_usage_logs(recorded_at DESC);
 
+-- Fleet query performance indexes (matching migration 002)
+CREATE INDEX IF NOT EXISTS idx_contracts_network_active
+    ON contracts(network, active);
+
+CREATE INDEX IF NOT EXISTS idx_extension_history_executed_at
+    ON extension_history(executed_at);
+
