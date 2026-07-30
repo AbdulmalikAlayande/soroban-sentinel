@@ -10,6 +10,7 @@ import {
   formatContractID,
   formatTimeToCloseLedger,
   statusIndicator,
+  validateContractId,
 } from "../utils/formatting.js";
 import { watchContract } from "../core/watch.js";
 import { loadWatchContractsFile } from "../utils/watch-config.js";
@@ -88,6 +89,13 @@ export const registerWatchCommand = (program: Command): void => {
               "A contract ID is required unless --from-file is provided.",
             ),
           );
+          process.exit(1);
+          return;
+        }
+
+        const watchValidation = validateContractId(contractId);
+        if (!watchValidation.valid) {
+          console.log(chalk.red(`Invalid contract ID: ${watchValidation.reason}`));
           process.exit(1);
           return;
         }
@@ -172,6 +180,13 @@ export const registerWatchCommand = (program: Command): void => {
     .option("-y, --yes", "Skip confirmation prompt")
     .action(async (contractId: string, options: { yes?: boolean }) => {
       try {
+        const unwatchValidation = validateContractId(contractId);
+        if (!unwatchValidation.valid) {
+          console.log(chalk.red(`Invalid contract ID: ${unwatchValidation.reason}`));
+          process.exit(1);
+          return;
+        }
+
         const db = getDatabase();
         const contract = getContract(db, contractId);
 

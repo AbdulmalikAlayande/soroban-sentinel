@@ -128,11 +128,14 @@ describe("resources command", () => {
     });
 
     it("errors when contract is not registered", () => {
+        // Delete the contract that was inserted in beforeEach so it becomes unknown
+        mockDb.prepare("DELETE FROM contracts WHERE id = ?").run(contractID);
+
         const program = new Command();
         registerResourcesCommand(program);
 
         expect(() => {
-            program.parse(["node", "sorokeep", "resources", "CUNKNOWNCONTRACTID"]);
+            program.parse(["node", "sorokeep", "resources", contractID]);
         }).toThrow("process.exit called");
 
         expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("not found. Run 'sorokeep watch' first."));

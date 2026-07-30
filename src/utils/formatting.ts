@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import { StrKey } from "@stellar/stellar-sdk";
 
 const AVG_LEDGER_CLOSE_TIME_IN_SECONDS = 5.5; // in seconds
 
@@ -65,4 +66,50 @@ export function formatSecretKey(key: string | null): string | null {
         return `${key.slice(0, 4)}...${key.slice(-4)}`;
     }
     return key;
+}
+
+// ── Contract ID Validation ──────────────────────────────────────────────────
+
+export type ValidationResult =
+    | { valid: true }
+    | { valid: false; reason: string };
+
+/**
+ * Validate a Stellar contract ID string before any RPC/DB work.
+ *
+ * Checks performed (in order):
+ * 1. Must be a non-empty string starting with 'C'
+ * 2. Must be exactly 56 characters (base32-encoded 32-byte hash with checksum)
+ * 3. Must pass Stellar SDK StrKey checksum validation
+ *
+ * Returns a specific reason on failure so CLI commands can surface
+ * actionable error messages.
+ */
+export function validateContractId(id: string): ValidationResult {
+    if (!id || typeof id !== "string") {
+        return { valid: false, reason: "Contract ID is empty or missing" };
+    }
+
+    if (!id.startsWith("C")) {
+        return {
+            valid: false,
+            reason: `Contract ID must start with 'C' — got "${id.slice(0, 1)}" instead. Did you paste an account address (starts with 'G') by mistake?`,
+        };
+    }
+
+    if (id.length !== 56) {
+        return {
+            valid: false,
+            reason: `Contract ID must be 56 characters (base32-encoded 32 bytes + checksum), but got ${id.length} characters`,
+        };
+    }
+
+    if (!StrKey.isValidContract(id)) {
+        return {
+            valid: false,
+            reason: `Contract ID "${id.slice(0, 8)}...${id.slice(-4)}" has an invalid Stellar checksum — check for typos`,
+        };
+    }
+
+    return { valid: true };
 }

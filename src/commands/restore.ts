@@ -4,7 +4,7 @@ import ora from "ora";
 import { getDatabase } from "../db/database.js";
 import { getContract, getEntriesForContract } from "../db/repositories.js";
 import { restoreEntries } from "../core/extension.js";
-import { formatContractID } from "../utils/formatting.js";
+import { formatContractID, validateContractId } from "../utils/formatting.js";
 import { getLogger } from "../logging/index.js";
 
 const logger = getLogger().child({ component: "RestoreCommand" });
@@ -19,6 +19,12 @@ export function registerRestoreCommand(program: Command): void {
         .option("--all", "Restore all tracked entries for the contract")
         .action(async (contractId: string, options) => {
             try {
+                const validation = validateContractId(contractId);
+                if (!validation.valid) {
+                    console.error(chalk.red(`Invalid contract ID: ${validation.reason}`));
+                    process.exit(1);
+                }
+
                 const db = getDatabase();
                 const contract = getContract(db, contractId);
 

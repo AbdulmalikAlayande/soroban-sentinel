@@ -215,6 +215,10 @@ describe("history command", () => {
     });
 
     it("errors on unregistered contract", () => {
+        // Insert then delete the contract so it passes validation but is not found
+        insertContract(mockDb, { id: contractID, name: "temp", network: "testnet" });
+        mockDb.prepare("DELETE FROM contracts WHERE id = ?").run(contractID);
+
         const program = new Command();
         registerHistoryCommand(program);
 
@@ -223,7 +227,7 @@ describe("history command", () => {
                 "node",
                 "sorokeep",
                 "history",
-                "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+                contractID,
             ]);
         }).toThrow("process.exit called");
 

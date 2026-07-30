@@ -2,7 +2,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { getDatabase } from "../db/database.js";
 import { getContract, getResourceUsageHistory } from "../db/repositories.js";
-import { formatContractID } from "../utils/formatting.js";
+import { formatContractID, validateContractId } from "../utils/formatting.js";
 import { getLogger } from "../logging/index.js";
 
 const logger = getLogger().child({ component: "ResourcesCommand" });
@@ -23,6 +23,12 @@ export function registerResourcesCommand(program: Command): void {
         .option("--all", "Show all resource usage history")
         .action((contractId: string, options) => {
             try {
+                const validation = validateContractId(contractId);
+                if (!validation.valid) {
+                    console.error(chalk.red(`Invalid contract ID: ${validation.reason}`));
+                    process.exit(1);
+                }
+
                 const db = getDatabase();
                 const contract = getContract(db, contractId);
 

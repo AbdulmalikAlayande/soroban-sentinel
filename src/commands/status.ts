@@ -5,6 +5,7 @@ import { getContractStatus, ContractNotFoundError } from "../core/status.js";
 import {
     statusIndicator,
     formatContractID,
+    validateContractId,
 } from "../utils/formatting.js";
 
 export function registerStatusCommand(program: Command): void {
@@ -13,6 +14,12 @@ export function registerStatusCommand(program: Command): void {
         .description("Show TTL and storage health for a watched contract")
         .option("--json", "Output machine-readable JSON")
         .action((contractId: string, options: { json?: boolean } = {}) => {
+            const validation = validateContractId(contractId);
+            if (!validation.valid) {
+                console.error(chalk.red(`Invalid contract ID: ${validation.reason}`));
+                process.exit(1);
+            }
+
             const db = getDatabase();
 
             try {

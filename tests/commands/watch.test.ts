@@ -286,37 +286,39 @@ describe("Unwatch Command CLI", () => {
     expect(mockExit).toHaveBeenCalledWith(1);
   });
 
+  const VALID_ID = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
+
   it("exits with 1 when contract is not found", async () => {
     vi.mocked(repositories.getContract).mockReturnValue(undefined);
-    await unwatchActionFn("CDEF1234", {});
+    await unwatchActionFn(VALID_ID, {});
     expect(mockExit).toHaveBeenCalledWith(1);
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("not being watched"));
   });
 
   it("deletes contract directly when --yes is passed", async () => {
-    vi.mocked(repositories.getContract).mockReturnValue({ id: "CDEF1234" } as any);
-    await unwatchActionFn("CDEF1234", { yes: true });
-    expect(repositories.deleteContract).toHaveBeenCalledWith(expect.anything(), "CDEF1234");
+    vi.mocked(repositories.getContract).mockReturnValue({ id: VALID_ID } as any);
+    await unwatchActionFn(VALID_ID, { yes: true });
+    expect(repositories.deleteContract).toHaveBeenCalledWith(expect.anything(), VALID_ID);
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("Successfully unwatched"));
   });
 
   it("prompts for confirmation when --yes is not passed and deletes if confirmed", async () => {
-    vi.mocked(repositories.getContract).mockReturnValue({ id: "CDEF1234" } as any);
+    vi.mocked(repositories.getContract).mockReturnValue({ id: VALID_ID } as any);
     mockRl.question.mockImplementation((query: string, cb: (ans: string) => void) => {
         cb("yes");
     });
-    await unwatchActionFn("CDEF1234", {});
+    await unwatchActionFn(VALID_ID, {});
     expect(mockRl.question).toHaveBeenCalled();
-    expect(repositories.deleteContract).toHaveBeenCalledWith(expect.anything(), "CDEF1234");
+    expect(repositories.deleteContract).toHaveBeenCalledWith(expect.anything(), VALID_ID);
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("Successfully unwatched"));
   });
 
   it("does not delete if confirmation is denied", async () => {
-    vi.mocked(repositories.getContract).mockReturnValue({ id: "CDEF1234" } as any);
+    vi.mocked(repositories.getContract).mockReturnValue({ id: VALID_ID } as any);
     mockRl.question.mockImplementation((query: string, cb: (ans: string) => void) => {
         cb("no");
     });
-    await unwatchActionFn("CDEF1234", {});
+    await unwatchActionFn(VALID_ID, {});
     expect(mockRl.question).toHaveBeenCalled();
     expect(repositories.deleteContract).not.toHaveBeenCalled();
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("Unwatch cancelled"));

@@ -2,7 +2,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { getDatabase } from "../db/database.js";
 import { setContractBudget, getMonthlySpendProgress } from "../core/budget.js";
-import { formatContractID } from "../utils/formatting.js";
+import { formatContractID, validateContractId } from "../utils/formatting.js";
 
 export function registerBudgetCommand(program: Command): void {
     const budgetCmd = program
@@ -29,6 +29,12 @@ export function registerBudgetCommand(program: Command): void {
         .command("status <contractId>")
         .description("View current budget status and spend progress")
         .action((contractId: string) => {
+            const validation = validateContractId(contractId);
+            if (!validation.valid) {
+                console.log(chalk.red(`Invalid contract ID: ${validation.reason}`));
+                process.exit(1);
+            }
+
             const db = getDatabase();
             const progress = getMonthlySpendProgress(db, contractId);
 

@@ -3,7 +3,7 @@ import chalk from "chalk";
 import ora from "ora";
 import { getDatabase } from "../db/database.js";
 import { inspectContract } from "../core/inspect.js";
-import { statusIndicator, formatContractID } from "../utils/formatting.js";
+import { statusIndicator, formatContractID, validateContractId } from "../utils/formatting.js";
 import { getLogger } from "../logging/index.js";
 
 const logger = getLogger().child({ component: "InspectCommand" });
@@ -16,6 +16,12 @@ export function registerInspectCommand(program: Command): void {
         .option("--network <network>", "The stellar network to use (testnet, mainnet)")
         .option("-r, --rpc-url <url>", "Custom RPC URL")
         .action(async (contractId: string, options: { entry: string[]; network?: string; rpcUrl?: string }) => {
+            const validation = validateContractId(contractId);
+            if (!validation.valid) {
+                console.error(chalk.red(`Invalid contract ID: ${validation.reason}`));
+                process.exit(1);
+            }
+
             const spinner = ora(`Inspecting contract ${formatContractID(contractId)}...`).start();
             try {
                 const db = getDatabase();

@@ -4,7 +4,7 @@ import ora from "ora";
 import { getDatabase } from "../db/database.js";
 import { getContract, getEntriesForContract, upsertExtensionPolicy, getExtensionPolicy } from "../db/repositories.js";
 import { simulateExtension, extendEntries, resolveSecretKey } from "../core/extension.js";
-import { formatContractID, formatTimeToCloseLedger, formatBytes, formatCpuInsns } from "../utils/formatting.js";
+import { formatContractID, formatTimeToCloseLedger, formatBytes, formatCpuInsns, validateContractId } from "../utils/formatting.js";
 import { getLogger } from "../logging/index.js";
 
 const logger = getLogger().child({ component: "GuardCommand" });
@@ -23,6 +23,12 @@ export function registerGuardCommand(program: Command): void {
         .option("--disable", "Disable auto-extension for this contract")
         .action(async (contractId: string, options) => {
             try {
+                const validation = validateContractId(contractId);
+                if (!validation.valid) {
+                    console.error(chalk.red(`Invalid contract ID: ${validation.reason}`));
+                    process.exit(1);
+                }
+
                 const db = getDatabase();
                 const contract = getContract(db, contractId);
 
