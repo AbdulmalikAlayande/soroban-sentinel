@@ -8,6 +8,34 @@ import { getLogger } from "../logging/index.js";
 
 const logger = getLogger().child({ component: "InspectCommand" });
 
+export interface DiffRenderOptions {
+    diffType: "created" | "updated" | "deleted";
+    oldValue?: string | null;
+    newValue?: string | null;
+    useColors?: boolean;
+}
+
+export function renderDiffValue(options: DiffRenderOptions): string {
+    const { diffType, oldValue, newValue, useColors = true } = options;
+    const colorize = (value: string, color: (input: string) => string): string => (useColors ? color(value) : value);
+
+    switch (diffType) {
+        case "created":
+            return colorize(`+ ${newValue ?? "(none)"}`, chalk.green);
+        case "deleted":
+            return colorize(`- ${oldValue ?? "(none)"}`, chalk.red);
+        default:
+            return [
+                colorize(`- ${oldValue ?? "(none)"}`, chalk.red),
+                colorize(`+ ${newValue ?? "(none)"}`, chalk.green),
+            ].join("\n");
+    }
+}
+
+function shouldUseColor(): boolean {
+    return Boolean(process.stdout.isTTY && chalk.level > 0 && !process.env.NO_COLOR);
+}
+
 export function registerInspectCommand(program: Command): void {
     program
         .command("inspect <contractId>")
@@ -70,6 +98,23 @@ export function registerInspectCommand(program: Command): void {
                                 .join('\n');
                             console.log(formattedJson);
                         }
+
+                        const diff = (item as any).diff as { diffType?: "created" | "updated" | "deleted"; oldValue?: string | null; newValue?: string | null } | undefined;
+                        if (diff?.diffType) {
+                            console.log(chalk.cyan(`    Diff:`));
+                            const renderedDiff = renderDiffValue({
+                                diffType: diff.diffType,
+                                oldValue: diff.oldValue ?? null,
+                                newValue: diff.newValue ?? null,
+                                useColors: shouldUseColor(),
+                            });
+                            const prefixed = renderedDiff
+                                .split("\n")
+                                .map(line => `      ${line}`)
+                                .join("\n");
+                            console.log(prefixed);
+                        }
+
                         console.log(
                             `    TTL:        ${item.remainingTTL.toLocaleString()} ledgers (${item.approximateTimeRemaining})  ${statusIndicator(item.status as any)}`,
                         );
