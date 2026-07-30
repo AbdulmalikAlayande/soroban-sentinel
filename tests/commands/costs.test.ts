@@ -7,7 +7,16 @@ import {
     insertContract,
     upsertEntry,
     recordExtension,
+    getContractsInGroup,
 } from "../../src/db/repositories.js";
+
+vi.mock("../../src/db/repositories.js", async (importOriginal) => {
+    const actual = await importOriginal() as Record<string, unknown>;
+    return {
+        ...actual,
+        getContractsInGroup: vi.fn(),
+    };
+});
 
 // ─── Shared mock state ────────────────────────────────────────────────────────
 
@@ -274,6 +283,55 @@ describe("costs command — Forecasted Rent section", () => {
 
         const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
         expect(allOutput).not.toMatch(/exceed|over|breach/i);
+    });
+
+    // ── Group tests ──────────────────────────────────────────────────────────
+    it("errors when both contractId and --group are missing", async () => {
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await expect(program.parseAsync([
+            "node", "sorokeep", "costs",
+        ])).rejects.toThrow("process.exit called");
+
+        const errOutput = consoleErrorSpy.mock.calls.flat().join("\n");
+        expect(errOutput).toMatch(/must specify either a contract ID or --group/i);
+    });
+
+    it("errors when --group is provided but returns empty array", async () => {
+        vi.mocked(getContractsInGroup).mockReturnValue([]);
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await expect(program.parseAsync([
+            "node", "sorokeep", "costs", "--group", "nonexistent",
+        ])).rejects.toThrow("process.exit called");
+
+        const errOutput = consoleErrorSpy.mock.calls.flat().join("\n");
+        expect(errOutput).toMatch(/Group 'nonexistent' not found or empty/i);
+    });
+
+    it("displays costs for all contracts in a group", async () => {
+        const entryId1 = seedBasicData(mockDb, 0.001);
+        
+        insertContract(mockDb, {
+            id: "ANOTHER_CONTRACT",
+            name: "another-contract",
+            network: "testnet",
+        });
+        vi.mocked(getContractsInGroup).mockReturnValue([CONTRACT_ID, "ANOTHER_CONTRACT"]);
+        
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync([
+            "node", "sorokeep", "costs", "--group", "mygroup",
+        ]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(allOutput).toContain("test-contract");
+        expect(allOutput).toContain("another-contract");
+        expect(getContractsInGroup).toHaveBeenCalledWith(expect.anything(), "mygroup");
     });
 
 });

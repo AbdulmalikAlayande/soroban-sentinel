@@ -4,6 +4,7 @@ import * as dbLib from "../../src/db/database";
 import { ContractNotFoundError } from "../../src/core/status";
 import * as statusModule from "../../src/core/status";
 import { registerStatusCommand } from "../../src/commands/status";
+import * as repos from "../../src/db/repositories";
 
 vi.mock("../../src/db/database", () => ({
     getDatabase: vi.fn(),
@@ -17,9 +18,13 @@ vi.mock("../../src/core/status", async (importOriginal) => {
     };
 });
 
+vi.mock("../../src/db/repositories", () => ({
+    getContractsInGroup: vi.fn(),
+}));
+
 describe("status command", () => {
     const contractID = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
-    let actionFn: (contractId: string, options: { json?: boolean }) => void;
+    let actionFn: (contractId: string | undefined, options: { json?: boolean, group?: string }) => void;
     let mockExit: ReturnType<typeof vi.spyOn>;
     let mockLog: ReturnType<typeof vi.spyOn>;
 
@@ -119,5 +124,35 @@ describe("status command", () => {
         });
 
         expect(() => actionFn("VALID_ID", { json: false })).toThrow("DB Corrupt");
+    });
+
+    it("errors if both contractId and --group are missing", () => {
+        actionFn(undefined, { json: false });
+        expect(mockExit).toHaveBeenCalledWith(1);
+        expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("must specify either a contract ID or --group"));
+    });
+
+    it("errors if --group is provided and returns empty array", () => {
+        vi.mocked(repos.getContractsInGroup).mockReturnValue([]);
+        actionFn(undefined, { group: "nonexistent", json: false });
+        expect(mockExit).toHaveBeenCalledWith(1);
+        expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("Group 'nonexistent' not found or empty"));
+    });
+
+    it("lists statuses for all contracts in a group", () => {
+        vi.mocked(repos.getContractsInGroup).mockReturnValue(["ID1", "ID2"]);
+        vi.mocked(statusModule.getContractStatus).mockImplementation((db: any, id: string) => ({
+            contractId: id,
+            name: `name-${id}`,
+            network: "testnet",
+            entries: [],
+        } as any));
+
+        actionFn(undefined, { group: "mygroup", json: false });
+
+        const output = mockLog.mock.calls.map((args) => args.join(" ")).join("\n");
+        expect(output).toContain("name-ID1");
+        expect(output).toContain("name-ID2");
+        expect(repos.getContractsInGroup).toHaveBeenCalledWith(expect.anything(), "mygroup");
     });
 });
