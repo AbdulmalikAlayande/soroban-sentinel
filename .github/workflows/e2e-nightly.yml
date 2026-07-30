@@ -1,0 +1,70 @@
+name: E2E Nightly Sandbox
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-sandbox:
+    name: Run full e2e sandbox suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Start local Stellar sandbox
+        run: |
+          docker run --rm -d \
+            --name soroban-e2e-sandbox \
+            -p 8000:8000 \
+            stellar/quickstart:soroban-dev \
+            --local \
+            --enable-soroban-rpc
+
+      - name: Wait for Soroban RPC readiness
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/soroban/rpc -X POST -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' > /dev/null 2>&1; then
+              echo "Soroban RPC is ready"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Soroban RPC did not become ready in time" >&2
+          docker logs soroban-e2e-sandbox || true
+          exit 1
+
+      - name: Run e2e suite
+        run: npm run test:e2e
+
+      - name: Report failure to webhook
+        if: ${{ failure() && secrets.SLACK_WEBHOOK_URL != '' }}
+        run: |
+          curl -fsS -X POST -H 'Content-Type: application/json' \
+            --data '{"text":"E2E nightly sandbox workflow failed for sorokeep."}' \
+            "$SLACK_WEBHOOK_URL"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Stop local Stellar sandbox
+        if: always()
+        run: docker rm -f soroban-e2e-sandbox || true
