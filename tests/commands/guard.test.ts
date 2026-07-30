@@ -60,6 +60,7 @@ describe("Guard Command CLI", () => {
     let mockError: any;
     let mockLog: any;
 
+
     beforeEach(() => {
         sharedDb = getDatabaseForTesting();
 
@@ -195,6 +196,7 @@ describe("Guard Command CLI", () => {
         expect(extensionLib.extendEntries).toHaveBeenCalled();
     });
 
+
     it("displays resource limits during dry-run simulation", async () => {
         vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
         vi.mocked(repos.getEntriesForContract).mockImplementation((db, id) => {
@@ -299,5 +301,6 @@ describe("Guard Command --auto-extend integration", () => {
         expect(policy!.keypair_source).toBe("env:STELLAR_TEST_KEY");
 
         delete process.env.STELLAR_TEST_KEY;
+
     });
 });

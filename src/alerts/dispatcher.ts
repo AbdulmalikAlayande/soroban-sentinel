@@ -1,12 +1,78 @@
 import type Database from "better-sqlite3";
 import { getUndeliveredAlerts, markAlertDelivered, incrementRetryCount, MAX_RETRY_COUNT } from "../db/repositories.js";
 import { buildAlertEvent, type AlertEvent, type AlertChannel } from "./types.js";
-import { sendWebhookAlert } from "./webhook.js";
-import { sendSlackAlert } from "./slack.js";
-import { sendPagerDutyAlert } from "./pagerduty.js";
+import { registerBuiltinChannels } from "./builtins.js";
+import { listAlertChannels } from "./registry.js";
 import { getLogger } from "../logging/index.js";
 
 const logger = getLogger().child({ component: "AlertDispatcher" });
+
+// Ensure the five built-in channels are registered before any delivery
+// function needs to resolve a channel by name. Idempotent.
+registerBuiltinChannels();
+
+/**
+ * Builds a fresh `{ name: AlertChannel }` map from every channel currently
+ * registered (built-ins plus any plugin channels registered by the host
+ * application). Used as the default when a caller doesn't inject its own
+ * `channels` map — tests inject their own mocked map instead.
+ */
+function defaultChannels(): Record<string, AlertChannel> {
+    return Object.fromEntries(listAlertChannels().map((def) => [def.name, def.channel]));
+}
+
+/**
+ * Returns the current HH:MM (24-hour) in the given IANA timezone.
+ * Falls back to UTC if the timezone string is invalid.
+ */
+function currentHHMMInTz(timezone: string): string {
+    try {
+        const parts = new Intl.DateTimeFormat("en-US", {
+            timeZone: timezone,
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+        }).formatToParts(new Date());
+        const hour = parts.find((p) => p.type === "hour")!.value;
+        const minute = parts.find((p) => p.type === "minute")!.value;
+        // Intl may return "24" for midnight in some environments — normalise to "00".
+        const normHour = hour === "24" ? "00" : hour;
+        return `${normHour}:${minute}`;
+    } catch {
+        // Unknown timezone — fall back to UTC.
+        return new Date().toISOString().slice(11, 16);
+    }
+}
+
+/**
+ * Convert an HH:MM string to total minutes since midnight.
+ */
+function toMinutes(hhmm: string): number {
+    const [hh, mm] = hhmm.split(":").map(Number) as [number, number];
+    return hh * 60 + mm;
+}
+
+/**
+ * Returns true if `current` (HH:MM) falls within the [start, end) window.
+ * Handles overnight windows where start > end (e.g. 22:00–06:00).
+ */
+export function isInQuietHours(
+    current: string,
+    start: string,
+    end: string,
+): boolean {
+    const c = toMinutes(current);
+    const s = toMinutes(start);
+    const e = toMinutes(end);
+
+    if (s <= e) {
+        // Same-day window: e.g. 09:00–17:00
+        return c >= s && c < e;
+    } else {
+        // Overnight window: e.g. 22:00–06:00
+        return c >= s || c < e;
+    }
+}
 
 export interface DeliveryResult {
     attempted: number;
@@ -16,28 +82,10 @@ export interface DeliveryResult {
     errors: string[];
 }
 
-export const DEFAULT_CHANNELS: Record<string, AlertChannel> = {
-    webhook: { send: sendWebhookAlert },
-    slack: { send: (target, event) => sendSlackAlert(target, event) },
-    pagerduty: { send: (target, event) => sendPagerDutyAlert(target, event) },
-    discord: { 
-        send: async (target, event) => {
-            const { sendDiscordAlert } = await import("./discord.js");
-            await sendDiscordAlert(target, event);
-        }
-    },
-    telegram: { 
-        send: async (target, event) => {
-            const { sendTelegramAlert } = await import("./telegram.js");
-            await sendTelegramAlert(target, event);
-        }
-    },
-};
-
 export async function deliverPendingAlerts(
     db: Database.Database,
     network: string,
-    channels: Record<string, AlertChannel> = DEFAULT_CHANNELS,
+    channels: Record<string, AlertChannel> = defaultChannels(),
 ): Promise<DeliveryResult> {
     const pending = getUndeliveredAlerts(db, network);
     const result: DeliveryResult = {
@@ -54,6 +102,28 @@ export async function deliverPendingAlerts(
 
     for (const alert of pending) {
         result.attempted++;
+
+        // ── Quiet-hours check ───────────────────────────────────────────────
+        // If the alert's config has a fully-configured quiet window AND the
+        // current wall-clock time in the configured timezone falls within it,
+        // skip delivery for this cycle.  The alert stays pending (delivered=0,
+        // retry_count unchanged) and will be retried on the next daemon cycle.
+        if (
+            alert.quietHoursStart !== null &&
+            alert.quietHoursEnd !== null &&
+            alert.quietHoursTimezone !== null
+        ) {
+            const tz = alert.quietHoursTimezone;
+            const currentHHMM = currentHHMMInTz(tz);
+            if (isInQuietHours(currentHHMM, alert.quietHoursStart, alert.quietHoursEnd)) {
+                logger.debug(
+                    `Alert skipped (quiet hours ${alert.quietHoursStart}–${alert.quietHoursEnd} ${tz}) — id: ${alert.alertFiredId}, contract: ${alert.contractId}`,
+                );
+                // Do NOT mark delivered, do NOT increment retry_count.
+                // attempted is still incremented (we did process this alert, just chose to defer it).
+                continue;
+            }
+        }
 
         const event = buildAlertEvent({
             type: "threshold_crossed",
@@ -105,11 +175,11 @@ export async function deliverPendingAlerts(
 }
 
 export async function deliverSingleAlert(
-    channelType: "webhook" | "slack" | "pagerduty" | "discord" | "telegram",
+    channelType: string,
     channelTarget: string,
     event: AlertEvent,
     webhookSecret?: string | null,
-    channels: Record<string, AlertChannel> = DEFAULT_CHANNELS,
+    channels: Record<string, AlertChannel> = defaultChannels(),
 ): Promise<boolean> {
     try {
         const channel = channels[channelType];

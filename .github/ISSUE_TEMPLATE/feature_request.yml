@@ -1,0 +1,55 @@
+name: Feature Request
+description: Propose a new capability or improvement
+labels: ["enhancement", "needs-discussion"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Per [CONTRIBUTING.md](https://github.com/AbdulmalikAlayande/sorokeep/blob/main/CONTRIBUTING.md#larger-contributions), open an issue and get alignment **before** writing code for anything beyond a small fix — especially new CLI commands, schema changes, or changes to the monitor/daemon cycle. This template is that discussion.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the gap or pain point. Prefer a real scenario over an abstract one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you build? A new command, a new alert channel, a schema change, etc.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area does this touch?
+      options:
+        - New alert channel
+        - CLI command / UX
+        - Database schema
+        - Monitor / daemon cycle
+        - Auto-extension logic
+        - MCP server / tools
+        - Docs
+        - CI/CD / release process
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Anything else you thought about, including "do nothing" if relevant
+
+  - type: checkboxes
+    id: willing
+    attributes:
+      label: Contribution
+      options:
+        - label: I'm willing to implement this myself with guidance
+        - label: I'm proposing this for someone else to pick up

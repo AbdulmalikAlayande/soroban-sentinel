@@ -6,56 +6,10 @@ describe("Database Repositories", () => {
     let db: any;
 
     beforeEach(() => {
+        // getDatabaseForTesting() execs the current schema.sql directly into a
+        // fresh :memory: database, so it already has every column/table/CHECK
+        // schema.sql defines — no need to replay ad-hoc migrations here.
         db = getDatabaseForTesting();
-        // Since getDatabaseForTesting might miss live migrations that getDatabase does, let's run them just in case.
-        const migrations = [
-            `ALTER TABLE alerts_fired ADD COLUMN delivered INTEGER NOT NULL DEFAULT 0`,
-            `ALTER TABLE alerts_fired ADD COLUMN delivered_at TEXT`,
-            `ALTER TABLE alerts_fired ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0`,
-            `ALTER TABLE alert_configs ADD COLUMN webhook_secret TEXT`,
-            `CREATE TABLE IF NOT EXISTS channel_accounts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                public_key TEXT NOT NULL UNIQUE,
-                keypair_source TEXT,
-                label TEXT,
-                network TEXT NOT NULL DEFAULT 'testnet',
-                funded BOOLEAN NOT NULL DEFAULT 0,
-                balance_xlm REAL,
-                balance_checked_at TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )`,
-            `ALTER TABLE contracts ADD COLUMN last_introspected_at DATETIME`,
-        ];
-        for (const sql of migrations) {
-            try { db.exec(sql); } catch { /* ignore */ }
-        }
-        
-        try {
-            db.exec("PRAGMA foreign_keys = OFF;");
-            db.exec("BEGIN TRANSACTION;");
-            db.exec(`
-                CREATE TABLE IF NOT EXISTS alert_configs_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
-                    channel_type TEXT NOT NULL CHECK(channel_type IN ('slack', 'webhook', 'pagerduty')),
-                    channel_target TEXT NOT NULL,
-                    threshold_ledgers INTEGER NOT NULL,
-                    webhook_secret TEXT,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-            `);
-            db.exec(`
-                INSERT OR IGNORE INTO alert_configs_new (id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, created_at)
-                SELECT id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, created_at
-                FROM alert_configs
-            `);
-            db.exec(`DROP TABLE alert_configs;`);
-            db.exec(`ALTER TABLE alert_configs_new RENAME TO alert_configs;`);
-            db.exec("COMMIT;");
-            db.exec("PRAGMA foreign_keys = ON;");
-        } catch {
-            // ignore failure if tables already altered
-        }
     });
 
     afterEach(() => {
@@ -206,6 +160,62 @@ describe("Database Repositories", () => {
             expect(historyLimit.length).toBe(1);
         });
 
+        it("accepts discord as a valid channel_type for alert_configs", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.insertAlertConfig(db, {
+                contract_id: "C1",
+                channel_type: "discord",
+                channel_target: "https://discord.com/api/webhooks/123",
+                threshold_ledgers: 200
+            });
+
+            const configs = repo.getAlertConfigsForContract(db, "C1");
+            expect(configs.length).toBe(1);
+            expect(configs[0].channel_type).toBe("discord");
+            expect(configs[0].channel_target).toBe("https://discord.com/api/webhooks/123");
+        });
+
+        it("accepts telegram as a valid channel_type for alert_configs", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.insertAlertConfig(db, {
+                contract_id: "C1",
+                channel_type: "telegram",
+                channel_target: "chat:123456",
+                threshold_ledgers: 300
+            });
+
+            const configs = repo.getAlertConfigsForContract(db, "C1");
+            expect(configs.length).toBe(1);
+            expect(configs[0].channel_type).toBe("telegram");
+            expect(configs[0].channel_target).toBe("chat:123456");
+        });
+
+        it("accepts an arbitrary plugin channel_type not in the built-in set", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.insertAlertConfig(db, {
+                contract_id: "C1",
+                channel_type: "matrix",
+                channel_target: "!room:example.org",
+                threshold_ledgers: 400,
+            });
+
+            const configs = repo.getAlertConfigsForContract(db, "C1");
+            expect(configs.length).toBe(1);
+            expect(configs[0].channel_type).toBe("matrix");
+        });
+
+        it("rejects an empty channel_type", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            expect(() =>
+                repo.insertAlertConfig(db, {
+                    contract_id: "C1",
+                    channel_type: "",
+                    channel_target: "T1",
+                    threshold_ledgers: 100,
+                }),
+            ).toThrow();
+        });
+
         it("handles alert delivery logic", () => {
             repo.insertContract(db, { id: "C1", network: "testnet" });
             repo.upsertEntry(db, { contract_id: "C1", entry_key_xdr: "xdr1", entry_type: "wasm" });
@@ -298,6 +308,114 @@ describe("Database Repositories", () => {
         it("handles empty average resource usage", () => {
              expect(repo.getAverageResourceUsage(db, "NONEXISTENT")).toBeNull();
         });
+
+        it("returns null when limit is explicitly 0", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.upsertEntry(db, { contract_id: "C1", entry_key_xdr: "xdr1", entry_type: "instance" });
+            const entryId = repo.getEntriesForContract(db, "C1")[0].id;
+
+            repo.recordExtension(db, {
+                contract_id: "C1",
+                contract_entry_id: entryId,
+                old_ttl_ledgers: 100,
+                new_ttl_ledgers: 1000,
+                tx_hash: "hash_zero",
+                cost_xlm: 1.0,
+                cpu_insns: 5000,
+                mem_bytes: 1024,
+                is_anomaly: false,
+                executed_at_ledger: 500
+            });
+
+            const avg = repo.getAverageResourceUsage(db, "C1", 0);
+            expect(avg).toBeNull();
+        });
+
+        it("returns correct averages when limit equals total records", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.upsertEntry(db, { contract_id: "C1", entry_key_xdr: "xdr1", entry_type: "instance" });
+            const entryId = repo.getEntriesForContract(db, "C1")[0].id;
+
+            repo.recordExtension(db, {
+                contract_id: "C1",
+                contract_entry_id: entryId,
+                old_ttl_ledgers: 100,
+                new_ttl_ledgers: 1000,
+                tx_hash: "hash_a",
+                cost_xlm: 1.0,
+                cpu_insns: 2000,
+                mem_bytes: 512,
+                is_anomaly: false,
+                executed_at_ledger: 500
+            });
+            repo.recordExtension(db, {
+                contract_id: "C1",
+                contract_entry_id: entryId,
+                old_ttl_ledgers: 200,
+                new_ttl_ledgers: 2000,
+                tx_hash: "hash_b",
+                cost_xlm: 2.0,
+                cpu_insns: 4000,
+                mem_bytes: 1024,
+                is_anomaly: false,
+                executed_at_ledger: 600
+            });
+
+            const avg = repo.getAverageResourceUsage(db, "C1", 2);
+            expect(avg).not.toBeNull();
+            expect(avg?.count).toBe(2);
+            expect(avg?.avg_cpu_insns).toBe(3000);
+            expect(avg?.avg_mem_bytes).toBe(768);
+        });
+
+        it("only aggregates extension history from the last 7 days", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.upsertEntry(db, { contract_id: "C1", entry_key_xdr: "xdr1", entry_type: "instance" });
+            const entryId = repo.getEntriesForContract(db, "C1")[0].id;
+
+            // Insert an old entry from 30 days ago — should NOT be aggregated
+            db.prepare(`
+                INSERT INTO extension_history (contract_id, contract_entry_id, old_ttl_ledgers, new_ttl_ledgers, tx_hash, cost_xlm, cpu_insns, mem_bytes, is_anomaly, executed_at_ledger, executed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-30 days'))
+            `).run("C1", entryId, 10, 100, "tx_old", 5.0, 0, 0, 0, 100);
+
+            // Insert a recent entry from 3 days ago — should be aggregated
+            db.prepare(`
+                INSERT INTO extension_history (contract_id, contract_entry_id, old_ttl_ledgers, new_ttl_ledgers, tx_hash, cost_xlm, cpu_insns, mem_bytes, is_anomaly, executed_at_ledger, executed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-3 days'))
+            `).run("C1", entryId, 10, 100, "tx_recent", 3.0, 0, 0, 0, 200);
+
+            repo.aggregateDailyCostSnapshots(db);
+            const snaps = repo.getCostDailySnapshots(db, "C1");
+
+            // Only the 3-day-old entry should produce a snapshot
+            expect(snaps.length).toBe(1);
+            expect(snaps[0].total_cost_xlm).toBe(3.0);
+        });
+
+        it("returns average of only the most recent row when limit is 1", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.upsertEntry(db, { contract_id: "C1", entry_key_xdr: "xdr1", entry_type: "instance" });
+            const entryId = repo.getEntriesForContract(db, "C1")[0].id;
+
+            // Insert an older extension
+            db.prepare(`
+                INSERT INTO extension_history (contract_id, contract_entry_id, old_ttl_ledgers, new_ttl_ledgers, tx_hash, cost_xlm, cpu_insns, mem_bytes, is_anomaly, executed_at_ledger, executed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-2 hours'))
+            `).run("C1", entryId, 100, 1000, "hash_old", 1.0, 2000, 512, 0, 500);
+
+            // Insert a newer extension
+            db.prepare(`
+                INSERT INTO extension_history (contract_id, contract_entry_id, old_ttl_ledgers, new_ttl_ledgers, tx_hash, cost_xlm, cpu_insns, mem_bytes, is_anomaly, executed_at_ledger, executed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-1 hour'))
+            `).run("C1", entryId, 200, 2000, "hash_new", 2.0, 8000, 4096, 0, 600);
+
+            const avg = repo.getAverageResourceUsage(db, "C1", 1);
+            expect(avg).not.toBeNull();
+            expect(avg?.count).toBe(1);
+            expect(avg?.avg_cpu_insns).toBe(8000);
+            expect(avg?.avg_mem_bytes).toBe(4096);
+        });
     });
 
     describe("Channel Accounts", () => {
@@ -365,6 +483,21 @@ describe("Database Repositories", () => {
     });
 
     describe("Resource Alerts Config & Fired", () => {
+        it("accepts an arbitrary plugin channel_type not in the built-in set", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.insertResourceAlertConfig(db, {
+                contract_id: "C1",
+                channel_type: "matrix",
+                channel_target: "!room:example.org",
+                cpu_limit: 50,
+                mem_limit: 50,
+            });
+
+            const configs = repo.getResourceAlertConfigsForContract(db, "C1");
+            expect(configs.length).toBe(1);
+            expect(configs[0].channel_type).toBe("matrix");
+        });
+
         it("crud resource alert configs and records fired", () => {
             repo.insertContract(db, { id: "C1", network: "testnet" });
             repo.insertResourceAlertConfig(db, {

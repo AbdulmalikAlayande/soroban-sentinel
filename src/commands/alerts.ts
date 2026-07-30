@@ -14,6 +14,10 @@ import {
 import { formatContractID, formatTimeToCloseLedger } from "../utils/formatting.js";
 import { deliverSingleAlert } from "../alerts/dispatcher.js";
 import { buildAlertEvent } from "../alerts/types.js";
+import { getAlertChannel, listAlertChannels } from "../alerts/registry.js";
+import { registerBuiltinChannels } from "../alerts/builtins.js";
+
+registerBuiltinChannels();
 
 export function registerAlertsCommand(program: Command): void {
     const alerts = program
@@ -33,6 +37,14 @@ export function registerAlertsCommand(program: Command): void {
         .option("--threshold <ledgers>", "Threshold in number of ledgers (for TTL-based alerts)", (val) => parseInt(val, 10))
         .option("--cpu-limit <instructions>", "CPU instruction limit for resource alerts (default: 100,000,000)", (val) => parseInt(val, 10))
         .option("--mem-limit <bytes>", "Memory byte limit for resource alerts (default: 50,000,000)", (val) => parseInt(val, 10))
+        .option(
+            "--quiet-hours <start-end>",
+            "Suppress alerts during a maintenance window. Format: HH:MM-HH:MM (24-hour), e.g. '22:00-06:00'. Requires --timezone.",
+        )
+        .option(
+            "--timezone <tz>",
+            "IANA timezone name for --quiet-hours interpretation, e.g. 'America/New_York' or 'UTC'.",
+        )
         .action((options) => {
             const contractId = options.contract;
 
@@ -61,43 +73,29 @@ export function registerAlertsCommand(program: Command): void {
             let target = "";
             let webhookSecret: string | undefined;
 
-            if (options.type === "webhook") {
-                if (!options.url) {
-                    console.error(chalk.red("Error: --url is required when --type is webhook."));
-                    process.exit(1);
-                }
-                target = options.url;
-                webhookSecret = options.secret ?? randomBytes(32).toString("hex");
-            } else if (options.type === "slack") {
-                if (!options.channel) {
-                    console.error(chalk.red("Error: --channel is required when --type is slack."));
-                    process.exit(1);
-                }
-                target = options.channel;
-            } else if (options.type === "pagerduty") {
-                if (!options.routingKey) {
-                    console.error(chalk.red("Error: --routing-key is required when --type is pagerduty."));
-                    process.exit(1);
-                }
-                target = options.routingKey;
-            } else if (options.type === "discord") {
-                if (!options.url) {
-                    console.error(chalk.red("Error: --url is required when --type is discord. Paste the full Discord webhook URL."));
-                    process.exit(1);
-                }
-                target = options.url;
-            } else if (options.type === "telegram") {
-                if (!options.channel) {
-                    console.error(chalk.red("Error: --channel is required when --type is telegram (use chat ID or @channelname)."));
-                    process.exit(1);
-                }
-                target = options.channel;
-            } else if (options.type === "email") {
+            if (options.type === "email") {
+                // Not a registered channel — called out explicitly since it's a
+                // common ask, so the error is more helpful than a generic "unknown type".
                 console.error(chalk.red("Error: Email alerting is not yet implemented. Use 'webhook', 'slack', 'discord', 'telegram', or 'pagerduty'."));
                 process.exit(1);
-            } else {
-                console.error(chalk.red("Error: --type must be 'webhook', 'slack', 'discord', 'telegram', or 'pagerduty'."));
+            }
+
+            const channelDef = getAlertChannel(options.type);
+            if (!channelDef) {
+                const known = listAlertChannels().map((d) => d.name).join(", ");
+                console.error(chalk.red(`Error: --type must be one of: ${known}.`));
                 process.exit(1);
+            } else {
+                const targetValue = (options as Record<string, string | undefined>)[channelDef.targetOption];
+                if (!targetValue) {
+                    console.error(chalk.red(channelDef.missingTargetError));
+                    process.exit(1);
+                }
+                target = targetValue as string;
+
+                if (channelDef.supportsSigning) {
+                    webhookSecret = options.secret ?? randomBytes(32).toString("hex");
+                }
             }
 
             if (isTTLAlert) {
@@ -107,19 +105,55 @@ export function registerAlertsCommand(program: Command): void {
                     process.exit(1);
                 }
 
+                // ── Quiet-hours / timezone validation ──────────────────────────
+                let quietHoursStart: string | undefined;
+                let quietHoursEnd: string | undefined;
+                let quietHoursTimezone: string | undefined;
+
+                if (options.quietHours || options.timezone) {
+                    if (!options.quietHours || !options.timezone) {
+                        console.error(chalk.red("Error: --quiet-hours and --timezone must be used together."));
+                        process.exit(1);
+                    }
+
+                    // Validate HH:MM-HH:MM format.
+                    const qhMatch = (options.quietHours as string).match(
+                        /^(\d{2}:\d{2})-(\d{2}:\d{2})$/,
+                    );
+                    if (!qhMatch) {
+                        console.error(chalk.red("Error: --quiet-hours must be in HH:MM-HH:MM format, e.g. '22:00-06:00'."));
+                        process.exit(1);
+                    }
+
+                    // Validate IANA timezone.
+                    try {
+                        new Intl.DateTimeFormat("en-US", { timeZone: options.timezone });
+                    } catch {
+                        console.error(chalk.red(`Error: --timezone '${options.timezone}' is not a valid IANA timezone name.`));
+                        process.exit(1);
+                    }
+
+                    quietHoursStart = qhMatch[1];
+                    quietHoursEnd = qhMatch[2];
+                    quietHoursTimezone = options.timezone as string;
+                }
+
                 insertAlertConfig(db, {
                     contract_id: contractId,
                     channel_type: options.type,
                     channel_target: target,
                     threshold_ledgers: threshold,
                     webhook_secret: webhookSecret,
+                    quiet_hours_start: quietHoursStart,
+                    quiet_hours_end: quietHoursEnd,
+                    quiet_hours_timezone: quietHoursTimezone,
                 });
 
-                console.log(
-                    chalk.green(
-                        `Successfully added alert config: type=${options.type}, target=${target}, threshold=${threshold} ledgers`
-                    )
-                );
+                let successMsg = `Successfully added alert config: type=${options.type}, target=${target}, threshold=${threshold} ledgers`;
+                if (quietHoursStart) {
+                    successMsg += `, quiet hours=${quietHoursStart}-${quietHoursEnd} (${quietHoursTimezone})`;
+                }
+                console.log(chalk.green(successMsg));
 
                 if (webhookSecret) {
                     console.log(`  ${chalk.bold("Webhook secret:")} ${webhookSecret}`);

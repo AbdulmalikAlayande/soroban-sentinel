@@ -19,9 +19,6 @@
 </p>
 
 <br />
-
-## Why This Exists
-
 Soroban's storage model is uncommon among major smart contract platforms: **state expires.** Every ledger entry — contract instances, persistent storage, WASM code — has a Time-To-Live (TTL). When it runs out, the entry is archived. If a contract's instance entry expires, the entire contract stops working. If persistent storage entries expire, user data becomes inaccessible until someone pays to restore it.
 
 This is by design — state archival keeps Stellar lean and scalable. But it means **you must actively manage the lifecycle of your contract's state, or it dies.**
@@ -503,6 +500,8 @@ Every polling interval (default: 5 minutes), the daemon runs three phases:
 
 3. **Auto-Extend** — For contracts with an active guard policy, checks which entries have TTL below the policy threshold and simulates an `ExtendFootprintTTLOp` transaction via the Stellar RPC. If successful, it submits the transaction, records the exact XLM cost, and updates the contract's monthly budget usage to prevent runaway spend.
 
+For the full data-flow (exact call order, fault isolation between phases, where a new contribution typically lands), see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ### Storage
 
 All state is local. Sorokeep stores data in `~/.sorokeep/sorokeep.db` (SQLite with WAL mode). No external services required beyond a Stellar RPC endpoint.
@@ -658,12 +657,15 @@ Email is not yet implemented. The CLI will reject `--type email` with a clear er
 
 ## Roadmap
 
+- Plugin interface for alert channels — so a new channel (Matrix, MS Teams, email) doesn't require touching core dispatch code or the DB schema
+- Prometheus `/metrics` endpoint for teams with existing observability stacks
+- Reusable GitHub Action wrapping `sorokeep check` for CI-integrated TTL checks
 - Web dashboard for visual TTL monitoring
 - Multi-contract batch operations
 
 ## Contributing
 
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the system works at runtime, and [SECURITY.md](SECURITY.md) for reporting vulnerabilities. This project follows a [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

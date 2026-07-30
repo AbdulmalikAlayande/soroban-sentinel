@@ -139,7 +139,7 @@ export async function discoverStorageKeys(
 
         for (const txHash of txHashes) {
             try {
-                const txResponse = await server.getTransaction(txHash);
+                const txResponse = await server.getTransaction(txHash) as any;
                 if (!txResponse.envelopeXdr) {
                     continue; // Skip if no envelope
                 }
@@ -148,7 +148,7 @@ export async function discoverStorageKeys(
                 // For mock compatibility, handle if envelopeXdr is already an object or a base64 string
                 const env = typeof txResponse.envelopeXdr === 'string'
                     ? xdr.TransactionEnvelope.fromXDR(txResponse.envelopeXdr as string, "base64")
-                    : txResponse.envelopeXdr as any;
+                    : txResponse.envelopeXdr;
 
                 let innerTx;
                 if (env.switch().name === 'envelopeTypeTx') {
@@ -260,34 +260,6 @@ export async function runBatchDiscovery(
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
-
-/**
- * Attempt to build a contract data ledger key from a contract ID and an XDR value.
- * Returns null if the construction fails.
- */
-function buildContractDataKey(
-    contractId: string,
-    keyVal: xdr.ScVal,
-): xdr.LedgerKey | null {
-    try {
-        const raw = Buffer.from(contractId, "hex").length === 32
-            ? Buffer.from(contractId, "hex")
-            : decodeContractId(contractId);
-        const contractAddress = xdr.ScAddress.scAddressTypeContract(
-            raw as unknown as xdr.Hash,
-        );
-
-        return xdr.LedgerKey.contractData(
-            new xdr.LedgerKeyContractData({
-                contract: contractAddress,
-                key: keyVal,
-                durability: xdr.ContractDataDurability.persistent(),
-            }),
-        );
-    } catch {
-        return null;
-    }
-}
 
 /**
  * Decode a Stellar contract ID (C...) to raw 32-byte buffer.

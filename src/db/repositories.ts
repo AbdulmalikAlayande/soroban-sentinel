@@ -7,6 +7,7 @@ export interface Contract {
     wasm_hash: string | null;
     tags: string | null;
     poll_interval_seconds?: number | null;
+    active: number;
     registered_at: Date;
     last_checked_ledger?: number | null;
     /** ISO-8601 timestamp of the last successful introspection (instance/WASM key discovery). NULL if never introspected. */
@@ -40,10 +41,17 @@ export interface ExtensionPolicy {
 export interface AlertConfig {
     id: number;
     contract_id: string;
-    channel_type: "slack" | "webhook" | "pagerduty";
+    /** Any registered alert channel name (see src/alerts/registry.ts) — not a fixed enum. */
+    channel_type: string;
     channel_target: string;
     threshold_ledgers: number;
     webhook_secret: string | null;
+    /** HH:MM (24-hour) start of the quiet / maintenance window, or null if not configured. */
+    quiet_hours_start: string | null;
+    /** HH:MM (24-hour) end of the quiet / maintenance window, or null if not configured. */
+    quiet_hours_end: string | null;
+    /** IANA timezone name used to interpret quiet_hours_start / quiet_hours_end, or null. */
+    quiet_hours_timezone: string | null;
     created_at: Date;
 }
 
@@ -93,17 +101,20 @@ export interface StateChange {
     created_at: string;
 }
 
+export { upsertBudget, getBudget, addBudgetSpent } from "./budget.js";
+
 // ---------------------------- Database Access Functions For Schema: Contract ----------------------------
-export function insertContract(db: Database.Database, contract: {id: string; name?: string; network: string; wasm_hash?: string; tags?: string; poll_interval_seconds?: number | null;}): void {
+export function insertContract(db: Database.Database, contract: {id: string; name?: string; network: string; wasm_hash?: string; tags?: string; poll_interval_seconds?: number | null; active?: number}): void {
     db.prepare(`
-        INSERT INTO contracts (id, name, network, wasm_hash, tags, poll_interval_seconds)
-        VALUES (@id, @name, @network, @wasm_hash, @tags, @poll_interval_seconds)
+        INSERT INTO contracts (id, name, network, wasm_hash, tags, poll_interval_seconds, active)
+        VALUES (@id, @name, @network, @wasm_hash, @tags, @poll_interval_seconds, @active)
         ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             network = excluded.network,
             wasm_hash = excluded.wasm_hash,
             tags = excluded.tags,
-            poll_interval_seconds = COALESCE(excluded.poll_interval_seconds, contracts.poll_interval_seconds)
+            poll_interval_seconds = COALESCE(excluded.poll_interval_seconds, contracts.poll_interval_seconds),
+            active = COALESCE(excluded.active, contracts.active)
     `).run({
       id: contract.id,
       name: contract.name ?? null,
@@ -111,6 +122,7 @@ export function insertContract(db: Database.Database, contract: {id: string; nam
       wasm_hash: contract.wasm_hash ?? null,
       tags: contract.tags ?? null,
       poll_interval_seconds: contract.poll_interval_seconds ?? null,
+      active: contract.active ?? 1,
     });
 }
 
@@ -144,6 +156,14 @@ export function getContractPollInterval(
 ): number | null {
   const row = db.prepare("SELECT poll_interval_seconds FROM contracts WHERE id = ?").get(contractId) as { poll_interval_seconds: number | null } | undefined;
   return row?.poll_interval_seconds ?? null;
+}
+
+export function setContractActiveStatus(
+  db: Database.Database,
+  contractId: string,
+  active: boolean
+): void {
+  db.prepare("UPDATE contracts SET active = ? WHERE id = ?").run(active ? 1 : 0, contractId);
 }
 
 /**
@@ -259,13 +279,19 @@ export function insertAlertConfig(db: Database.Database, config: {
   channel_target: string;
   threshold_ledgers: number;
   webhook_secret?: string;
+  quiet_hours_start?: string | null;
+  quiet_hours_end?: string | null;
+  quiet_hours_timezone?: string | null;
 }): void {
   db.prepare(`
-    INSERT INTO alert_configs (contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret)
-    VALUES (@contract_id, @channel_type, @channel_target, @threshold_ledgers, @webhook_secret)
+    INSERT INTO alert_configs (contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, quiet_hours_start, quiet_hours_end, quiet_hours_timezone)
+    VALUES (@contract_id, @channel_type, @channel_target, @threshold_ledgers, @webhook_secret, @quiet_hours_start, @quiet_hours_end, @quiet_hours_timezone)
   `).run({
     ...config,
     webhook_secret: config.webhook_secret ?? null,
+    quiet_hours_start: config.quiet_hours_start ?? null,
+    quiet_hours_end: config.quiet_hours_end ?? null,
+    quiet_hours_timezone: config.quiet_hours_timezone ?? null,
   });
 }
 
@@ -405,6 +431,7 @@ export function aggregateDailyCostSnapshots(db: Database.Database): void {
         FROM extension_history eh
         JOIN contract_entries ce ON ce.id = eh.contract_entry_id
         WHERE date(eh.executed_at) < date('now')
+          AND date(eh.executed_at) >= date('now', '-7 days')
         GROUP BY eh.contract_id, date(eh.executed_at)
     `).all() as Array<Omit<CostDailySnapshot, 'id' | 'created_at'>>;
 
@@ -576,14 +603,18 @@ export function countExtensionsInLastHour(db: Database.Database, contractId: str
 }
 
 export function getAverageResourceUsage(db: Database.Database, contractId: string, limit?: number): { avg_cpu_insns: number, avg_mem_bytes: number, count: number } | null {
-  const queryLimit = limit ? `LIMIT ${limit}` : "";
-  const rows = db.prepare(`
-    SELECT cpu_insns, mem_bytes 
-    FROM extension_history 
+  const params: (string | number)[] = [contractId];
+  let query = `
+    SELECT cpu_insns, mem_bytes
+    FROM extension_history
     WHERE contract_id = ? AND cpu_insns IS NOT NULL AND mem_bytes IS NOT NULL
     ORDER BY executed_at DESC, id DESC
-    ${queryLimit}
-  `).all(contractId) as { cpu_insns: number, mem_bytes: number }[];
+  `;
+  if (limit !== undefined) {
+    query += ` LIMIT ?`;
+    params.push(limit);
+  }
+  const rows = db.prepare(query).all(...params) as { cpu_insns: number, mem_bytes: number }[];
 
   if (rows.length === 0) return null;
 
@@ -615,7 +646,8 @@ export interface UndeliveredAlert {
     entryKeyXdr: string;
     entryType: string;
     entryLabel: string | null;
-    channelType: "webhook" | "slack" | "pagerduty";
+    /** Any registered alert channel name (see src/alerts/registry.ts) — not a fixed enum. */
+    channelType: string;
     channelTarget: string;
     thresholdLedgers: number;
     webhookSecret: string | null;
@@ -624,6 +656,12 @@ export interface UndeliveredAlert {
     firedAtLedger: number;
     firedAt: string;
     retryCount: number;
+    /** HH:MM (24-hour) start of the quiet window, or null if not configured. */
+    quietHoursStart: string | null;
+    /** HH:MM (24-hour) end of the quiet window, or null if not configured. */
+    quietHoursEnd: string | null;
+    /** IANA timezone for the quiet window, or null if not configured. */
+    quietHoursTimezone: string | null;
 }
 
 /** Maximum number of delivery attempts before giving up on an alert. */
@@ -656,7 +694,10 @@ export function getUndeliveredAlerts(
             af.ttl_at_fire   AS remainingTTL,
             af.fired_at_ledger AS firedAtLedger,
             af.fired_at      AS firedAt,
-            af.retry_count   AS retryCount
+            af.retry_count   AS retryCount,
+            ac.quiet_hours_start    AS quietHoursStart,
+            ac.quiet_hours_end      AS quietHoursEnd,
+            ac.quiet_hours_timezone AS quietHoursTimezone
         FROM alerts_fired af
         JOIN alert_configs ac  ON ac.id  = af.alert_config_id
         JOIN contract_entries ce ON ce.id = af.contract_entry_id
@@ -958,7 +999,8 @@ export function getStateChangeHistory(
 export interface ResourceAlertConfig {
     id: number;
     contract_id: string;
-    channel_type: "slack" | "webhook";
+    /** Any registered alert channel name (see src/alerts/registry.ts) — not a fixed enum. */
+    channel_type: string;
     channel_target: string;
     cpu_limit: number;
     mem_limit: number;
@@ -1065,7 +1107,8 @@ export function getUndeliveredResourceAlerts(db: Database.Database, network: str
     usage: number;
     limit: number;
     usagePercent: number;
-    channelType: "webhook" | "slack";
+    /** Any registered alert channel name (see src/alerts/registry.ts) — not a fixed enum. */
+    channelType: string;
     channelTarget: string;
     webhookSecret: string | null;
     retryCount: number;
@@ -1102,7 +1145,8 @@ export function getUndeliveredResourceAlerts(db: Database.Database, network: str
         usage: number;
         limit: number;
         usagePercent: number;
-        channelType: "webhook" | "slack";
+        /** Any registered alert channel name (see src/alerts/registry.ts) — not a fixed enum. */
+    channelType: string;
         channelTarget: string;
         webhookSecret: string | null;
         retryCount: number;
@@ -1150,46 +1194,7 @@ export function hasUnresolvedResourceAlert(
   return row.usage_percent >= currentUsagePercent;
 }
 
-// ---------------------------- Budget Tracking ----------------------------
-export interface BudgetTracking {
-    id: number;
-    contract_id: string;
-    limit_xlm: number;
-    spent_xlm: number;
-    billing_cycle: string;
-}
 
-export function upsertBudget(db: Database.Database, budget: {
-    contract_id: string;
-    limit_xlm: number;
-    spent_xlm?: number;
-    billing_cycle: string;
-}): void {
-    db.prepare(`
-        INSERT INTO budget_tracking (contract_id, limit_xlm, spent_xlm, billing_cycle)
-        VALUES (@contract_id, @limit_xlm, @spent_xlm, @billing_cycle)
-        ON CONFLICT(contract_id, billing_cycle) DO UPDATE SET
-            limit_xlm = excluded.limit_xlm,
-            spent_xlm = excluded.spent_xlm
-    `).run({
-        contract_id: budget.contract_id,
-        limit_xlm: budget.limit_xlm,
-        spent_xlm: budget.spent_xlm ?? 0.0,
-        billing_cycle: budget.billing_cycle,
-    });
-}
-
-export function getBudget(db: Database.Database, contractId: string, billingCycle: string): BudgetTracking | undefined {
-    return db.prepare("SELECT * FROM budget_tracking WHERE contract_id = ? AND billing_cycle = ?").get(contractId, billingCycle) as BudgetTracking | undefined;
-}
-
-export function addBudgetSpent(db: Database.Database, contractId: string, billingCycle: string, amountXlm: number): void {
-    db.prepare(`
-        UPDATE budget_tracking
-        SET spent_xlm = spent_xlm + ?
-        WHERE contract_id = ? AND billing_cycle = ?
-    `).run(amountXlm, contractId, billingCycle);
-}
 // ─── Resource Usage Logs (issue #164) ────────────────────────────────────────
 
 /**
@@ -1310,15 +1315,20 @@ export function getResourceUsageLogs(
     }
 
     const where = conditions.join(" AND ");
-    const limitClause = limit !== undefined ? `LIMIT ${limit}` : "";
+    const params: Record<string, unknown> = { contractId, since: since ?? null };
 
-    return db.prepare(`
+    let query = `
         SELECT *
         FROM resource_usage_logs
         WHERE ${where}
         ORDER BY recorded_at DESC, id DESC
-        ${limitClause}
-    `).all({ contractId, since: since ?? null }) as ResourceUsageLog[];
+    `;
+    if (limit !== undefined) {
+        query += ` LIMIT @limit`;
+        params.limit = limit;
+    }
+
+    return db.prepare(query).all(params) as ResourceUsageLog[];
 }
 
 /**

@@ -85,8 +85,8 @@ export async function runMonitorCycle(
     // One RPC client shared across the cycle for the target network.
     const client = new StellarRpcClient(network, rpcUrl);
 
-    // 1. Load all contracts and filter to the target network.
-    const contracts = getAllContracts(db).filter(c => c.network === network);
+    // 1. Load all contracts and filter to the target network and active status.
+    const contracts = getAllContracts(db).filter(c => c.network === network && c.active === 1);
 
     logger.debug(`Monitor cycle started — ${contracts.length} contract(s) on ${network}`);
 
@@ -260,13 +260,17 @@ async function processContract(
                             firedAtLedger: rpcResult.latestLedger,
                         });
 
-                        // Fire and forget — resolution is best-effort
-                        void deliverSingleAlert(
+                        // Best-effort — log failures so they're visible, but don't block.
+                        deliverSingleAlert(
                             config.channel_type,
                             config.channel_target,
                             event,
                             config.webhook_secret,
-                        );
+                        ).catch((err: unknown) => {
+                            logger.warn(
+                                `Resolution notification failed for config ${configId}: ${err instanceof Error ? err.message : String(err)}`,
+                            );
+                        });
                     }
                 }
             }

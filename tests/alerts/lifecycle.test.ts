@@ -33,6 +33,12 @@ vi.mock("../../src/alerts/webhook.js", () => ({
 }));
 vi.mock("../../src/alerts/slack.js", () => ({
     sendSlackAlert: (...args: unknown[]) => mockSendSlackAlert(...args),
+    SlackChannel: class {
+        constructor(public webhookUrl: string) {}
+        async send(event: any) {
+            return mockSendSlackAlert(this.webhookUrl, event);
+        }
+    }
 }));
 vi.mock("../../src/alerts/pagerduty.js", () => ({
     sendPagerDutyAlert: (...args: unknown[]) => mockSendPagerDutyAlert(...args),

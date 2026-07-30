@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS contracts (
     wasm_hash TEXT,
     tags TEXT,
     poll_interval_seconds INTEGER,
+    active INTEGER NOT NULL DEFAULT 1,
     registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_checked_ledger INTEGER,
     last_introspected_at DATETIME
@@ -36,13 +37,23 @@ CREATE TABLE IF NOT EXISTS extension_policies (
     UNIQUE(contract_id)
 );
 
+-- channel_type is validated against the alert channel registry
+-- (src/alerts/registry.ts) at the application layer, not a fixed SQL enum —
+-- this is what lets a contributor add a new alert channel without a schema
+-- migration. The CHECK below only guards against an empty string.
 CREATE TABLE IF NOT EXISTS alert_configs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
-    channel_type TEXT NOT NULL CHECK(channel_type IN ('slack', 'webhook', 'pagerduty', 'discord', 'telegram')),
+    channel_type TEXT NOT NULL CHECK(channel_type <> ''),
     channel_target TEXT NOT NULL,
     threshold_ledgers INTEGER NOT NULL,
     webhook_secret TEXT,
+    -- Quiet-hours / maintenance-window support (issue #325).
+    -- All three columns are nullable: NULL means no quiet window is configured.
+    -- HH:MM 24-hour format.  quiet_hours_timezone must be a valid IANA tz name.
+    quiet_hours_start    TEXT,
+    quiet_hours_end      TEXT,
+    quiet_hours_timezone TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -59,6 +70,9 @@ CREATE TABLE IF NOT EXISTS alerts_fired (
     delivered_at TEXT,
     retry_count INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS idx_alerts_fired_undelivered
+    ON alerts_fired(delivered, retry_count);
 
 CREATE TABLE IF NOT EXISTS channel_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,6 +100,9 @@ CREATE TABLE IF NOT EXISTS extension_history (
     executed_at_ledger INTEGER NOT NULL,
     executed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_extension_history_contract_executed
+    ON extension_history(contract_id, executed_at);
 
 CREATE TABLE IF NOT EXISTS cost_daily_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,10 +146,20 @@ CREATE TABLE IF NOT EXISTS state_changes (
 CREATE INDEX IF NOT EXISTS idx_state_changes_entry_detected_ledger
     ON state_changes(contract_entry_id, detected_at_ledger DESC);
 
+CREATE TABLE IF NOT EXISTS budgets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+    billing_cycle TEXT NOT NULL,
+    limit_xlm REAL NOT NULL,
+    spent_xlm REAL NOT NULL DEFAULT 0,
+    UNIQUE(contract_id, billing_cycle)
+);
+
+-- See the comment above alert_configs — same reasoning applies here.
 CREATE TABLE IF NOT EXISTS resource_alert_configs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
-    channel_type TEXT NOT NULL CHECK(channel_type IN ('slack', 'webhook')),
+    channel_type TEXT NOT NULL CHECK(channel_type <> ''),
     channel_target TEXT NOT NULL,
     cpu_limit INTEGER NOT NULL,
     mem_limit INTEGER NOT NULL,
@@ -189,11 +216,3 @@ CREATE INDEX IF NOT EXISTS idx_resource_usage_logs_contract_id
 CREATE INDEX IF NOT EXISTS idx_resource_usage_logs_recorded_at
     ON resource_usage_logs(recorded_at DESC);
 
-CREATE TABLE IF NOT EXISTS budget_tracking (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
-    limit_xlm REAL NOT NULL,
-    spent_xlm REAL NOT NULL DEFAULT 0.0,
-    billing_cycle TEXT NOT NULL,
-    UNIQUE(contract_id, billing_cycle)
-);

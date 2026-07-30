@@ -13,6 +13,7 @@ import {
     getBudget,
     addBudgetSpent,
     countExtensionsInLastHour,
+
 } from "../db/repositories.js";
 import { ChannelAccountPool } from "./channels.js";
 import { getLogger } from "../logging/index.js";
@@ -410,20 +411,26 @@ export async function runAutoExtensions(
 
                 if (extResult.success) {
                     if (budget && estimatedFeeXlm > 0) {
-                        // Assume actualFeeXlm is passed from extResult (we will update extendEntries to return it)
-                        const actualFeeXlm = extResult.actualFeeXlm !== undefined ? extResult.actualFeeXlm : estimatedFeeXlm;
+                        const actualFeeXlm = extResult.feeCharged !== undefined ? extResult.feeCharged / 10000000 : estimatedFeeXlm;
                         addBudgetSpent(db, contract.id, billingCycle, actualFeeXlm);
                     }
-                    result.contractsExtended++;
-                    result.entriesExtended += extResult.entriesExtended;
-                    result.extensions.push({
-                        contractId: contract.id,
-                        txHash: extResult.txHash!,
-                        entriesExtended: extResult.entriesExtended,
-                        ledger: extResult.ledger!,
-                        isAnomaly: extResult.isAnomaly,
-                        anomalyDetails: extResult.anomalyDetails,
-                    });
+
+                    if (!extResult.txHash || extResult.ledger == null) {
+                        result.errors.push(
+                            `Contract ${contract.id}: Extension succeeded but RPC returned no txHash or ledger`,
+                        );
+                    } else {
+                        result.contractsExtended++;
+                        result.entriesExtended += extResult.entriesExtended;
+                        result.extensions.push({
+                            contractId: contract.id,
+                            txHash: extResult.txHash,
+                            entriesExtended: extResult.entriesExtended,
+                            ledger: extResult.ledger,
+                            isAnomaly: extResult.isAnomaly,
+                            anomalyDetails: extResult.anomalyDetails,
+                        });
+                    }
                 } else {
                     result.errors.push(
                         `Contract ${contract.id}: Extension failed — ${extResult.error}`,

@@ -39,12 +39,15 @@ export function registerGuardCommand(program: Command): void {
                     process.exit(1);
                 }
 
-                if (isNaN(threshold) || threshold <= 0) {
-                    console.error(chalk.red("--threshold must be a positive number"));
-                    process.exit(1);
-                }
+                 if (isNaN(threshold) || threshold <= 0) {
+                     console.error(chalk.red("--threshold must be a positive number"));
+                     process.exit(1);
+                 }
 
-                if (threshold >= targetTTL) {
+                 console.log("DEBUG: options:", JSON.stringify(options));
+
+                 if (threshold >= targetTTL) {
+
                     console.error(chalk.red("--threshold must be less than --target-ttl"));
                     process.exit(1);
                 }
