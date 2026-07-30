@@ -66,3 +66,35 @@ export function formatSecretKey(key: string | null): string | null {
     }
     return key;
 }
+
+export interface FleetEntryRow {
+    contractId: string;
+    entryKeyXdr: string;
+    entryType: string;
+    remainingTTL: number | null;
+    status: string;
+}
+
+export function escapeCSVCell(value: any): string {
+    if (value === null || value === undefined) {
+        return "";
+    }
+    const str = String(value);
+    if (str.includes('"') || str.includes(",") || str.includes("\n") || str.includes("\r")) {
+        return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+}
+
+export function formatFleetCSV(rows: FleetEntryRow[]): string {
+    let csv = "contract_id,entry_key_xdr,entry_type,remaining_ttl,status\n";
+    for (const row of rows) {
+        const contractId = escapeCSVCell(row.contractId);
+        const entryKeyXdr = escapeCSVCell(row.entryKeyXdr);
+        const entryType = escapeCSVCell(row.entryType);
+        const remainingTTL = row.remainingTTL !== null && row.remainingTTL !== undefined ? String(row.remainingTTL) : "";
+        const status = escapeCSVCell(row.status);
+        csv += `${contractId},${entryKeyXdr},${entryType},${remainingTTL},${status}\n`;
+    }
+    return csv;
+}
