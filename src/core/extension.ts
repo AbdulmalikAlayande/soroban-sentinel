@@ -381,24 +381,61 @@ export async function runAutoExtensions(
 
             try {
                 const billingCycle = new Date().toISOString().slice(0, 7);
-                const budget = getBudget(db, contract.id, billingCycle);
+                const sharedBudget = db.transaction(() => {
+                    const assigned = db.prepare(`
+                        SELECT p.id, p.name, p.monthly_limit_xlm, p.billing_cycle, p.spent_xlm
+                        FROM shared_budget_pools p
+                        JOIN shared_budget_pool_contracts pc ON pc.pool_id = p.id
+                        WHERE pc.contract_id = ?
+                    `).get(contract.id) as {
+                        id: number;
+                        name: string;
+                        monthly_limit_xlm: number;
+                        billing_cycle: string;
+                        spent_xlm: number;
+                    } | undefined;
+                    if (assigned && assigned.billing_cycle !== billingCycle) {
+                        db.prepare(`
+                            UPDATE shared_budget_pools
+                            SET billing_cycle = ?, spent_xlm = 0, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        `).run(billingCycle, assigned.id);
+                        assigned.billing_cycle = billingCycle;
+                        assigned.spent_xlm = 0;
+                    }
+                    return assigned;
+                })();
+                // Pool membership takes precedence; unassigned contracts retain
+                // the existing per-contract budget behavior.
+                const budget = sharedBudget ? undefined : getBudget(db, contract.id, billingCycle);
                 let estimatedFeeXlm = 0;
+                let reservedPoolSpend = 0;
 
-                if (budget) {
+                if (sharedBudget || budget) {
                     const { Keypair } = await import("@stellar/stellar-sdk");
                     const pubKey = Keypair.fromSecret(secretKey).publicKey();
                     const simResult = await simulateExtension(db, contract.id, entryKeys, policy.target_ttl_ledgers, pubKey, rpcUrl);
-                    
                     if (!simResult.success) {
                         throw new Error(`Simulation failed: ${simResult.error}`);
                     }
-                    
                     estimatedFeeXlm = (simResult.estimatedFee || 0) / 10000000;
-                    if (budget.spent_xlm + estimatedFeeXlm > budget.limit_xlm) {
+                    if (sharedBudget) {
+                        const reservation = db.prepare(`
+                            UPDATE shared_budget_pools
+                            SET spent_xlm = spent_xlm + ?, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ? AND billing_cycle = ?
+                              AND spent_xlm + ? <= monthly_limit_xlm
+                        `).run(estimatedFeeXlm, sharedBudget.id, billingCycle, estimatedFeeXlm);
+                        if (reservation.changes === 0) {
+                            const current = db.prepare(`SELECT spent_xlm FROM shared_budget_pools WHERE id = ?`)
+                                .get(sharedBudget.id) as { spent_xlm: number };
+                            throw new Error(`shared budget pool "${sharedBudget.name}" limit exceeded. Estimated cost: ${estimatedFeeXlm} XLM, Remaining: ${sharedBudget.monthly_limit_xlm - current.spent_xlm} XLM`);
+                        }
+                        reservedPoolSpend = estimatedFeeXlm;
+                    } else if (budget && budget.spent_xlm + estimatedFeeXlm > budget.limit_xlm) {
                         throw new Error(`budget limit exceeded. Estimated cost: ${estimatedFeeXlm} XLM, Remaining: ${budget.limit_xlm - budget.spent_xlm} XLM`);
                     }
                 }
-
                 const extResult = await extendEntries(
                     db,
                     contract.id,
@@ -410,11 +447,17 @@ export async function runAutoExtensions(
                 );
 
                 if (extResult.success) {
-                    if (budget && estimatedFeeXlm > 0) {
-                        const actualFeeXlm = extResult.feeCharged !== undefined ? extResult.feeCharged / 10000000 : estimatedFeeXlm;
+                    const actualFeeXlm = extResult.feeCharged !== undefined ? extResult.feeCharged / 10000000 : estimatedFeeXlm;
+                    if (sharedBudget && reservedPoolSpend > 0) {
+                        db.prepare(`
+                            UPDATE shared_budget_pools
+                            SET spent_xlm = spent_xlm + ?, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ? AND billing_cycle = ?
+                        `).run(actualFeeXlm - reservedPoolSpend, sharedBudget.id, billingCycle);
+                        reservedPoolSpend = 0;
+                    } else if (budget && estimatedFeeXlm > 0) {
                         addBudgetSpent(db, contract.id, billingCycle, actualFeeXlm);
                     }
-
                     if (!extResult.txHash || extResult.ledger == null) {
                         result.errors.push(
                             `Contract ${contract.id}: Extension succeeded but RPC returned no txHash or ledger`,
@@ -432,6 +475,13 @@ export async function runAutoExtensions(
                         });
                     }
                 } else {
+                    if (sharedBudget && reservedPoolSpend > 0) {
+                        db.prepare(`
+                            UPDATE shared_budget_pools
+                            SET spent_xlm = MAX(0, spent_xlm - ?), updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ? AND billing_cycle = ?
+                        `).run(reservedPoolSpend, sharedBudget.id, billingCycle);
+                    }
                     result.errors.push(
                         `Contract ${contract.id}: Extension failed — ${extResult.error}`,
                     );
