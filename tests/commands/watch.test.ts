@@ -4,12 +4,14 @@ import { Command } from "commander";
 import * as dbLib from "../../src/db/database";
 import * as watchCore from "../../src/core/watch";
 import * as watchConfig from "../../src/utils/watch-config";
+import * as watchManifest from "../../src/core/watch_manifest";
 import * as repositories from "../../src/db/repositories";
 import readline from "node:readline";
 
 vi.mock("../../src/db/database");
 vi.mock("../../src/core/watch");
 vi.mock("../../src/utils/watch-config");
+vi.mock("../../src/core/watch_manifest");
 vi.mock("../../src/db/repositories");
 
 describe("Watch Command CLI", () => {
@@ -208,6 +210,41 @@ describe("Watch Command CLI", () => {
     );
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("Alpha"));
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("Beta"));
+  });
+
+  it("uses the manifest parser for --from-manifest and reports per-entry failures by name", async () => {
+    const firstId = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
+    const secondId = "CD2R4QQV6KJ6P7JX5TURH6K7W2K4XQ6G5V5VJQ4X6UR6P6JQ6P2M4ABC";
+
+    vi.mocked(watchManifest.loadWatchManifest).mockReturnValue([
+      { id: firstId, name: "Alpha", network: "testnet" },
+      { id: secondId, name: "Beta", network: "mainnet" },
+    ]);
+
+    vi.mocked(watchCore.watchContract)
+      .mockResolvedValueOnce({
+        success: true,
+        instance: { remainingTTL: 100 },
+        wasm: null,
+      } as any)
+      .mockResolvedValueOnce({
+        success: false,
+        error: "Invalid contract ID format",
+      } as any);
+
+    await actionFn(undefined, {
+      fromManifest: "contracts.yaml",
+      network: "testnet",
+    });
+
+    expect(watchManifest.loadWatchManifest).toHaveBeenCalledWith(
+      "contracts.yaml",
+    );
+    expect(watchCore.watchContract).toHaveBeenCalledTimes(2);
+    expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("FAILED"));
+    expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("Alpha"));
+    expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("Beta"));
+    expect(mockExit).toHaveBeenCalledWith(1);
   });
 
   it("prints a success and failure summary for batch registration and exits 1 when any contract fails", async () => {

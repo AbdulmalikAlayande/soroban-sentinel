@@ -12,6 +12,7 @@ import {
   statusIndicator,
 } from "../utils/formatting.js";
 import { watchContract } from "../core/watch.js";
+import { loadWatchManifest } from "../core/watch_manifest.js";
 import { loadWatchContractsFile } from "../utils/watch-config.js";
 
 const logger = getLogger().child({ component: "WatchCommand" });
@@ -39,12 +40,18 @@ export const registerWatchCommand = (program: Command): void => {
       "--from-file <path>",
       "Load multiple contract registrations from a YAML or JSON file",
     )
+    .option(
+      "--from-manifest <path>",
+      "Load multiple contract registrations from a manifest file",
+    )
     .action(async (contractId, options) => {
       try {
         const db = getDatabase();
 
-        if (options.fromFile) {
-          const configs = loadWatchContractsFile(options.fromFile);
+        if (options.fromFile || options.fromManifest) {
+          const rawConfigs = options.fromManifest
+            ? loadWatchManifest(options.fromManifest)
+            : loadWatchContractsFile(options.fromFile);
           const results = [] as Array<{
             contractId: string;
             name?: string;
@@ -53,23 +60,25 @@ export const registerWatchCommand = (program: Command): void => {
             message: string;
           }>;
 
-          for (const config of configs) {
+          for (const config of rawConfigs) {
+            const contractId = config.id ?? config.contractId;
             const watchResult = await watchContract(db, {
-              contractId: config.contractId,
-              network: config.network,
+              contractId,
+              network: config.network ?? options.network,
               name: config.name,
               rpcUrl: config.rpcUrl,
               storageKeys: config.storageKeys,
               noIntrospection: config.noIntrospection,
+              pollIntervalSeconds: config.pollIntervalSeconds,
             });
 
             results.push({
-              contractId: config.contractId,
+              contractId,
               name: config.name,
-              network: config.network,
+              network: config.network ?? options.network,
               status: watchResult.success ? "SUCCESS" : "FAILED",
               message: watchResult.success
-                ? `Registered ${config.name ?? formatContractID(config.contractId)}`
+                ? `Registered ${config.name ?? formatContractID(contractId)}`
                 : watchResult.error,
             });
           }
