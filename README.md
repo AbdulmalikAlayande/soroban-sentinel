@@ -73,6 +73,11 @@ npm install -g sorokeep
 
 ## Quick Start
 
+> **See it in action:** `scripts/demo.sh` runs the full Quick Start flow automatically. Record it with [asciinema](https://asciinema.org/) (`asciinema rec -c "bash scripts/demo.sh"`) and convert to an embeddable SVG with [svg-term-cli](https://github.com/marionebl/svg-term-cli) (`svg-term --in demo.cast --out docs/demo.svg --window`).
+>
+> Once a recording is captured, the SVG can be embedded here with:
+> `![Sorokeep demo](docs/demo.svg)`
+
 ```bash
 # 1. Register a contract for monitoring
 sorokeep watch CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
@@ -352,6 +357,23 @@ Database management tasks, including migrations, backups, and introspection cach
 ### `sorokeep completion`
 
 Generate shell autocomplete scripts for bash/zsh to enable tab completion for all Sorokeep commands.
+
+---
+
+### `sorokeep contracts`
+
+List all watched contracts at a glance — an index view when you're managing more than a few contracts.
+
+```bash
+sorokeep contracts [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--network <network>` | Filter by `testnet` or `mainnet` |
+| `--json` | Output machine-readable JSON |
+
+Displays a table with contract ID (truncated), name, network, entry count, worst-case remaining TTL, and status (OK / Warning / Critical / Expired). Reads from the local database only — instant, no RPC calls.
 
 ## Alerting
 
