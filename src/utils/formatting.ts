@@ -66,3 +66,41 @@ export function formatSecretKey(key: string | null): string | null {
     }
     return key;
 }
+
+export interface PaginationMeta {
+  page: number;
+  pageSize: number;
+  totalItems: number;
+  totalPages: number;
+}
+
+export interface PaginationResult<T> {
+  items: T[];
+  meta: PaginationMeta;
+}
+
+export function paginateList<T>(
+  items: T[],
+  page: number,
+  pageSize: number = 25,
+): PaginationResult<T> {
+  const totalItems = items.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  const safePage = Math.max(1, Math.min(page, totalPages));
+  const start = (safePage - 1) * pageSize;
+  const paginatedItems = items.slice(start, start + pageSize);
+
+  return {
+    items: paginatedItems,
+    meta: {
+      page: safePage,
+      pageSize,
+      totalItems,
+      totalPages,
+    },
+  };
+}
+
+export function formatPaginationFooter(meta: PaginationMeta): string {
+  return `Page ${meta.page} of ${meta.totalPages} (${meta.totalItems} total)`;
+}

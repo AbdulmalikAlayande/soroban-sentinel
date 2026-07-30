@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { convertLedgerCloseTimeToSeconds, formatTimeToCloseLedger, classifyTTL, statusIndicator, formatContractID, formatSecretKey } from "../../src/utils/formatting";
+import { convertLedgerCloseTimeToSeconds, formatTimeToCloseLedger, classifyTTL, statusIndicator, formatContractID, formatSecretKey, paginateList, formatPaginationFooter } from "../../src/utils/formatting";
 
 describe("convertLedgerCloseTimeToSeconds", () => {
     it("should convert ledger close time to seconds using 5.5s average", () => {
@@ -131,5 +131,70 @@ describe("formatSecretKey", () => {
   it("produces exactly 11 characters for a 56-char Stellar secret key", () => {
     const key = "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     expect(formatSecretKey(key).length).toBe(11);
+  });
+});
+
+describe("paginateList", () => {
+  it("returns first page with correct slice when page-size is smaller than total", () => {
+    const items = Array.from({ length: 60 }, (_, i) => `item-${i + 1}`);
+    const result = paginateList(items, 1, 25);
+
+    expect(result.items).toHaveLength(25);
+    expect(result.items[0]).toBe("item-1");
+    expect(result.items[24]).toBe("item-25");
+    expect(result.meta.page).toBe(1);
+    expect(result.meta.totalPages).toBe(3);
+    expect(result.meta.totalItems).toBe(60);
+    expect(result.meta.pageSize).toBe(25);
+  });
+
+  it("returns second page with items 26-50 for page-size 25", () => {
+    const items = Array.from({ length: 60 }, (_, i) => `item-${i + 1}`);
+    const result = paginateList(items, 2, 25);
+
+    expect(result.items).toHaveLength(25);
+    expect(result.items[0]).toBe("item-26");
+    expect(result.items[24]).toBe("item-50");
+    expect(result.meta.page).toBe(2);
+  });
+
+  it("returns third page with remaining 10 items for page-size 25", () => {
+    const items = Array.from({ length: 60 }, (_, i) => `item-${i + 1}`);
+    const result = paginateList(items, 3, 25);
+
+    expect(result.items).toHaveLength(10);
+    expect(result.items[0]).toBe("item-51");
+    expect(result.items[9]).toBe("item-60");
+    expect(result.meta.page).toBe(3);
+  });
+
+  it("clamps out-of-range page number to last page", () => {
+    const items = Array.from({ length: 60 }, (_, i) => `item-${i + 1}`);
+    const result = paginateList(items, 99, 25);
+
+    expect(result.items).toHaveLength(10);
+    expect(result.items[0]).toBe("item-51");
+    expect(result.meta.page).toBe(3);
+  });
+
+  it("returns empty items for empty input", () => {
+    const result = paginateList([], 1, 25);
+
+    expect(result.items).toHaveLength(0);
+    expect(result.meta.totalItems).toBe(0);
+    expect(result.meta.totalPages).toBe(1);
+    expect(result.meta.page).toBe(1);
+  });
+});
+
+describe("formatPaginationFooter", () => {
+  it("formats footer correctly", () => {
+    expect(formatPaginationFooter({ page: 1, pageSize: 25, totalItems: 60, totalPages: 3 }))
+      .toBe("Page 1 of 3 (60 total)");
+  });
+
+  it("handles single page", () => {
+    expect(formatPaginationFooter({ page: 1, pageSize: 25, totalItems: 5, totalPages: 1 }))
+      .toBe("Page 1 of 1 (5 total)");
   });
 });

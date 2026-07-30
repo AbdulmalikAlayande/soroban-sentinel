@@ -17,6 +17,7 @@ import { registerCompletionCommand } from "./commands/completion.js";
 import { registerInspectCommand } from "./commands/inspect.js";
 import { registerBudgetCommand } from "./commands/budget.js";
 import { registerDbCommand } from "./commands/db.js";
+import { registerFleetCommand } from "./commands/fleet.js";
 import { registerPauseCommand } from "./commands/pause.js";
 import { registerResumeCommand } from "./commands/resume.js";
 
@@ -46,6 +47,7 @@ registerHistoryCommand(program);
 registerCompletionCommand(program);
 registerInspectCommand(program);
 registerBudgetCommand(program);
+registerFleetCommand(program);
 registerDbCommand(program);
 registerPauseCommand(program);
 registerResumeCommand(program);
