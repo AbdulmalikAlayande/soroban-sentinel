@@ -52,6 +52,19 @@ describe("Database Repositories", () => {
             repo.updateLastIntrospectedAt(db, "C1", new Date(Date.now() - 25 * 3600 * 1000).toISOString());
             expect(repo.isIntrospectionCacheValid(db, "C1")).toBe(false);
         });
+
+        it("returns only exact tag matches and not substrings", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "defi" });
+            repo.insertContract(db, { id: "C2", network: "testnet", tags: "defi-v2" });
+            repo.insertContract(db, { id: "C3", network: "testnet", tags: "nft,defi" });
+            repo.insertContract(db, { id: "C4", network: "testnet", tags: "nft" });
+
+            const exactMatches = repo.getContractsByTag(db, "defi");
+            expect(exactMatches.map((contract) => contract.id)).toEqual(["C1", "C3"]);
+
+            const noMatches = repo.getContractsByTag(db, "foo");
+            expect(noMatches).toHaveLength(0);
+        });
     });
 
     describe("ContractEntry CRUD", () => {
