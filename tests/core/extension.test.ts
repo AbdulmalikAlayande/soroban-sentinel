@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+﻿import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import { getDatabaseForTesting } from "../../src/db/database.js";
 import {
@@ -8,6 +8,11 @@ import {
     getEntriesForContract,
     recordExtension,
     getExtensionHistory,
+    // Per-entry-type policy helpers (added by the sibling per-entry-type policy
+    // issue in this phase). These imports will cause a compile-time failure until
+    // that feature lands — that is intentional TDD behaviour.
+    upsertEntryTypePolicy,
+    getEffectivePolicyForEntry,
 } from "../../src/db/repositories.js";
 
 // ─── Mock RPC client ────────────────────────────────────────────────────────
@@ -809,6 +814,727 @@ describe("Core Extension Logic", () => {
             const history = getExtensionHistory(db, contractId);
             const anomaly = history.find(h => h.tx_hash === "anomaly-tx");
             expect(anomaly!.is_anomaly).toBe(1);
+        });
+    });
+
+    // =========================================================================
+    // 5. getEffectivePolicyForEntry — unit tests for the resolution helper
+    //
+    // These tests drive the repository-layer function that resolves which policy
+    // governs a given entry type. They verify the resolution logic in isolation
+    // (no RPC, no auto-extension loop) and cover every cell of the precedence
+    // matrix plus the "disabled at any level" and cross-type isolation rules.
+    //
+    // Depends on the per-entry-type policy sibling issue. Will fail until both
+    //   upsertEntryTypePolicy  and  getEffectivePolicyForEntry  land.
+    // =========================================================================
+    describe("getEffectivePolicyForEntry", () => {
+        const contractId = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCEFF";
+
+        beforeEach(() => {
+            insertContract(db, { id: contractId, name: "Effective Policy Test", network: "testnet" });
+        });
+
+        // Matrix cell 1: enabled override + enabled default => override wins
+        it("returns the entry-type override when both override and default are present and enabled", () => {
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 50000,
+                extend_when_below_ledgers: 20000,
+            });
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "instance",
+                enabled: true,
+                target_ttl_ledgers: 200000,
+                extend_when_below_ledgers: 20000,
+            });
+
+            const policy = getEffectivePolicyForEntry(db, contractId, "instance");
+
+            expect(policy).toBeDefined();
+            expect(policy!.target_ttl_ledgers).toBe(200000);
+            expect(policy!.enabled).toBe(true);
+        });
+
+        // Matrix cell 2: enabled override + no default => override applies alone
+        it("returns the override when no contract-level default exists", () => {
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "wasm",
+                enabled: true,
+                target_ttl_ledgers: 150000,
+                extend_when_below_ledgers: 20000,
+            });
+
+            const policy = getEffectivePolicyForEntry(db, contractId, "wasm");
+
+            expect(policy).toBeDefined();
+            expect(policy!.target_ttl_ledgers).toBe(150000);
+        });
+
+        // Matrix cell 3: no override + enabled default => default applies
+        it("returns the contract-level default when no entry-type override exists", () => {
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+            });
+
+            const policy = getEffectivePolicyForEntry(db, contractId, "instance");
+
+            expect(policy).toBeDefined();
+            expect(policy!.target_ttl_ledgers).toBe(100000);
+        });
+
+        // Matrix cell 4: no override + no default => undefined
+        it("returns undefined when neither override nor contract-level default exists", () => {
+            const policy = getEffectivePolicyForEntry(db, contractId, "instance");
+            expect(policy).toBeUndefined();
+        });
+
+        // Disabled override + enabled default => fall through to default
+        it("falls through to the contract default when the entry-type override is disabled", () => {
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 80000,
+                extend_when_below_ledgers: 20000,
+            });
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "instance",
+                enabled: false,
+                target_ttl_ledgers: 999999,
+                extend_when_below_ledgers: 20000,
+            });
+
+            const policy = getEffectivePolicyForEntry(db, contractId, "instance");
+
+            // Disabled override must not win; the enabled default must be returned
+            expect(policy).toBeDefined();
+            expect(policy!.target_ttl_ledgers).toBe(80000);
+            expect(policy!.enabled).toBe(true);
+        });
+
+        // Enabled override + disabled default => override governs
+        it("returns the enabled override even when the contract default is disabled", () => {
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: false,
+                target_ttl_ledgers: 50000,
+                extend_when_below_ledgers: 20000,
+            });
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "wasm",
+                enabled: true,
+                target_ttl_ledgers: 120000,
+                extend_when_below_ledgers: 20000,
+            });
+
+            const policy = getEffectivePolicyForEntry(db, contractId, "wasm");
+
+            expect(policy).toBeDefined();
+            expect(policy!.target_ttl_ledgers).toBe(120000);
+            expect(policy!.enabled).toBe(true);
+        });
+
+        // Disabled override + disabled default => undefined (nothing enabled)
+        it("returns undefined when both override and default are disabled", () => {
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: false,
+                target_ttl_ledgers: 50000,
+                extend_when_below_ledgers: 20000,
+            });
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "instance",
+                enabled: false,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+            });
+
+            const policy = getEffectivePolicyForEntry(db, contractId, "instance");
+            expect(policy).toBeUndefined();
+        });
+
+        // Disabled override + no default => undefined
+        it("returns undefined when only a disabled override exists and there is no default", () => {
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "persistent",
+                enabled: false,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+            });
+
+            const policy = getEffectivePolicyForEntry(db, contractId, "persistent");
+            expect(policy).toBeUndefined();
+        });
+
+        // Cross-type isolation: a wasm override must not bleed into instance
+        it("does not return a wasm override when resolving for the instance entry type", () => {
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "wasm",
+                enabled: true,
+                target_ttl_ledgers: 300000,
+                extend_when_below_ledgers: 20000,
+            });
+
+            // No default, no instance override
+            const policy = getEffectivePolicyForEntry(db, contractId, "instance");
+            expect(policy).toBeUndefined();
+        });
+
+        // Cross-type isolation: an instance override must not bleed into wasm
+        it("does not return an instance override when resolving for the wasm entry type", () => {
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "instance",
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+            });
+
+            // No default, no wasm override
+            const policy = getEffectivePolicyForEntry(db, contractId, "wasm");
+            expect(policy).toBeUndefined();
+        });
+
+        // Each entry type resolves its own override independently
+        it("resolves different overrides for different entry types on the same contract", () => {
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "instance",
+                enabled: true,
+                target_ttl_ledgers: 111111,
+                extend_when_below_ledgers: 10000,
+            });
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "wasm",
+                enabled: true,
+                target_ttl_ledgers: 222222,
+                extend_when_below_ledgers: 10000,
+            });
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "persistent",
+                enabled: true,
+                target_ttl_ledgers: 333333,
+                extend_when_below_ledgers: 10000,
+            });
+
+            expect(getEffectivePolicyForEntry(db, contractId, "instance")!.target_ttl_ledgers).toBe(111111);
+            expect(getEffectivePolicyForEntry(db, contractId, "wasm")!.target_ttl_ledgers).toBe(222222);
+            expect(getEffectivePolicyForEntry(db, contractId, "persistent")!.target_ttl_ledgers).toBe(333333);
+            // "temporary" has no override and no default
+            expect(getEffectivePolicyForEntry(db, contractId, "temporary")).toBeUndefined();
+        });
+    });
+
+    // =========================================================================
+    // 6. Policy precedence interaction — runAutoExtensions integration (issue #505)
+    //
+    // These tests cover every cell of the precedence matrix end-to-end through
+    // runAutoExtensions, verifying that the correct target_ttl_ledgers reaches
+    // the RPC call and that disabled policies at any level never trigger an
+    // extension. They also include regression tests for cross-type isolation.
+    //
+    // Depends on the per-entry-type policy sibling issue. Will fail until both
+    //   upsertEntryTypePolicy  and  getEffectivePolicyForEntry  land and
+    //   runAutoExtensions is updated to resolve per-entry effective policies.
+    // =========================================================================
+    describe("Policy precedence interaction", () => {
+
+        // -- RPC setup helper -------------------------------------------------
+
+        function setupRpcForExtension(entryKeyXdr: string, ledger = 2400100) {
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+            mockSubmitExtension.mockResolvedValue({
+                success: true,
+                txHash: "policy-tx",
+                ledger,
+            });
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: ledger,
+                entries: [{
+                    entryKeyXdr,
+                    latestLedger: ledger,
+                    liveUntilLedgerSeq: ledger + 100000,
+                    lastModifiedLedgerSeq: ledger,
+                    remainingTTL: 100000,
+                }],
+            });
+        }
+
+        // -- Contract + low-TTL entry seed helper -----------------------------
+
+        function seedContractWithLowTTLEntry(
+            db: Database.Database,
+            opts: {
+                contractId: string;
+                entryKeyXdr: string;
+                entryType: "instance" | "wasm" | "persistent" | "temporary";
+            },
+        ) {
+            insertContract(db, {
+                id: opts.contractId,
+                name: "Policy Test Contract",
+                network: "testnet",
+            });
+            // live_until_ledger 2410000, currentLedger 2400000 ? remaining 10000
+            // which is below any reasonable extend_when_below_ledgers threshold
+            upsertEntry(db, {
+                contract_id: opts.contractId,
+                entry_key_xdr: opts.entryKeyXdr,
+                entry_type: opts.entryType,
+                label: `${opts.entryType} entry`,
+                live_until_ledger: 2410000,
+                last_modified_ledger: 2400000,
+                discovery_source: "deterministic",
+            });
+        }
+
+        // -- Matrix cell 1: override present + default present ----------------
+        // Expected: entry-type override wins; its target_ttl_ledgers is used,
+        // not the contract default's.
+
+        it("override present + default present: override wins over contract default", async () => {
+            const contractId = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCPO1";
+            seedContractWithLowTTLEntry(db, {
+                contractId,
+                entryKeyXdr: "instance-policy-key",
+                entryType: "instance",
+            });
+
+            // Contract-level default with a moderate TTL target
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 50000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            // Per-entry-type override for "instance" with a higher TTL target
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "instance",
+                enabled: true,
+                target_ttl_ledgers: 200000,       // deliberately different from default
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            setupRpcForExtension("instance-policy-key");
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.contractsChecked).toBe(1);
+            expect(result.contractsExtended).toBe(1);
+
+            // RPC must be called with the override's target TTL (200000), not 50000
+            expect(mockSubmitExtension).toHaveBeenCalledWith(
+                expect.arrayContaining(["instance-policy-key"]),
+                200000,
+                expect.any(String),
+            );
+        });
+
+        // -- Matrix cell 2: override present + no default ---------------------
+        // Expected: the override applies on its own; extension happens.
+
+        it("override present + no contract default: override applies alone", async () => {
+            const contractId = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCPO2";
+            seedContractWithLowTTLEntry(db, {
+                contractId,
+                entryKeyXdr: "wasm-override-only-key",
+                entryType: "wasm",
+            });
+
+            // No contract-level default � only a per-entry-type override for "wasm"
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "wasm",
+                enabled: true,
+                target_ttl_ledgers: 150000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            setupRpcForExtension("wasm-override-only-key");
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.contractsChecked).toBe(1);
+            expect(result.contractsExtended).toBe(1);
+            expect(mockSubmitExtension).toHaveBeenCalledWith(
+                expect.arrayContaining(["wasm-override-only-key"]),
+                150000,
+                expect.any(String),
+            );
+        });
+
+        // -- Matrix cell 3: no override + default present ---------------------
+        // Expected: the contract-level default applies; extension happens.
+        // (Made explicit here as a named matrix cell even though the existing
+        // runAutoExtensions tests already exercise this path.)
+
+        it("no override + contract default present: default applies", async () => {
+            const contractId = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCPO3";
+            seedContractWithLowTTLEntry(db, {
+                contractId,
+                entryKeyXdr: "instance-default-only-key",
+                entryType: "instance",
+            });
+
+            // Contract-level default only; no per-entry-type override
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            setupRpcForExtension("instance-default-only-key");
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.contractsChecked).toBe(1);
+            expect(result.contractsExtended).toBe(1);
+            expect(mockSubmitExtension).toHaveBeenCalledWith(
+                expect.arrayContaining(["instance-default-only-key"]),
+                100000,
+                expect.any(String),
+            );
+        });
+
+        // -- Matrix cell 4: no override + no default --------------------------
+        // Expected: no policy exists at all; no extension, contractsChecked = 0.
+
+        it("no override + no contract default: no extension occurs", async () => {
+            const contractId = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCPO4";
+            seedContractWithLowTTLEntry(db, {
+                contractId,
+                entryKeyXdr: "instance-no-policy-key",
+                entryType: "instance",
+            });
+
+            // No policies of any kind
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.contractsChecked).toBe(0);
+            expect(result.contractsExtended).toBe(0);
+            expect(mockSubmitExtension).not.toHaveBeenCalled();
+        });
+
+        // -- Disabled policy tests --------------------------------------------
+
+        it("disabled override + enabled default: default governs the entry (override does not suppress)", async () => {
+            const contractId = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCPO5";
+            seedContractWithLowTTLEntry(db, {
+                contractId,
+                entryKeyXdr: "instance-disabled-override-key",
+                entryType: "instance",
+            });
+
+            // Enabled contract-level default
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 80000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            // Disabled per-entry-type override � must NOT suppress the default
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "instance",
+                enabled: false,
+                target_ttl_ledgers: 999999,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            setupRpcForExtension("instance-disabled-override-key");
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            // Default must still fire with its own target (80000)
+            expect(result.contractsChecked).toBe(1);
+            expect(result.contractsExtended).toBe(1);
+            expect(mockSubmitExtension).toHaveBeenCalledWith(
+                expect.arrayContaining(["instance-disabled-override-key"]),
+                80000,
+                expect.any(String),
+            );
+        });
+
+        it("enabled override + disabled default: override still fires for its entry type", async () => {
+            const contractId = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCPO6";
+            seedContractWithLowTTLEntry(db, {
+                contractId,
+                entryKeyXdr: "wasm-enabled-override-key",
+                entryType: "wasm",
+            });
+
+            // Disabled contract-level default
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: false,
+                target_ttl_ledgers: 50000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            // Enabled per-entry-type override for "wasm"
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "wasm",
+                enabled: true,
+                target_ttl_ledgers: 120000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            setupRpcForExtension("wasm-enabled-override-key");
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            // The enabled override must fire even though the default is disabled
+            expect(result.contractsChecked).toBe(1);
+            expect(result.contractsExtended).toBe(1);
+            expect(mockSubmitExtension).toHaveBeenCalledWith(
+                expect.arrayContaining(["wasm-enabled-override-key"]),
+                120000,
+                expect.any(String),
+            );
+        });
+
+        it("disabled override + disabled default: no extension at all", async () => {
+            const contractId = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCPO7";
+            seedContractWithLowTTLEntry(db, {
+                contractId,
+                entryKeyXdr: "instance-both-disabled-key",
+                entryType: "instance",
+            });
+
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: false,
+                target_ttl_ledgers: 50000,
+                extend_when_below_ledgers: 20000,
+            });
+
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "instance",
+                enabled: false,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+            });
+
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.contractsChecked).toBe(0);
+            expect(result.contractsExtended).toBe(0);
+            expect(mockSubmitExtension).not.toHaveBeenCalled();
+        });
+
+        it("disabled override + no default: no extension occurs", async () => {
+            const contractId = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCPO8";
+            seedContractWithLowTTLEntry(db, {
+                contractId,
+                entryKeyXdr: "instance-disabled-no-default-key",
+                entryType: "instance",
+            });
+
+            // No contract-level default; only a disabled per-entry-type override
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "instance",
+                enabled: false,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+            });
+
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.contractsChecked).toBe(0);
+            expect(result.contractsExtended).toBe(0);
+            expect(mockSubmitExtension).not.toHaveBeenCalled();
+        });
+
+        // -- Cross-type isolation regression tests -----------------------------
+        // A wasm override must never apply to instance entries, and vice versa.
+
+        it("wasm override does not bleed into instance entries � instance uses contract default", async () => {
+            const contractId = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCPO9";
+            insertContract(db, { id: contractId, name: "Cross-type Test", network: "testnet" });
+
+            // Both entry types with low TTL
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "instance-cross-type-key",
+                entry_type: "instance",
+                live_until_ledger: 2410000,
+                last_modified_ledger: 2400000,
+                discovery_source: "deterministic",
+            });
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "wasm-cross-type-key",
+                entry_type: "wasm",
+                live_until_ledger: 2410000,
+                last_modified_ledger: 2400000,
+                discovery_source: "deterministic",
+            });
+
+            // Contract default: target 75000
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 75000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            // Override for "wasm" only: target 300000
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "wasm",
+                enabled: true,
+                target_ttl_ledgers: 300000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+            mockSubmitExtension.mockResolvedValue({
+                success: true, txHash: "cross-type-tx", ledger: 2400100,
+            });
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2400100,
+                entries: [
+                    {
+                        entryKeyXdr: "instance-cross-type-key",
+                        latestLedger: 2400100,
+                        liveUntilLedgerSeq: 2475100,
+                        lastModifiedLedgerSeq: 2400100,
+                        remainingTTL: 75000,
+                    },
+                    {
+                        entryKeyXdr: "wasm-cross-type-key",
+                        latestLedger: 2400100,
+                        liveUntilLedgerSeq: 2700100,
+                        lastModifiedLedgerSeq: 2400100,
+                        remainingTTL: 300000,
+                    },
+                ],
+            });
+
+            await runAutoExtensions(db, "testnet");
+
+            // instance entry must use the DEFAULT target (75000), not 300000
+            const instanceCall = mockSubmitExtension.mock.calls.find(
+                (call: unknown[]) =>
+                    Array.isArray(call[0]) &&
+                    (call[0] as string[]).includes("instance-cross-type-key") &&
+                    !(call[0] as string[]).includes("wasm-cross-type-key"),
+            );
+            if (instanceCall) {
+                expect(instanceCall[1]).toBe(75000);
+                expect(instanceCall[1]).not.toBe(300000);
+            }
+
+            // wasm entry must use the OVERRIDE target (300000)
+            const wasmCall = mockSubmitExtension.mock.calls.find(
+                (call: unknown[]) =>
+                    Array.isArray(call[0]) &&
+                    (call[0] as string[]).includes("wasm-cross-type-key") &&
+                    !(call[0] as string[]).includes("instance-cross-type-key"),
+            );
+            if (wasmCall) {
+                expect(wasmCall[1]).toBe(300000);
+            }
+        });
+
+        it("instance override does not extend wasm entries when no contract default exists", async () => {
+            const contractId = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCPOA";
+            insertContract(db, { id: contractId, name: "No-Bleed No-Default Test", network: "testnet" });
+
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "instance-no-bleed-key",
+                entry_type: "instance",
+                live_until_ledger: 2410000,
+                last_modified_ledger: 2400000,
+                discovery_source: "deterministic",
+            });
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "wasm-no-bleed-key",
+                entry_type: "wasm",
+                live_until_ledger: 2410000,
+                last_modified_ledger: 2400000,
+                discovery_source: "deterministic",
+            });
+
+            // Only a per-entry-type override for "instance" � no default, no wasm override
+            upsertEntryTypePolicy(db, {
+                contract_id: contractId,
+                entry_type: "instance",
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+            mockSubmitExtension.mockResolvedValue({
+                success: true, txHash: "no-bleed-tx", ledger: 2400100,
+            });
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2400100,
+                entries: [{
+                    entryKeyXdr: "instance-no-bleed-key",
+                    latestLedger: 2400100,
+                    liveUntilLedgerSeq: 2500100,
+                    lastModifiedLedgerSeq: 2400100,
+                    remainingTTL: 100000,
+                }],
+            });
+
+            await runAutoExtensions(db, "testnet");
+
+            // wasm entry has no governing policy � must NOT be submitted for extension
+            const wasmExtended = mockSubmitExtension.mock.calls.some(
+                (call: unknown[]) =>
+                    Array.isArray(call[0]) &&
+                    (call[0] as string[]).includes("wasm-no-bleed-key"),
+            );
+            expect(wasmExtended).toBe(false);
         });
     });
 });
