@@ -1,10 +1,9 @@
 <p align="center">
   <h1 align="center">Sorokeep</h1>
-<p align="center">
-  <a href="README.pt.md">Português (Brasil)</a>
-</p>
-
-<p align="center">
+  <p align="center">
+    <a href="README.pt.md">Português (Brasil)</a>
+  </p>
+  <p align="center">
     The missing operations layer for deployed Soroban smart contracts.
     <br />
     Monitor TTLs. Get alerted before expiration. Auto-extend storage. Restore archived entries.
@@ -20,13 +19,6 @@
     &middot;
     <a href="#contributing">Contributing</a>
   </p>
-</p>
-
-<p align="center">
-  <a href="https://github.com/OlaBakare/sorokeep/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/OlaBakare/sorokeep/ci.yml?branch=main&label=CI" alt="CI Status"></a>
-  <a href="https://www.npmjs.com/package/sorokeep"><img src="https://img.shields.io/npm/v/sorokeep" alt="npm version"></a>
-  <a href="https://www.npmjs.com/package/sorokeep"><img src="https://img.shields.io/npm/dm/sorokeep" alt="npm downloads"></a>
-  <a href="https://github.com/OlaBakare/sorokeep/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/sorokeep" alt="license"></a>
 </p>
 
 <br />
