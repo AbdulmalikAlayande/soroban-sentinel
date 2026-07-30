@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // --- 1. CORE IMPLEMENTATION CODE ---
 // ==========================================
 
-import { KeychainStore, SecureKeypairStore, KeysCliController } from "./keys";
+import { KeychainStore, SecureKeypairStore, KeysCliController } from "../../src/alerts/keys";
 
 // ==========================================
 // --- 2. TDD AUTOMATED TEST SUITE ---
@@ -14,7 +14,7 @@ describe("TDD - Local OS Keychain & Safe CLI Key Management Engine", () => {
   let mockKeytar: any;
   let secureStore: SecureKeypairStore;
   let cliController: KeysCliController;
-  
+
   // In-memory fake database tracking our OS keychain simulations cleanly
   let fakeKeychainDb: Array<{ account: string; value: string }>;
 
@@ -40,14 +40,14 @@ describe("TDD - Local OS Keychain & Safe CLI Key Management Engine", () => {
     // Act
     const targetLabel = "deployer-keypair";
     const rawSecretSeed = "SCON3...SOROBAN...SECRET...SEED";
-    
+
     const saveResult = await secureStore.saveKey(targetLabel, rawSecretSeed);
 
     // Assert: Verify internal keytar execution signals
     expect(saveResult).toBe(true);
     expect(mockKeytar.setPassword).toHaveBeenCalledTimes(1);
     expect(mockKeytar.setPassword).toHaveBeenCalledWith("sorokeep-keys", targetLabel, rawSecretSeed);
-    
+
     // Confirm it exists in our simulated OS vault
     expect(fakeKeychainDb[0].value).toBe(rawSecretSeed);
   });
@@ -74,7 +74,7 @@ describe("TDD - Local OS Keychain & Safe CLI Key Management Engine", () => {
     // Act & Assert defensive tracking boundaries
     await expect(secureStore.saveKey("", "SCON123")).rejects.toThrow();
     await expect(secureStore.saveKey("valid-name", "")).rejects.toThrow();
-    
+
     expect(mockKeytar.setPassword).not.toHaveBeenCalled();
   });
 });
