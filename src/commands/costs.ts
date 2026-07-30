@@ -2,7 +2,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { getDatabase } from "../db/database.js";
 import { getExtensionCosts, calculateFeeAdjustedProjection, getMultiPeriodCosts, type MultiPeriodCostsData } from "../core/costs.js";
-import { getEntriesForContract, getContractsInGroup } from "../db/repositories.js";
+import { getEntriesForContract } from "../db/repositories.js";
 import {
     projectRentWindows,
     DEFAULT_FEE_PER_RENT_1KB,
@@ -104,9 +104,8 @@ export function formatForecastedRentEntry(
 
 export function registerCostsCommand(program: Command): void {
     program
-        .command("costs [contractId]")
-        .description("Show rent costs and extension history for a contract (or group of contracts)")
-        .option("--group <name>", "Filter by contract group")
+        .command("costs <contractId>")
+        .description("Show rent costs and extension history for a contract")
         .option("--period <days>", "Show costs for the last N days", "30")
         .option("--all", "Show all extension history")
         .option("--json", "Output machine-readable JSON")
@@ -114,7 +113,7 @@ export function registerCostsCommand(program: Command): void {
             "--monthly-budget <xlm>",
             "Monthly budget in XLM — highlight forecast windows that exceed this limit",
         )
-        .action(async (contractId: string | undefined, options: { period?: string; all?: boolean; json?: boolean; monthlyBudget?: string; group?: string } = {}) => {
+        .action(async (contractId: string, options: { period?: string; all?: boolean; json?: boolean; monthlyBudget?: string } = {}) => {
             options = options || {};
             try {
                 const db = getDatabase();
@@ -134,6 +133,7 @@ export function registerCostsCommand(program: Command): void {
                     return;
                 }
 
+                // Resolve monthly budget: CLI flag > config file
                 const config = loadConfig();
                 let monthlyBudget: number | undefined;
                 if (options.monthlyBudget !== undefined) {
@@ -156,64 +156,36 @@ export function registerCostsCommand(program: Command): void {
                     monthlyBudget = config.monthlyBudgetXlm;
                 }
 
-                let targetContracts: string[] = [];
-                if (options.group) {
-                    targetContracts = getContractsInGroup(db, options.group);
-                    if (targetContracts.length === 0) {
-                        if (options.json) {
-                            console.log(JSON.stringify({ success: false, error: "group_not_found", message: `Group '${options.group}' not found or empty.` }));
-                        } else {
-                            console.error(chalk.red(`Group '${options.group}' not found or empty.`));
-                        }
-                        process.exit(1);
-                        return;
-                    }
-                } else if (contractId) {
-                    targetContracts = [contractId];
-                } else {
+                const result = getExtensionCosts(
+                    db,
+                    contractId,
+                    options.all ? { all: true } : { period: days },
+                );
+
+                if (!result.success) {
                     if (options.json) {
-                        console.log(JSON.stringify({ success: false, error: "missing_arguments", message: "You must specify either a contract ID or --group." }));
+                        console.log(JSON.stringify(result));
+                    } else if (result.error === "contract_not_found") {
+                        console.error(
+                            chalk.red(
+                                `Contract ${formatContractID(contractId)} not found. Run 'sorokeep watch' first.`,
+                            ),
+                        );
                     } else {
-                        console.error(chalk.red("You must specify either a contract ID or --group."));
+                        console.error(chalk.red("An error occurred computing extension costs."));
                     }
                     process.exit(1);
                     return;
                 }
 
-                const allJsonData: any[] = [];
-                let hasError = false;
+                const { data } = result;
 
-                for (const cId of targetContracts) {
-                    const result = getExtensionCosts(
-                        db,
-                        cId,
-                        options.all ? { all: true } : { period: days },
-                    );
+                if (options.json) {
+                    console.log(JSON.stringify(data, null, 2));
+                    return;
+                }
 
-                    if (!result.success) {
-                        hasError = true;
-                        if (options.json) {
-                            allJsonData.push(result);
-                        } else if (result.error === "contract_not_found") {
-                            console.error(
-                                chalk.red(
-                                    `Contract ${formatContractID(cId)} not found. Run 'sorokeep watch' first.`,
-                                ),
-                            );
-                        } else {
-                            console.error(chalk.red("An error occurred computing extension costs."));
-                        }
-                        continue;
-                    }
-
-                    const { data } = result;
-
-                    if (options.json) {
-                        allJsonData.push(data);
-                        continue;
-                    }
-
-                    const displayName = data.contract.name ?? formatContractID(cId);
+                const displayName = data.contract.name ?? formatContractID(contractId);
 
                 let feeStats: Pick<FeeStatsResult, "baseFeeStroops" | "surgePricingMultiplier"> | undefined;
                 try {
@@ -223,10 +195,10 @@ export function registerCostsCommand(program: Command): void {
                     logger.warn("Unable to fetch live fee stats; using historical projection", { error: message });
                 }
 
-                    const multiResult = getMultiPeriodCosts(db, cId, feeStats);
-                    if (multiResult.success) {
-                        printMultiPeriodTable(multiResult.data, feeStats);
-                    }
+                const multiResult = getMultiPeriodCosts(db, contractId, feeStats);
+                if (multiResult.success) {
+                    printMultiPeriodTable(multiResult.data, feeStats);
+                }
 
                 console.log(
                     `\n${chalk.bold("Extension History")} — ${chalk.cyan(displayName)} (${data.period.label})`,
@@ -258,8 +230,8 @@ export function registerCostsCommand(program: Command): void {
                         console.log(`  Surge multiplier:  ${chalk.cyan(`${projection.surgePricingMultiplier.toFixed(2)}x`)}`);
                     }
 
-                        // ── Forecasted Rent (30/60/90-day windows per entry) ──────────
-                        const entries = getEntriesForContract(db, cId);
+                    // ── Forecasted Rent (30/60/90-day windows per entry) ──────────
+                    const entries = getEntriesForContract(db, contractId);
 
                     // Build a map of entry_type → max observed mem_bytes from
                     // recent extensions. Falls back to DEFAULT_ENTRY_SIZE_BYTES
@@ -395,18 +367,12 @@ export function registerCostsCommand(program: Command): void {
                     console.log(`      ${chalk.dim(`tx: ${record.txHash.slice(0, 16)}...`)}`);
                 }
 
-                }
-
-                if (options.json) {
-                    if (allJsonData.length === 1 && !options.group) {
-                        console.log(JSON.stringify(allJsonData[0], null, 2));
-                    } else {
-                        console.log(JSON.stringify(allJsonData, null, 2));
-                    }
-                }
-
-                if (hasError && !options.group) {
-                    process.exit(1);
+                if (!options.all && data.recentExtensions.length > 10) {
+                    console.log(
+                        chalk.dim(
+                            `\n    ... and ${data.recentExtensions.length - 10} more. Use --all to see everything.`,
+                        ),
+                    );
                 }
             } catch (error: unknown) {
                 const msg = error instanceof Error ? error.message : String(error);
