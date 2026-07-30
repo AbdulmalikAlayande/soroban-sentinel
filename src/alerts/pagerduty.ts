@@ -21,6 +21,9 @@ function buildDedupKey(event: AlertEvent): string {
     if (event.type === "state_changed") {
         return `sorokeep:${event.network}:${event.contractId}:state:${event.entry.keyXdr}:${event.diff.diffType}`;
     }
+    if (event.type === "ttl_drift") {
+        return `sorokeep:${event.network}:${event.contractId}:ttl_drift:${event.txHash}`;
+    }
     const entryKey = event.entry.keyXdr || event.entry.type;
     return `sorokeep:${event.network}:${event.contractId}:${entryKey}:${event.threshold.configuredLedgers}`;
 }
@@ -35,6 +38,11 @@ function buildSummary(event: AlertEvent): string {
 
     if (event.type === "threshold_crossed") {
         return `Sorokeep alert: ${contractDisplay} has crossed the TTL threshold (${event.threshold.currentRemainingLedgers} ledgers remaining).`;
+    }
+
+    if (event.type === "ttl_drift") {
+        const sign = event.driftLedgers > 0 ? "+" : "";
+        return `Sorokeep alert: ${contractDisplay} TTL drifted ${sign}${event.driftLedgers} ledgers from target ${event.targetTTLLedgers} (actual: ${event.actualTTLLedgers}).`;
     }
 
     if (event.type === "state_changed") {
@@ -74,6 +82,20 @@ function buildCustomDetails(event: AlertEvent): Record<string, unknown> {
             timestamp: event.timestamp,
         };
     }
+    if (event.type === "ttl_drift") {
+        return {
+            contractId: event.contractId,
+            contractName: event.contractName,
+            network: event.network,
+            targetTTLLedgers: event.targetTTLLedgers,
+            actualTTLLedgers: event.actualTTLLedgers,
+            driftLedgers: event.driftLedgers,
+            toleranceLedgers: event.toleranceLedgers,
+            txHash: event.txHash,
+            detectedAtLedger: event.detectedAtLedger,
+            timestamp: event.timestamp,
+        };
+    }
     return {
         contractId: event.contractId,
         contractName: event.contractName,
@@ -98,9 +120,9 @@ function buildPayload(event: AlertEvent): unknown {
             summary: buildSummary(event),
             source: event.contractId,
             severity: mapSeverity(event),
-            component: event.type === "resource_alert" ? "resource_monitor" : event.type === "state_changed" ? "state_monitor" : (event.entry.label ?? event.entry.type),
+            component: event.type === "resource_alert" ? "resource_monitor" : event.type === "state_changed" ? "state_monitor" : event.type === "ttl_drift" ? "ttl_drift_monitor" : (event.entry.label ?? event.entry.type),
             group: event.network,
-            class: event.type === "resource_alert" ? `resource:${event.resource.type}` : event.type === "state_changed" ? `state:${event.diff.diffType}` : `threshold:${event.threshold.configuredLedgers}`,
+            class: event.type === "resource_alert" ? `resource:${event.resource.type}` : event.type === "state_changed" ? `state:${event.diff.diffType}` : event.type === "ttl_drift" ? `ttl_drift:${event.driftLedgers}` : `threshold:${event.threshold.configuredLedgers}`,
             custom_details: buildCustomDetails(event),
         },
     };

@@ -65,6 +65,16 @@ function buildBlocks(event: AlertEvent): any[] {
                 { type: "mrkdwn", text: `*New Value:*\n\`${newVal}\`` },
             ],
         };
+    } else if (event.type === "ttl_drift") {
+        details = {
+            type: "section",
+            fields: [
+                { type: "mrkdwn", text: `*Target TTL:*\n${event.targetTTLLedgers.toLocaleString()} ledgers` },
+                { type: "mrkdwn", text: `*Actual TTL:*\n${event.actualTTLLedgers.toLocaleString()} ledgers` },
+                { type: "mrkdwn", text: `*Drift:*\n${event.driftLedgers > 0 ? "+" : ""}${event.driftLedgers.toLocaleString()} ledgers` },
+                { type: "mrkdwn", text: `*Tolerance:*\n±${event.toleranceLedgers.toLocaleString()} ledgers` },
+            ],
+        };
     } else {
         details = {
             type: "section",

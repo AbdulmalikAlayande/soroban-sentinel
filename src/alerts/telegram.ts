@@ -75,6 +75,21 @@ function buildMessage(event: AlertEvent): string {
         ].join("\n");
     }
 
+    if (event.type === "ttl_drift") {
+        const sign = event.driftLedgers > 0 ? "+" : "";
+        return [
+            `${icon} *TTL Drift Detected* — ${escapeMarkdown(contractDisplay)}`,
+            ``,
+            `*Target TTL:* ${event.targetTTLLedgers.toLocaleString()} ledgers`,
+            `*Actual TTL:* ${event.actualTTLLedgers.toLocaleString()} ledgers`,
+            `*Drift:* ${sign}${event.driftLedgers.toLocaleString()} ledgers`,
+            `*Tolerance:* ±${event.toleranceLedgers.toLocaleString()} ledgers`,
+            `*Network:* ${escapeMarkdown(event.network)}`,
+            ``,
+            `_Contract: ${escapeMarkdown(event.contractId)}_`,
+        ].join("\n");
+    }
+
     const status = event.type === "threshold_crossed"
         ? `TTL ${event.severity === "critical" ? "CRITICAL" : "Warning"}`
         : "Alert Resolved";

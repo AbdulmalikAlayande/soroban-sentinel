@@ -30,7 +30,7 @@ export function getTemplateContext(event: AlertEvent) {
     if (isResourceAlert) {
         resourceLabel = event.resource.type === "cpu" ? "CPU" : "Memory";
         resourceUnit = event.resource.type === "cpu" ? "instructions" : "bytes";
-    } else {
+    } else if (event.type !== "ttl_drift") {
         entryLabel = event.entry.label ?? event.entry.type;
     }
 
@@ -80,6 +80,20 @@ export function getTemplateContext(event: AlertEvent) {
             entryType: event.entry.type,
             entryLabel: event.entry.label,
             diffType: event.diff.diffType,
+            detectedAtLedger: event.detectedAtLedger,
+            timestamp: event.timestamp,
+        };
+    } else if (event.type === "ttl_drift") {
+        dedupKey = `sorokeep:${event.network}:${event.contractId}:ttl_drift:${event.txHash}`;
+        customDetails = {
+            contractId: event.contractId,
+            contractName: event.contractName,
+            network: event.network,
+            targetTTLLedgers: event.targetTTLLedgers,
+            actualTTLLedgers: event.actualTTLLedgers,
+            driftLedgers: event.driftLedgers,
+            toleranceLedgers: event.toleranceLedgers,
+            txHash: event.txHash,
             detectedAtLedger: event.detectedAtLedger,
             timestamp: event.timestamp,
         };

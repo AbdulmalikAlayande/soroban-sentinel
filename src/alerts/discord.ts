@@ -111,28 +111,53 @@ function buildEmbed(event: AlertEvent): DiscordEmbed {
             }
         );
     } else {
-        fields.push(
-            {
-                name: "Entry",
-                value: event.entry.label ?? event.entry.type,
-                inline: true,
-            },
-            {
-                name: "Remaining TTL",
-                value: `${event.threshold.currentRemainingLedgers.toLocaleString()} ledgers (${event.threshold.approximateTimeRemaining})`,
-                inline: true,
-            },
-            {
-                name: "Alert Threshold",
-                value: `${event.threshold.configuredLedgers.toLocaleString()} ledgers`,
-                inline: true,
-            },
-            {
-                name: "Severity",
-                value: event.severity.toUpperCase(),
-                inline: true,
-            }
-        );
+        if (event.type === "ttl_drift") {
+            fields.push(
+                {
+                    name: "Target TTL",
+                    value: `${event.targetTTLLedgers.toLocaleString()} ledgers`,
+                    inline: true,
+                },
+                {
+                    name: "Actual TTL",
+                    value: `${event.actualTTLLedgers.toLocaleString()} ledgers`,
+                    inline: true,
+                },
+                {
+                    name: "Drift",
+                    value: `${event.driftLedgers > 0 ? "+" : ""}${event.driftLedgers.toLocaleString()} ledgers`,
+                    inline: true,
+                },
+                {
+                    name: "Tolerance",
+                    value: `±${event.toleranceLedgers.toLocaleString()} ledgers`,
+                    inline: true,
+                }
+            );
+        } else {
+            fields.push(
+                {
+                    name: "Entry",
+                    value: event.entry.label ?? event.entry.type,
+                    inline: true,
+                },
+                {
+                    name: "Remaining TTL",
+                    value: `${event.threshold.currentRemainingLedgers.toLocaleString()} ledgers (${event.threshold.approximateTimeRemaining})`,
+                    inline: true,
+                },
+                {
+                    name: "Alert Threshold",
+                    value: `${event.threshold.configuredLedgers.toLocaleString()} ledgers`,
+                    inline: true,
+                },
+                {
+                    name: "Severity",
+                    value: event.severity.toUpperCase(),
+                    inline: true,
+                }
+            );
+        }
     }
 
     return {
