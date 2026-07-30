@@ -351,7 +351,35 @@ Database management tasks, including migrations, backups, and introspection cach
 
 ### `sorokeep completion`
 
-Generate shell autocomplete scripts for bash/zsh to enable tab completion for all Sorokeep commands.
+Generate shell autocomplete scripts for bash/zsh/powershell to enable tab completion for all Sorokeep commands.
+
+**Bash:**
+
+```bash
+sorokeep completion --script bash > /etc/bash_completion.d/sorokeep
+# Or source it in your .bashrc:
+# source <(sorokeep completion --script bash)
+```
+
+**Zsh:**
+
+```zsh
+sorokeep completion --script zsh > /usr/local/share/zsh/site-functions/_sorokeep
+# Or source it in your .zshrc:
+# source <(sorokeep completion --script zsh)
+```
+
+**PowerShell:**
+
+```powershell
+# Install for the current user (adds to $PROFILE)
+sorokeep completion --script powershell | Out-File -FilePath (Join-Path $PROFILE "..\sorokeep_completion.ps1") -Encoding utf8
+# Then add to your $PROFILE:
+# . (Join-Path $PROFILE "..\sorokeep_completion.ps1")
+#
+# Or install directly into your $PROFILE:
+# sorokeep completion --script powershell >> $PROFILE
+```
 
 ## Alerting
 

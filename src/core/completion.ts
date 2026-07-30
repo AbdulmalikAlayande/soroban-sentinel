@@ -78,3 +78,21 @@ export function renderZshCompletionScript(): string {
     "",
   ].join("\n");
 }
+
+export function generatePowerShellCompletion(): string {
+  return [
+    "$script:sorokeep_completion = {",
+    "  param($wordToComplete, $commandAst, $cursorPosition)",
+    "",
+    "  $words = @($commandAst.CommandElements | ForEach-Object { $_.Value })",
+    "  $suggestions = & sorokeep completion --query --cursor ($words.Count) $words 2>`$null",
+    "",
+    "  $suggestions | ForEach-Object {",
+    "    [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)",
+    "  }",
+    "}",
+    "",
+    "Register-ArgumentCompleter -Native -CommandName sorokeep -ScriptBlock $script:sorokeep_completion",
+    "",
+  ].join("\n");
+}
