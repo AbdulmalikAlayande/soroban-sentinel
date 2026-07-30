@@ -1,6 +1,6 @@
 import chalk from "chalk";
 
-const AVG_LEDGER_CLOSE_TIME_IN_SECONDS = 5.5; // in seconds
+const AVG_LEDGER_CLOSE_TIME_IN_SECONDS = 5.5;
 
 export function convertLedgerCloseTimeToSeconds(ledgerCloseTime: number): number {
     return ledgerCloseTime * AVG_LEDGER_CLOSE_TIME_IN_SECONDS;
@@ -10,8 +10,12 @@ export function printOutput(data: unknown, jsonFlag = false): void {
     if (!jsonFlag) {
         return;
     }
-
-    console.log(JSON.stringify(data, null, 2));
+    console.log(JSON.stringify(data, (_key, value) => {
+        if (typeof value === "bigint") {
+            return value.toString();
+        }
+        return value;
+    }, 2));
 }
 
 export function formatTimeToCloseLedger(ledgers: number): string {

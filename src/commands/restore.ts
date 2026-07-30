@@ -38,6 +38,11 @@ export function registerRestoreCommand(program: Command): void {
                 if (options.keypairEnv) {
                     secretKey = process.env[options.keypairEnv];
                     if (!secretKey) {
+                        if (options.json) {
+                            printOutput({ success: false, error: "missing_keypair_env", contractId, keypairEnv: options.keypairEnv }, true);
+                            process.exit(1);
+                            return;
+                        }
                         console.error(chalk.red(`Environment variable ${options.keypairEnv} is not set`));
                         process.exit(1);
                     }
