@@ -102,6 +102,11 @@ export function registerGuardCommand(program: Command): void {
                 if (keypairSource) {
                     secretKey = await resolveSecretKey(keypairSource) ?? undefined;
                     if (!secretKey) {
+                        if (options.json) {
+                            printOutput({ success: false, error: "secret_resolution_failed", contractId, keypairSource }, true);
+                            process.exit(1);
+                            return;
+                        }
                         console.error(chalk.red(`Failed to resolve secret key from source: ${keypairSource}`));
                         process.exit(1);
                     }
@@ -110,6 +115,11 @@ export function registerGuardCommand(program: Command): void {
                 // Save policy
                 if (options.autoExtend) {
                     if (!keypairSource || !(keypairSource.startsWith("env:") || keypairSource.startsWith("vault:"))) {
+                        if (options.json) {
+                            printOutput({ success: false, error: "invalid_key_source", contractId, keypairSource, message: "--auto-extend requires --keypair-env or --keypair-vault" }, true);
+                            process.exit(1);
+                            return;
+                        }
                         console.error(chalk.red("--auto-extend requires --keypair-env or --keypair-vault so the daemon can resolve the key at runtime"));
                         process.exit(1);
                     }
@@ -193,6 +203,11 @@ export function registerGuardCommand(program: Command): void {
                             console.log(`  Write size:   ${formatBytes(result.writeBytes)}`);
                         }
                     } else {
+                        if (options.json) {
+                            printOutput({ success: false, contractId, mode: "dry-run", error: result?.error ?? "simulation_failed" }, true);
+                            process.exit(1);
+                            return;
+                        }
                          spinner.fail(chalk.red(`Simulation failed: ${result.error}`));
                      }
                      return;
@@ -241,7 +256,7 @@ export function registerGuardCommand(program: Command): void {
                     return;
                 }
 
-                // No keypair provided — just show current policy
+                // No keypair provided - just show current policy
                 const policy = getExtensionPolicy(db, contractId);
                 if (options.json) {
                     printOutput({ success: true, contractId, policy: policy ?? null, message: policy ? "Extension policy loaded" : "No extension policy configured" }, true);
