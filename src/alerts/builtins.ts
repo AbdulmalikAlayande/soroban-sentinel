@@ -2,6 +2,7 @@ import { registerAlertChannel, type ChannelDefinition } from "./registry.js";
 import { sendWebhookAlert } from "./webhook.js";
 import { SlackChannel } from "./slack.js";
 import { sendPagerDutyAlert } from "./pagerduty.js";
+import { sendOpsgenieAlert } from "./opsgenie.js";
 
 let registered = false;
 
@@ -65,15 +66,10 @@ export function registerBuiltinChannels(): void {
             supportsSigning: false,
         },
         {
-            name: "teams",
-            channel: {
-                send: async (target, event) => {
-                    const { sendTeamsAlert } = await import("./teams.js");
-                    await sendTeamsAlert(target, event);
-                },
-            },
-            targetOption: "url",
-            missingTargetError: "Error: --url is required when --type is teams. Paste the full Teams webhook URL.",
+            name: "opsgenie",
+            channel: { send: (target, event) => sendOpsgenieAlert(target, event) },
+            targetOption: "routingKey",
+            missingTargetError: "Error: --routing-key is required when --type is opsgenie (use your Opsgenie API key).",
             supportsSigning: false,
         },
     ];
