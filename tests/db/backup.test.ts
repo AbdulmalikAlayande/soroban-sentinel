@@ -149,9 +149,13 @@ describe("database backup", () => {
         const sourceDb = getDatabaseForTesting();
         insertContract(sourceDb, { id: "C1", name: "Alpha", network: "testnet" });
         const exported = exportDatabase(sourceDb);
-        
-        // Corrupt the backup to cause a database constraint error (id is NOT NULL)
-        exported.contracts.push({ id: null, name: "Bad", network: "testnet" });
+
+        // Corrupt the backup to cause a database constraint error. `contracts.id`
+        // is `TEXT PRIMARY KEY` without an explicit `NOT NULL` — SQLite allows a
+        // NULL primary key on non-INTEGER PK columns, so a null id here would
+        // silently insert rather than throw. A duplicate primary key within the
+        // same batch does violate the PRIMARY KEY uniqueness constraint.
+        exported.contracts.push({ id: "C1", name: "Bad Duplicate", network: "testnet" });
 
         const restoredDb = getDatabaseForTesting();
         insertContract(restoredDb, { id: "ORIGINAL", name: "Original", network: "testnet" });
