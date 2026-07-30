@@ -37,6 +37,9 @@
     "monitoring"
   ],
   "author": "Abdulmalik Alayande",
+  "overrides": {
+    "glob": "11.1.0"
+  },
   "license": "MIT",
   "type": "module",
   "repository": {
