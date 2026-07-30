@@ -482,6 +482,93 @@ describe("Database Repositories", () => {
         });
     });
 
+    describe("getContractsByTag", () => {
+        it("returns contracts whose tags field contains the given tag (single tag)", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "defi" });
+            repo.insertContract(db, { id: "C2", network: "testnet", tags: "governance" });
+            repo.insertContract(db, { id: "C3", network: "testnet", tags: "defi,governance" });
+
+            const results = repo.getContractsByTag(db, "defi");
+            const ids = results.map((c) => c.id);
+            expect(ids).toContain("C1");
+            expect(ids).toContain("C3");
+            expect(ids).not.toContain("C2");
+        });
+
+        it("does not false-positive on tag substrings (defi should not match defi-v2)", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "defi" });
+            repo.insertContract(db, { id: "C2", network: "testnet", tags: "defi-v2" });
+            repo.insertContract(db, { id: "C3", network: "testnet", tags: "defi-v2,governance" });
+
+            const results = repo.getContractsByTag(db, "defi");
+            const ids = results.map((c) => c.id);
+            expect(ids).toContain("C1");
+            expect(ids).not.toContain("C2");
+            expect(ids).not.toContain("C3");
+        });
+
+        it("does not false-positive on reverse substring (super-defi should not match defi)", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "super-defi" });
+            repo.insertContract(db, { id: "C2", network: "testnet", tags: "defi" });
+
+            const results = repo.getContractsByTag(db, "defi");
+            const ids = results.map((c) => c.id);
+            expect(ids).toContain("C2");
+            expect(ids).not.toContain("C1");
+        });
+
+        it("matches a tag that appears in the middle of a comma-separated list", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "alpha,defi,beta" });
+
+            const results = repo.getContractsByTag(db, "defi");
+            expect(results.map((c) => c.id)).toContain("C1");
+        });
+
+        it("matches a tag that appears at the end of a comma-separated list", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "alpha,beta,defi" });
+
+            const results = repo.getContractsByTag(db, "defi");
+            expect(results.map((c) => c.id)).toContain("C1");
+        });
+
+        it("returns an empty array when no contracts match the tag", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "governance" });
+            repo.insertContract(db, { id: "C2", network: "testnet", tags: "nft" });
+
+            const results = repo.getContractsByTag(db, "defi");
+            expect(results).toHaveLength(0);
+        });
+
+        it("returns an empty array when no contracts have tags set", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+
+            const results = repo.getContractsByTag(db, "defi");
+            expect(results).toHaveLength(0);
+        });
+
+        it("is case-sensitive — defi does not match DEFI", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "DEFI" });
+            repo.insertContract(db, { id: "C2", network: "testnet", tags: "defi" });
+
+            const results = repo.getContractsByTag(db, "defi");
+            const ids = results.map((c) => c.id);
+            expect(ids).toContain("C2");
+            expect(ids).not.toContain("C1");
+        });
+
+        it("returns all matching contracts when multiple contracts share a tag", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "defi" });
+            repo.insertContract(db, { id: "C2", network: "testnet", tags: "defi,amm" });
+            repo.insertContract(db, { id: "C3", network: "testnet", tags: "amm" });
+
+            const results = repo.getContractsByTag(db, "defi");
+            expect(results).toHaveLength(2);
+            const ids = results.map((c) => c.id);
+            expect(ids).toContain("C1");
+            expect(ids).toContain("C2");
+        });
+    });
+
     describe("Resource Alerts Config & Fired", () => {
         it("accepts an arbitrary plugin channel_type not in the built-in set", () => {
             repo.insertContract(db, { id: "C1", network: "testnet" });
