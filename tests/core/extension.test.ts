@@ -6,6 +6,7 @@ import {
     upsertEntry,
     upsertExtensionPolicy,
     getEntriesForContract,
+    recordExtension,
     getExtensionHistory,
 } from "../../src/db/repositories.js";
 
@@ -16,6 +17,7 @@ const mockSubmitRestore = vi.fn();
 const mockGetEntryTTLs = vi.fn();
 const mockGetCurrentLedger = vi.fn();
 const mockSimulateExtension = vi.fn();
+const mockSimulateRestore = vi.fn();
 
 vi.mock("../../src/rpc/client.js", () => {
     return {
@@ -26,12 +28,13 @@ vi.mock("../../src/rpc/client.js", () => {
             getEntryTTLs = mockGetEntryTTLs;
             getCurrentLedger = mockGetCurrentLedger;
             simulateExtension = mockSimulateExtension;
+            simulateRestore = mockSimulateRestore;
         },
     };
 });
 
 // Import after mocking
-const { extendEntries, restoreEntries, simulateExtension, runAutoExtensions } = await import(
+const { extendEntries, restoreEntries, simulateExtension, simulateRestore, runAutoExtensions } = await import(
     "../../src/core/extension.js"
 );
 
@@ -118,6 +121,8 @@ describe("Core Extension Logic", () => {
             mockSubmitExtension.mockResolvedValue({
                 success: true,
                 txHash: "abc123txhash",
+                cpuInsns: 10000,
+                memBytes: 1024,
                 ledger: 2500100,
             });
 
@@ -158,6 +163,8 @@ describe("Core Extension Logic", () => {
             const history = getExtensionHistory(db, contractId);
             expect(history.length).toBe(2);
             expect(history[0]!.tx_hash).toBe("abc123txhash");
+            expect(history[0]!.cpu_insns).toBe(10000);
+            expect(history[0]!.mem_bytes).toBe(1024);
 
             // Verify entries were updated with fresh TTLs
             const updatedEntries = getEntriesForContract(db, contractId);
@@ -173,7 +180,7 @@ describe("Core Extension Logic", () => {
                 success: false,
                 txHash: "failed-tx",
                 ledger: 0,
-                error: "Insufficient funds",
+                error: "Transaction send error: Insufficient funds",
             });
 
             const result = await extendEntries(
@@ -185,11 +192,83 @@ describe("Core Extension Logic", () => {
             );
 
             expect(result.success).toBe(false);
-            expect(result.error).toBe("Insufficient funds");
+            expect(result.error).toBe("Transaction send error: Insufficient funds");
 
             // No history should be recorded
             const history = getExtensionHistory(db, contractId);
             expect(history.length).toBe(0);
+        });
+
+        it("logs warning and returns error on submitExtension exception", async () => {
+            const contractId = seedContract(db);
+            const entries = getEntriesForContract(db, contractId);
+
+            mockSubmitExtension.mockRejectedValue(new Error("Network connection lost"));
+
+            const result = await extendEntries(
+                db,
+                contractId,
+                entries.map(e => e.entry_key_xdr),
+                100000,
+                "SECRETKEY123",
+            );
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Network connection lost");
+        });
+
+        it("logs error and returns false on failed txResult", async () => {
+            const contractId = seedContract(db);
+            const entries = getEntriesForContract(db, contractId);
+
+            mockSubmitExtension.mockResolvedValue({
+                success: false,
+                error: "Simulation failed: Invalid footprint key"
+            });
+
+            const result = await extendEntries(
+                db,
+                contractId,
+                entries.map(e => e.entry_key_xdr),
+                100000,
+                "SECRETKEY123",
+            );
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Simulation failed: Invalid footprint key");
+        });
+        it("propagates feeCharged from the submitted transaction result", async () => {
+            const contractId = seedContract(db);
+            const entries = getEntriesForContract(db, contractId);
+
+            mockSubmitExtension.mockResolvedValue({
+                success: true,
+                txHash: "fee-tx-hash",
+                ledger: 2500100,
+                feeCharged: 7500,
+            });
+
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2500100,
+                entries: entries.map(e => ({
+                    entryKeyXdr: e.entry_key_xdr,
+                    latestLedger: 2500100,
+                    liveUntilLedgerSeq: 2600100,
+                    lastModifiedLedgerSeq: 2500100,
+                    remainingTTL: 100000,
+                })),
+            });
+
+            const result = await extendEntries(
+                db,
+                contractId,
+                entries.map(e => e.entry_key_xdr),
+                100000,
+                "SECRETKEY123",
+            );
+
+            expect(result.success).toBe(true);
+            expect(result.feeCharged).toBe(7500);
         });
     });
 
@@ -217,11 +296,7 @@ describe("Core Extension Logic", () => {
         it("returns error on simulation failure", async () => {
             const contractId = seedContract(db);
 
-            mockSimulateExtension.mockResolvedValue({
-                success: false,
-                minResourceFee: 0,
-                error: "Entry is archived",
-            });
+            mockSimulateExtension.mockRejectedValue(new Error("Entry is archived"));
 
             const result = await simulateExtension(
                 db, contractId, ["instance-key-xdr"], 100000, "GPUBLICKEY",
@@ -237,6 +312,28 @@ describe("Core Extension Logic", () => {
             );
             expect(result.success).toBe(false);
             expect(result.error).toBe("Contract not found");
+        });
+
+        it("delegates simulation to the RPC client and returns estimated fee as minResourceFee", async () => {
+            const contractId = seedContract(db);
+
+            mockSimulateExtension.mockResolvedValue({
+                success: true,
+                minResourceFee: 12500,
+            });
+
+            const result = await simulateExtension(
+                db, contractId, ["instance-key-xdr", "wasm-key-xdr"], 100000, "GPUBLICKEY",
+            );
+
+            expect(result.success).toBe(true);
+            expect(result.estimatedFee).toBe(12500);
+            expect(result.entriesExtended).toBe(2);
+            expect(mockSimulateExtension).toHaveBeenCalledWith(
+                ["instance-key-xdr", "wasm-key-xdr"],
+                100000,
+                "GPUBLICKEY",
+            );
         });
     });
 
@@ -312,6 +409,90 @@ describe("Core Extension Logic", () => {
 
             expect(result.success).toBe(false);
             expect(result.error).toBe("Entry not found in archive");
+        });
+
+        it("extracts resource fee and status parameters from response", async () => {
+            const contractId = seedContract(db);
+
+            mockSubmitRestore.mockResolvedValue({
+                success: true,
+                txHash: "restore-with-resources",
+                ledger: 2500300,
+                cpuInsns: 8500,
+                memBytes: 2048,
+                minResourceFee: 75000,
+            });
+
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2500300,
+                entries: [
+                    {
+                        entryKeyXdr: "instance-key-xdr",
+                        latestLedger: 2500300,
+                        liveUntilLedgerSeq: 2600300,
+                        lastModifiedLedgerSeq: 2500300,
+                        remainingTTL: 100000,
+                    },
+                ],
+            });
+
+            const result = await restoreEntries(
+                db, contractId, ["instance-key-xdr"], "SECRETKEY123",
+            );
+
+            expect(result.success).toBe(true);
+            expect(result.cpuInsns).toBe(8500);
+            expect(result.memBytes).toBe(2048);
+            expect(result.minResourceFee).toBe(75000);
+            expect(result.txHash).toBe("restore-with-resources");
+            expect(result.ledger).toBe(2500300);
+        });
+    });
+
+    // =========================================================================
+    // 4. simulateRestore
+    // =========================================================================
+    describe("simulateRestore", () => {
+        it("returns fee estimate on successful simulation", async () => {
+            const contractId = seedContract(db);
+
+            mockSimulateRestore.mockResolvedValue({
+                success: true,
+                minResourceFee: 65000,
+            });
+
+            const result = await simulateRestore(
+                db, contractId, ["instance-key-xdr"], "GPUBLICKEY",
+            );
+
+            expect(result.success).toBe(true);
+            expect(result.estimatedFee).toBe(65000);
+            expect(result.entriesRestored).toBe(1);
+        });
+
+        it("returns error on simulation failure", async () => {
+            const contractId = seedContract(db);
+
+            mockSimulateRestore.mockResolvedValue({
+                success: false,
+                minResourceFee: 0,
+                error: "Entry not found in archive",
+            });
+
+            const result = await simulateRestore(
+                db, contractId, ["instance-key-xdr"], "GPUBLICKEY",
+            );
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Entry not found in archive");
+        });
+
+        it("returns error when contract not found", async () => {
+            const result = await simulateRestore(
+                db, "NONEXISTENT", ["key1"], "GPUBLICKEY",
+            );
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Contract not found");
         });
     });
 
@@ -517,6 +698,117 @@ describe("Core Extension Logic", () => {
             expect(result.contractsChecked).toBe(2);
             // At least one should have been checked, and we should have errors
             expect(result.errors.length).toBeGreaterThanOrEqual(1);
+        });
+
+        it("records an error when extension succeeds but txHash or ledger is missing", async () => {
+            const contractId = seedContract(db);
+
+            // Set instance entry with low TTL so it triggers extension
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "instance-key-xdr",
+                entry_type: "instance",
+                label: "Contract Instance",
+                live_until_ledger: 2410000,
+                discovery_source: "deterministic",
+            });
+
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+
+            // Extension succeeds but txHash and ledger are missing
+            mockSubmitExtension.mockResolvedValue({
+                success: true,
+                txHash: null,
+                ledger: null,
+                entriesExtended: 1,
+            });
+
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2400100,
+                entries: [
+                    {
+                        entryKeyXdr: "instance-key-xdr",
+                        latestLedger: 2400100,
+                        liveUntilLedgerSeq: 2500100,
+                        lastModifiedLedgerSeq: 2400100,
+                        remainingTTL: 100000,
+                    },
+                ],
+            });
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            // No extension should be pushed to result.extensions
+            expect(result.extensions).toHaveLength(0);
+
+            // An error should be recorded about missing txHash or ledger
+            expect(result.errors).not.toHaveLength(0);
+            expect(result.errors[0]).toContain(contractId);
+        });
+
+        it("flags anomalous execution if resource usage spikes", async () => {
+            const contractId = seedContract(db);
+
+            // Seed with some normal history
+            recordExtension(db, {
+                contract_id: contractId, contract_entry_id: 1, old_ttl_ledgers: 1, new_ttl_ledgers: 2,
+                tx_hash: "h1", cost_xlm: 0.1, executed_at_ledger: 1, cpu_insns: 1000, mem_bytes: 100
+            });
+            recordExtension(db, {
+                contract_id: contractId, contract_entry_id: 1, old_ttl_ledgers: 1, new_ttl_ledgers: 2,
+                tx_hash: "h2", cost_xlm: 0.1, executed_at_ledger: 2, cpu_insns: 1200, mem_bytes: 120
+            });
+
+            // Set instance entry with low TTL
+            upsertEntry(db, {
+                contract_id: contractId, entry_key_xdr: "instance-key-xdr", entry_type: "instance",
+                live_until_ledger: 2410000,
+            });
+
+            upsertExtensionPolicy(db, {
+                contract_id: contractId, enabled: true, target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000, keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+
+            // This extension will have a huge resource spike (3x CPU, 4x MEM)
+            mockSubmitExtension.mockResolvedValue({
+                success: true, txHash: "anomaly-tx", ledger: 2400100,
+                cpuInsns: 3301, // > 3 * 1100
+                memBytes: 441, // > 4 * 110
+            });
+
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2400100,
+                entries: [{
+                    entryKeyXdr: "instance-key-xdr", latestLedger: 2400100,
+                    liveUntilLedgerSeq: 2500100, remainingTTL: 100000,
+                }],
+            });
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.contractsExtended).toBe(1);
+            expect(result.extensions[0]!.isAnomaly).toBe(true);
+            expect(result.extensions[0]!.anomalyDetails).toContain("CPU usage is 3.00x baseline");
+            expect(result.extensions[0]!.anomalyDetails).toContain("Memory usage is 4.01x baseline");
+
+            // Verify the new extension was recorded with anomaly flag
+            const history = getExtensionHistory(db, contractId);
+            const anomaly = history.find(h => h.tx_hash === "anomaly-tx");
+            expect(anomaly!.is_anomaly).toBe(1);
         });
     });
 });

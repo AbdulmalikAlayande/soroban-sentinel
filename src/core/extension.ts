@@ -5,72 +5,113 @@ import {
     getContract,
     getEntriesForContract,
     getExtensionPolicy,
+    getChannelAccounts,
     recordExtension,
     upsertEntry,
     updateLastCheckedLedger,
+    getAverageResourceUsage,
+    getBudget,
+    addBudgetSpent,
+    countExtensionsInLastHour,
+
 } from "../db/repositories.js";
+import { ChannelAccountPool } from "./channels.js";
 import { getLogger } from "../logging/index.js";
+import { formatSecretKey } from "../utils/formatting.js";
+import { VaultResolver } from "./vault.js";
+import { loadConfig } from "../utils/config.js";
 
 const logger = getLogger().child({ component: "Extension" });
 
+
+// ─── Rate limiter ─────────────────────────────────────────────────────────────
+
+/**
+ * Maximum number of auto-extension transactions allowed per contract per hour.
+ * Prevents runaway fee submissions under extreme network load (issue #142).
+ */
+export const HOURLY_RATE_LIMIT = 5;
+
+/**
+ * Check whether the given contract has reached its hourly auto-extension rate limit.
+ *
+ * Queries `extension_history` for records within the last 60 minutes and
+ * compares the count against `limit` (default: HOURLY_RATE_LIMIT).
+ *
+ * @param db - The SQLite database connection.
+ * @param contractId - The contract to check.
+ * @param limit - Maximum allowed extensions per hour (defaults to HOURLY_RATE_LIMIT).
+ * @returns `true` when the contract is rate-limited; `false` otherwise.
+ */
+export function isRateLimited(
+    db: import("better-sqlite3").Database,
+    contractId: string,
+    limit = HOURLY_RATE_LIMIT,
+): boolean {
+    const count = countExtensionsInLastHour(db, contractId);
+    return count >= limit;
+}
+
 // ─── Public contract ──────────────────────────────────────────────────────────
 
+
 export interface ExtensionResult {
-    /** Whether the extension was successful. */
     success: boolean;
-    /** Contract ID that was extended. */
     contractId: string;
-    /** Number of entries that were extended. */
     entriesExtended: number;
-    /** Transaction hash if submitted. */
     txHash?: string;
-    /** New ledger number after extension. */
     ledger?: number;
-    /** Error message if failed. */
     error?: string;
-    /** Estimated fee in stroops (from simulation). */
+    /** Estimated fee in stroops (from simulation, before submission). */
     estimatedFee?: number;
+    /** Actual fee charged in stroops (from submitted transaction result). */
+    feeCharged?: number;
+    /** CPU instructions consumed by the transaction. */
+
+    cpuInsns?: number;
+    memBytes?: number;
+    /** Read footprint size in bytes. */
+    readBytes?: number;
+    /** Write footprint size in bytes. */
+    writeBytes?: number;
+    /** Whether resource usage spiked. */
+
+    isAnomaly?: boolean;
+    anomalyDetails?: string;
 }
 
 export interface AutoExtensionResult {
-    /** Total contracts checked for auto-extension. */
     contractsChecked: number;
-    /** Number of contracts where entries were actually extended. */
     contractsExtended: number;
-    /** Total entries extended across all contracts. */
     entriesExtended: number;
-    /** Per-contract errors (non-fatal). */
     errors: string[];
-    /** Details of each successful extension. */
     extensions: Array<{
         contractId: string;
         txHash: string;
         entriesExtended: number;
         ledger: number;
+        isAnomaly?: boolean;
+        anomalyDetails?: string;
     }>;
 }
 
 export interface RestoreResult {
-    /** Whether the restore was successful. */
     success: boolean;
-    /** Contract ID. */
     contractId: string;
-    /** Number of entries restored. */
     entriesRestored: number;
-    /** Transaction hash if submitted. */
     txHash?: string;
-    /** Ledger number. */
     ledger?: number;
-    /** Error message if failed. */
     error?: string;
+    /** Estimated fee in stroops (from simulation, before submission). */
+    estimatedFee?: number;
+    cpuInsns?: number;
+    memBytes?: number;
+    minResourceFee?: number;
+    /** Fee charged in stroops. */
+    feeCharged?: number;
+
 }
 
-// ─── Core implementation ──────────────────────────────────────────────────────
-
-/**
- * Simulate a TTL extension for specific entries of a contract.
- * Does NOT submit — only estimates fees. Useful for dry-run / cost preview.
- */
 export async function simulateExtension(
     db: Database.Database,
     contractId: string,
@@ -86,14 +127,16 @@ export async function simulateExtension(
 
     const client = new StellarRpcClient(contract.network, rpcUrl);
 
-    const sim = await client.simulateExtension(entryKeyXdrs, extendToLedgers, sourcePublicKey);
-
-    if (!sim.success) {
+    let sim;
+    try {
+        sim = await client.simulateExtension(entryKeyXdrs, extendToLedgers, sourcePublicKey);
+    } catch (err: any) {
+        logger.warn(`Simulation warning for ${contractId}: ${err.message}`);
         return {
             success: false,
             contractId,
             entriesExtended: 0,
-            error: sim.error,
+            error: err.message,
         };
     }
 
@@ -102,13 +145,13 @@ export async function simulateExtension(
         contractId,
         entriesExtended: entryKeyXdrs.length,
         estimatedFee: sim.minResourceFee,
+        cpuInsns: sim.cpuInstructions,
+        memBytes: sim.memoryBytes,
+        readBytes: sim.readBytes,
+        writeBytes: sim.writeBytes,
     };
 }
 
-/**
- * Extend TTL for specific entries of a contract.
- * Builds, simulates, signs, and submits an ExtendFootprintTTLOp transaction.
- */
 export async function extendEntries(
     db: Database.Database,
     contractId: string,
@@ -116,6 +159,7 @@ export async function extendEntries(
     extendToLedgers: number,
     secretKey: string,
     rpcUrl?: string,
+    sponsorSecret?: string,
 ): Promise<ExtensionResult> {
     const contract = getContract(db, contractId);
     if (!contract) {
@@ -132,7 +176,35 @@ export async function extendEntries(
         `Extending ${entryKeyXdrs.length} entries for ${contractId} to ${extendToLedgers} ledgers`,
     );
 
-    const txResult = await client.submitExtension(entryKeyXdrs, extendToLedgers, secretKey);
+    const resolvedSponsorSecret = sponsorSecret ? await resolveSecretKey(sponsorSecret) : undefined;
+    if (sponsorSecret && !resolvedSponsorSecret) {
+        return {
+            success: false,
+            contractId,
+            entriesExtended: 0,
+            error: `Failed to resolve sponsor secret key from environment variable: ${sponsorSecret}`,
+        };
+    }
+
+    let txResult;
+    try {
+        txResult = resolvedSponsorSecret
+            ? await client.submitExtensionWithFeeBump(
+                entryKeyXdrs,
+                extendToLedgers,
+                secretKey,
+                resolvedSponsorSecret,
+            )
+            : await client.submitExtension(entryKeyXdrs, extendToLedgers, secretKey);
+    } catch (err: any) {
+        logger.warn(`Simulation warning for ${contractId}: ${err.message}`);
+        return {
+            success: false,
+            contractId,
+            entriesExtended: 0,
+            error: err.message,
+        };
+    }
 
     if (!txResult.success) {
         logger.error(`Extension failed for ${contractId}: ${txResult.error}`);
@@ -145,12 +217,28 @@ export async function extendEntries(
         };
     }
 
-    // Fetch fresh TTLs after extension to update DB and record history
+    let isAnomaly = false;
+    let anomalyDetails: string | undefined = undefined;
+
+    if (txResult.cpuInsns && txResult.memBytes) {
+        const baseline = getAverageResourceUsage(db, contractId, 10);
+        if (baseline && baseline.avg_cpu_insns > 0 && baseline.avg_mem_bytes > 0) {
+            const cpuRatio = txResult.cpuInsns / baseline.avg_cpu_insns;
+            const memRatio = txResult.memBytes / baseline.avg_mem_bytes;
+            if (cpuRatio >= 2.0 || memRatio >= 2.0) {
+                isAnomaly = true;
+                const details = [];
+                if (cpuRatio >= 2.0) details.push(`CPU usage is ${cpuRatio.toFixed(2)}x baseline`);
+                if (memRatio >= 2.0) details.push(`Memory usage is ${memRatio.toFixed(2)}x baseline`);
+                anomalyDetails = `Resource anomaly detected: ` + details.join(", ");
+            }
+        }
+    }
+
     const freshTTLs = await client.getEntryTTLs(entryKeyXdrs);
     const entries = getEntriesForContract(db, contractId);
     const entryMap = new Map(entries.map(e => [e.entry_key_xdr, e]));
 
-    // Wrap all DB updates in a transaction for atomicity
     const updateDb = db.transaction(() => {
         for (const freshEntry of freshTTLs.entries) {
             const dbEntry = entryMap.get(freshEntry.entryKeyXdr);
@@ -160,17 +248,18 @@ export async function extendEntries(
                 ? dbEntry.live_until_ledger - freshTTLs.latestLedger
                 : 0;
 
-            // Record the extension in history
             recordExtension(db, {
                 contract_id: contractId,
                 contract_entry_id: dbEntry.id,
                 old_ttl_ledgers: Math.max(0, oldTTL),
                 new_ttl_ledgers: freshEntry.remainingTTL,
                 tx_hash: txResult.txHash,
+                cpu_insns: txResult.cpuInsns,
+                mem_bytes: txResult.memBytes,
+                is_anomaly: isAnomaly,
                 executed_at_ledger: freshTTLs.latestLedger,
             });
 
-            // Update the entry with fresh TTL
             upsertEntry(db, {
                 contract_id: contractId,
                 entry_key_xdr: freshEntry.entryKeyXdr,
@@ -186,33 +275,25 @@ export async function extendEntries(
     });
     updateDb();
 
-    logger.info(
-        `Extension successful for ${contractId}: tx=${txResult.txHash}, entries=${entryKeyXdrs.length}`,
-    );
-
     return {
         success: true,
         contractId,
         entriesExtended: entryKeyXdrs.length,
         txHash: txResult.txHash,
         ledger: txResult.ledger,
+        feeCharged: txResult.feeCharged,
+        cpuInsns: txResult.cpuInsns,
+        memBytes: txResult.memBytes,
+        isAnomaly,
+        anomalyDetails,
     };
 }
 
-/**
- * Run auto-extension for all contracts with enabled extension policies.
- * Called by the daemon after each monitor cycle.
- *
- * For each contract with an enabled policy, checks if any entries have
- * a remaining TTL below `extend_when_below_ledgers`. If so, extends them
- * to `target_ttl_ledgers`.
- *
- * Errors for individual contracts are collected, not thrown.
- */
 export async function runAutoExtensions(
     db: Database.Database,
     network: string,
     rpcUrl?: string,
+    sponsorSecret?: string,
 ): Promise<AutoExtensionResult> {
     const result: AutoExtensionResult = {
         contractsChecked: 0,
@@ -224,41 +305,71 @@ export async function runAutoExtensions(
 
     const contracts = getAllContracts(db).filter(c => c.network === network);
 
-    // Fetch latest ledger once for the entire run, not per-contract
-    let latestLedger: number | undefined;
-    if (contracts.some(c => {
+    const eligibleContracts = contracts.filter(c => {
         const p = getExtensionPolicy(db, c.id);
         return p && p.enabled;
-    })) {
-        const client = new StellarRpcClient(network, rpcUrl);
-        latestLedger = await client.getCurrentLedger();
-    }
+    });
 
-    for (const contract of contracts) {
-        const policy = getExtensionPolicy(db, contract.id);
-        if (!policy || !policy.enabled) continue;
+    if (eligibleContracts.length === 0) return result;
 
-        result.contractsChecked++;
+    const client = new StellarRpcClient(network, rpcUrl);
+    const latestLedger = await client.getCurrentLedger();
+
+    const channelAccounts = getChannelAccounts(db, network);
+    const pool = channelAccounts.length > 0
+        ? new ChannelAccountPool(db, network)
+        : null;
+
+    result.contractsChecked = eligibleContracts.length;
+
+    await Promise.all(eligibleContracts.map(async contract => {
+        const policy = getExtensionPolicy(db, contract.id)!;
 
         try {
             const entries = getEntriesForContract(db, contract.id);
 
-            // Find entries that need extension (exclude already-expired entries)
             const needsExtension = entries.filter(e => {
                 if (!e.live_until_ledger) return false;
-                const remaining = e.live_until_ledger - latestLedger!;
-                return remaining > 0 && remaining < policy.extend_when_below_ledgers;
+                const remaining = e.live_until_ledger - latestLedger;
+                return remaining >= 0 && remaining < policy.extend_when_below_ledgers;
             });
 
-            if (needsExtension.length === 0) continue;
+            if (needsExtension.length === 0) return;
 
-            // Resolve the secret key from the policy's keypair_source
-            const secretKey = resolveSecretKey(policy.keypair_source);
+
+            // ── Rate limit check (issue #142) ────────────────────────────────
+            // Block auto-extension if the contract has already hit the maximum
+            // number of extension transactions allowed per hour.
+            if (isRateLimited(db, contract.id)) {
+                const count = countExtensionsInLastHour(db, contract.id);
+                const msg = `Contract ${contract.id}: rate limit reached — ${count}/${HOURLY_RATE_LIMIT} extensions in the last hour. Skipping.`;
+                logger.warn(msg);
+                result.errors.push(msg);
+                return;
+            }
+
+            // Resolve secret key: prefer channel pool, fall back to policy keypair
+            let secretKey: string | null = null;
+            let slot: import("./channels.js").ChannelSlot | null = null;
+
+            if (pool) {
+                slot = await pool.acquire();
+                secretKey = await resolveSecretKey(slot.keypairSource);
+                if (!secretKey) {
+                    pool.release(slot.publicKey);
+                    slot = null;
+                }
+            }
+
+            if (!secretKey) {
+                secretKey = await resolveSecretKey(policy.keypair_source);
+            }
+
             if (!secretKey) {
                 result.errors.push(
-                    `Contract ${contract.id}: Cannot resolve keypair from source "${policy.keypair_source}"`,
+                    `Contract ${contract.id}: Cannot resolve keypair from source "${pool ? "channel pool" : formatSecretKey(policy.keypair_source)}"`,
                 );
-                continue;
+                return;
             }
 
             const entryKeys = needsExtension.map(e => e.entry_key_xdr);
@@ -268,43 +379,103 @@ export async function runAutoExtensions(
                 `(below ${policy.extend_when_below_ledgers}, target ${policy.target_ttl_ledgers})`,
             );
 
-            const extResult = await extendEntries(
-                db,
-                contract.id,
-                entryKeys,
-                policy.target_ttl_ledgers,
-                secretKey,
-                rpcUrl,
-            );
+            try {
+                const billingCycle = new Date().toISOString().slice(0, 7);
+                const budget = getBudget(db, contract.id, billingCycle);
+                let estimatedFeeXlm = 0;
 
-            if (extResult.success) {
-                result.contractsExtended++;
-                result.entriesExtended += extResult.entriesExtended;
-                result.extensions.push({
-                    contractId: contract.id,
-                    txHash: extResult.txHash!,
-                    entriesExtended: extResult.entriesExtended,
-                    ledger: extResult.ledger!,
-                });
-            } else {
-                result.errors.push(
-                    `Contract ${contract.id}: Extension failed — ${extResult.error}`,
+                if (budget) {
+                    const { Keypair } = await import("@stellar/stellar-sdk");
+                    const pubKey = Keypair.fromSecret(secretKey).publicKey();
+                    const simResult = await simulateExtension(db, contract.id, entryKeys, policy.target_ttl_ledgers, pubKey, rpcUrl);
+                    
+                    if (!simResult.success) {
+                        throw new Error(`Simulation failed: ${simResult.error}`);
+                    }
+                    
+                    estimatedFeeXlm = (simResult.estimatedFee || 0) / 10000000;
+                    if (budget.spent_xlm + estimatedFeeXlm > budget.limit_xlm) {
+                        throw new Error(`budget limit exceeded. Estimated cost: ${estimatedFeeXlm} XLM, Remaining: ${budget.limit_xlm - budget.spent_xlm} XLM`);
+                    }
+                }
+
+                const extResult = await extendEntries(
+                    db,
+                    contract.id,
+                    entryKeys,
+                    policy.target_ttl_ledgers,
+                    secretKey,
+                    rpcUrl,
+                    sponsorSecret,
                 );
+
+                if (extResult.success) {
+                    if (budget && estimatedFeeXlm > 0) {
+                        const actualFeeXlm = extResult.feeCharged !== undefined ? extResult.feeCharged / 10000000 : estimatedFeeXlm;
+                        addBudgetSpent(db, contract.id, billingCycle, actualFeeXlm);
+                    }
+
+                    if (!extResult.txHash || extResult.ledger == null) {
+                        result.errors.push(
+                            `Contract ${contract.id}: Extension succeeded but RPC returned no txHash or ledger`,
+                        );
+                    } else {
+                        result.contractsExtended++;
+                        result.entriesExtended += extResult.entriesExtended;
+                        result.extensions.push({
+                            contractId: contract.id,
+                            txHash: extResult.txHash,
+                            entriesExtended: extResult.entriesExtended,
+                            ledger: extResult.ledger,
+                            isAnomaly: extResult.isAnomaly,
+                            anomalyDetails: extResult.anomalyDetails,
+                        });
+                    }
+                } else {
+                    result.errors.push(
+                        `Contract ${contract.id}: Extension failed — ${extResult.error}`,
+                    );
+                }
+            } finally {
+                if (slot && pool) pool.release(slot.publicKey);
             }
         } catch (err: unknown) {
             const message = err instanceof Error ? err.message : String(err);
             result.errors.push(`Contract ${contract.id}: ${message}`);
             logger.error(`Auto-extension error for ${contract.id}: ${message}`, err);
         }
-    }
+    }));
 
     return result;
 }
 
-/**
- * Restore archived entries for a contract.
- * Submits a RestoreFootprintOp transaction.
- */
+export async function simulateRestore(
+    db: Database.Database,
+    contractId: string,
+    entryKeyXdrs: string[],
+    sourcePublicKey: string,
+    rpcUrl?: string,
+): Promise<RestoreResult> {
+    const contract = getContract(db, contractId);
+    if (!contract) {
+        return { success: false, contractId, entriesRestored: 0, error: "Contract not found" };
+    }
+
+    const client = new StellarRpcClient(contract.network, rpcUrl);
+    const sim = await client.simulateRestore(entryKeyXdrs, sourcePublicKey);
+
+    if (!sim.success) {
+        return { success: false, contractId, entriesRestored: 0, error: sim.error };
+    }
+
+    return {
+        success: true,
+        contractId,
+        entriesRestored: entryKeyXdrs.length,
+        estimatedFee: sim.minResourceFee,
+    };
+}
+
 export async function restoreEntries(
     db: Database.Database,
     contractId: string,
@@ -325,7 +496,18 @@ export async function restoreEntries(
 
     logger.info(`Restoring ${entryKeyXdrs.length} entries for ${contractId}`);
 
-    const txResult = await client.submitRestore(entryKeyXdrs, secretKey);
+    let txResult;
+    try {
+        txResult = await client.submitRestore(entryKeyXdrs, secretKey);
+    } catch (err: any) {
+        logger.warn(`Simulation warning for ${contractId}: ${err.message}`);
+        return {
+            success: false,
+            contractId,
+            entriesRestored: 0,
+            error: err.message,
+        };
+    }
 
     if (!txResult.success) {
         logger.error(`Restore failed for ${contractId}: ${txResult.error}`);
@@ -338,14 +520,12 @@ export async function restoreEntries(
         };
     }
 
-    // Refresh TTLs after restore
     const freshTTLs = await client.getEntryTTLs(entryKeyXdrs);
     const entries = getEntriesForContract(db, contractId);
     const entryMap = new Map(entries.map(e => [e.entry_key_xdr, e]));
 
     let restored = 0;
 
-    // Wrap all DB updates in a transaction for atomicity
     const updateDb = db.transaction(() => {
         for (const freshEntry of freshTTLs.entries) {
             const dbEntry = entryMap.get(freshEntry.entryKeyXdr);
@@ -375,6 +555,10 @@ export async function restoreEntries(
         entriesRestored: restored,
         txHash: txResult.txHash,
         ledger: txResult.ledger,
+        cpuInsns: txResult.cpuInsns,
+        memBytes: txResult.memBytes,
+        minResourceFee: txResult.minResourceFee,
+        feeCharged: txResult.feeCharged,
     };
 }
 
@@ -384,9 +568,10 @@ export async function restoreEntries(
  * Resolve a secret key from a keypair_source string.
  * Supports:
  *   - "env:VAR_NAME" — reads from environment variable
+ *   - "vault:<secret_path>" — reads from HashiCorp Vault (KV v1/v2)
  *   - Direct secret key string starting with "S" (56 chars)
  */
-function resolveSecretKey(source: string | null): string | null {
+export async function resolveSecretKey(source: string | null): Promise<string | null> {
     if (!source) return null;
 
     if (source.startsWith("env:")) {
@@ -399,11 +584,40 @@ function resolveSecretKey(source: string | null): string | null {
         return value;
     }
 
+    if (source.startsWith("vault:")) {
+        const vaultPath = source.slice(6);
+        if (!vaultPath) {
+            logger.warn("Vault keypair_source is empty");
+            return null;
+        }
+
+        try {
+            const config = loadConfig();
+            if (!config.vault?.url || !config.vault?.token) {
+                logger.error("Vault resolver requested but vault configuration missing in config.yaml (vault.url / vault.token)");
+                return null;
+            }
+
+            const resolver = new VaultResolver({
+                url: config.vault.url,
+                token: config.vault.token,
+                namespace: config.vault.namespace,
+            });
+
+            const secret = await resolver.getSecret(vaultPath);
+            return secret;
+        } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            logger.error(`Failed to resolve secret from Vault path "${vaultPath}": ${message}`);
+            return null;
+        }
+    }
+
     // Direct secret key
     if (source.startsWith("S") && source.length === 56) {
         return source;
     }
 
-    logger.warn(`Unknown keypair_source format: ${source}`);
+    logger.warn(`Unknown keypair_source format: ${formatSecretKey(source)}`);
     return null;
 }

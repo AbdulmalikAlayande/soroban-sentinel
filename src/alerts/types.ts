@@ -1,13 +1,10 @@
 import { formatTimeToCloseLedger } from "../utils/formatting.js";
 
-// ─── Core event type ─────────────────────────────────────────────────────────
-
 export type AlertSeverity = "critical" | "warning" | "info";
+export type AlertEventType = "threshold_crossed" | "alert_resolved" | "resource_alert" | "state_changed";
 
-export interface AlertEvent {
-    /** Whether this is a new threshold crossing or a resolved alert. */
+export interface TTLAlertEvent {
     type: "threshold_crossed" | "alert_resolved";
-    /** Severity based on how close to expiry the entry is. */
     severity: AlertSeverity;
     contractId: string;
     contractName: string | null;
@@ -31,14 +28,57 @@ export interface AlertEvent {
     timestamp: string;
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+export interface ResourceAlertEvent {
+    type: "resource_alert";
+    severity: AlertSeverity;
+    contractId: string;
+    contractName: string | null;
+    network: string;
+    resource: {
+        type: "cpu" | "memory";
+        /** Current usage (in instructions or bytes). */
+        currentUsage: number;
+        /** Configured limit (in instructions or bytes). */
+        limit: number;
+        /** Usage as a percentage of limit. */
+        usagePercent: number;
+    };
+    /** Human-readable message about the resource usage. */
+    message: string;
+    /** Ledger sequence number at the time of detection (if available). */
+    firedAtLedger?: number;
+    /** ISO 8601 timestamp. */
+    timestamp: string;
+}
 
-/**
- * Compute alert severity from remaining TTL.
- * - critical: less than 25% of threshold remaining
- * - warning:  less than threshold (but above 25%)
- * - info:     used for resolution events
- */
+export interface StateChangeAlertEvent {
+    type: "state_changed";
+    severity: AlertSeverity;
+    contractId: string;
+    contractName: string | null;
+    network: string;
+    entry: {
+        keyXdr: string;
+        type: string;
+        label: string | null;
+    };
+    diff: {
+        diffType: "created" | "updated" | "deleted";
+        oldValueXdr: string | null;
+        newValueXdr: string | null;
+    };
+    /** Ledger sequence number at the time of detection. */
+    detectedAtLedger: number;
+    /** ISO 8601 timestamp. */
+    timestamp: string;
+}
+
+export type AlertEvent = TTLAlertEvent | ResourceAlertEvent | StateChangeAlertEvent;
+
+export interface AlertChannel {
+    send(target: string, event: AlertEvent, secret?: string | null): Promise<void>;
+}
+
 export function computeSeverity(remainingTTL: number, thresholdLedgers: number, isResolution: boolean): AlertSeverity {
     if (isResolution) return "info";
     if (remainingTTL <= 0) return "critical";
@@ -46,12 +86,14 @@ export function computeSeverity(remainingTTL: number, thresholdLedgers: number, 
     return "warning";
 }
 
-/**
- * Build an AlertEvent from raw data.  Keeps the assembly logic in one place
- * so both the dispatcher and any future test fixtures share it.
- */
+export function computeResourceSeverity(usagePercent: number): AlertSeverity {
+    if (usagePercent >= 95) return "critical";
+    if (usagePercent >= 80) return "warning";
+    return "info";
+}
+
 export function buildAlertEvent(opts: {
-    type: AlertEvent["type"];
+    type: "threshold_crossed" | "alert_resolved";
     contractId: string;
     contractName: string | null;
     network: string;
@@ -61,7 +103,7 @@ export function buildAlertEvent(opts: {
     configuredLedgers: number;
     remainingTTL: number;
     firedAtLedger: number;
-}): AlertEvent {
+}): TTLAlertEvent {
     return {
         type: opts.type,
         severity: computeSeverity(opts.remainingTTL, opts.configuredLedgers, opts.type === "alert_resolved"),
@@ -79,6 +121,78 @@ export function buildAlertEvent(opts: {
             approximateTimeRemaining: formatTimeToCloseLedger(opts.remainingTTL),
         },
         firedAtLedger: opts.firedAtLedger,
+        timestamp: new Date().toISOString(),
+    };
+}
+
+export function buildResourceAlertEvent(opts: {
+    contractId: string;
+    contractName: string | null;
+    network: string;
+    resourceType: "cpu" | "memory";
+    currentUsage: number;
+    limit: number;
+    usagePercent: number;
+    firedAtLedger?: number;
+}): ResourceAlertEvent {
+    const resourceLabel = opts.resourceType === "cpu" ? "CPU" : "Memory";
+    const usageUnit = opts.resourceType === "cpu" ? "instructions" : "bytes";
+    
+    let message = `${resourceLabel} usage is at ${opts.usagePercent}% of limit`;
+    if (opts.usagePercent > 100) {
+        message = `${resourceLabel} usage exceeds limit: ${opts.currentUsage} ${usageUnit} / ${opts.limit} ${usageUnit}`;
+    }
+
+    return {
+        type: "resource_alert",
+        severity: computeResourceSeverity(opts.usagePercent),
+        contractId: opts.contractId,
+        contractName: opts.contractName,
+        network: opts.network,
+        resource: {
+            type: opts.resourceType,
+            currentUsage: opts.currentUsage,
+            limit: opts.limit,
+            usagePercent: opts.usagePercent,
+        },
+        message,
+        firedAtLedger: opts.firedAtLedger,
+        timestamp: new Date().toISOString(),
+    };
+}
+
+/**
+ * Build a state-change AlertEvent from raw data.
+ */
+export function buildStateChangeAlertEvent(opts: {
+    contractId: string;
+    contractName: string | null;
+    network: string;
+    entryKeyXdr: string;
+    entryType: string;
+    entryLabel: string | null;
+    diffType: "created" | "updated" | "deleted";
+    oldValueXdr: string | null;
+    newValueXdr: string | null;
+    detectedAtLedger: number;
+}): StateChangeAlertEvent {
+    return {
+        type: "state_changed",
+        severity: "info",
+        contractId: opts.contractId,
+        contractName: opts.contractName,
+        network: opts.network,
+        entry: {
+            keyXdr: opts.entryKeyXdr,
+            type: opts.entryType,
+            label: opts.entryLabel,
+        },
+        diff: {
+            diffType: opts.diffType,
+            oldValueXdr: opts.oldValueXdr,
+            newValueXdr: opts.newValueXdr,
+        },
+        detectedAtLedger: opts.detectedAtLedger,
         timestamp: new Date().toISOString(),
     };
 }

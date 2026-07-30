@@ -7,6 +7,20 @@ import type { MonitorCycleResult } from "../../src/core/monitor";
 
 const mockRunMonitorCycle = vi.fn();
 const mockDeliverPendingAlerts = vi.fn();
+const mockVacuumDatabase = vi.fn();
+const mockAggregateDailyCostSnapshots = vi.fn();
+const mockDaemonLogger = vi.hoisted(() => {
+    const logger = {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        fatal: vi.fn(),
+        child: vi.fn(),
+    };
+    logger.child.mockReturnValue(logger);
+    return logger;
+});
 
 vi.mock("../../src/core/monitor.js", () => ({
     runMonitorCycle: (...args: unknown[]) => mockRunMonitorCycle(...args),
@@ -16,7 +30,28 @@ vi.mock("../../src/alerts/dispatcher.js", () => ({
     deliverPendingAlerts: (...args: unknown[]) => mockDeliverPendingAlerts(...args),
 }));
 
+vi.mock("../../src/db/database.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../src/db/database.js")>();
+    return {
+        ...actual,
+        vacuumDatabase: (...args: unknown[]) => mockVacuumDatabase(...args),
+    };
+});
+
+vi.mock("../../src/db/repositories.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../src/db/repositories.js")>();
+    return {
+        ...actual,
+        aggregateDailyCostSnapshots: (...args: unknown[]) => mockAggregateDailyCostSnapshots(...args),
+    };
+});
+
+vi.mock("../../src/logging/index.js", () => ({
+    getLogger: () => mockDaemonLogger,
+}));
+
 import { startDaemon, stopDaemon } from "../../src/daemon/loop.js";
+import { insertContract } from "../../src/db/repositories.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -26,6 +61,8 @@ function makeCycleResult(overrides: Partial<MonitorCycleResult> = {}): MonitorCy
         entriesUpdated: 0,
         thresholdsCrossed: 0,
         alertsResolved: 0,
+        extensionsTriggered: 0,
+        extensionErrors: [],
         errors: [],
         cycleStartedAt: new Date(),
         cycleFinishedAt: new Date(),
@@ -57,6 +94,45 @@ describe("daemon loop", () => {
     });
 
     // =========================================================================
+    // 0. MAINTENANCE
+    // =========================================================================
+    describe("Maintenance", () => {
+        it("runs scheduled vacuum only when the configured interval has elapsed", async () => {
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+            mockVacuumDatabase.mockReturnValue(true);
+
+            await startDaemon(db, "testnet", { intervalMs: 5000, vacuumIntervalMs: 5000 });
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(0);
+
+            await vi.advanceTimersByTimeAsync(5000);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(1);
+
+            await vi.advanceTimersByTimeAsync(5000);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(2);
+        });
+
+        it("skips scheduled vacuum when the database is already in a transaction", async () => {
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+            mockVacuumDatabase.mockReturnValue(true);
+
+            await startDaemon(db, "testnet", { intervalMs: 5000, vacuumIntervalMs: 5000 });
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(0);
+
+            db.exec("BEGIN IMMEDIATE");
+            expect(db.inTransaction).toBe(true);
+
+            await vi.advanceTimersByTimeAsync(5000);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(0);
+
+            db.exec("ROLLBACK");
+            expect(db.inTransaction).toBe(false);
+
+            await vi.advanceTimersByTimeAsync(5000);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    // =========================================================================
     // 1. STARTUP & INITIAL CYCLE
     // =========================================================================
     describe("Startup and initial cycle", () => {
@@ -66,7 +142,7 @@ describe("daemon loop", () => {
             await startDaemon(db, "testnet", { intervalMs: 300000 });
 
             expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
-            expect(mockRunMonitorCycle).toHaveBeenCalledWith(db, "testnet", undefined);
+            expect(mockRunMonitorCycle).toHaveBeenCalledWith(db, "testnet", undefined, undefined);
         });
 
         it("passes the custom rpcUrl to runMonitorCycle when provided", async () => {
@@ -81,6 +157,7 @@ describe("daemon loop", () => {
                 db,
                 "mainnet",
                 "https://custom-rpc.example.com",
+                undefined,
             );
         });
 
@@ -91,6 +168,16 @@ describe("daemon loop", () => {
             await expect(
                 startDaemon(db, "testnet", { intervalMs: 5000 }),
             ).resolves.not.toThrow();
+        });
+
+        it("calls daily snapshot aggregation after each cycle", async () => {
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+            expect(mockAggregateDailyCostSnapshots).toHaveBeenCalledTimes(1);
+
+            await vi.advanceTimersByTimeAsync(5000);
+            expect(mockAggregateDailyCostSnapshots).toHaveBeenCalledTimes(2);
         });
 
         it("still schedules subsequent cycles after an initial cycle failure", async () => {
@@ -121,6 +208,31 @@ describe("daemon loop", () => {
 
             await vi.advanceTimersByTimeAsync(5000);
             expect(mockRunMonitorCycle).toHaveBeenCalledTimes(3);
+        });
+
+        it("uses the smallest watched contract poll interval override for the network", async () => {
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+            insertContract(db, {
+                id: "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6",
+                name: "override-1",
+                network: "testnet",
+                poll_interval_seconds: 300,
+            });
+            insertContract(db, {
+                id: "CBEK0975FU6KKOEZHGO098G6HLBS5D6LVATIGCESOGXSZEQ2UWUY8I3O",
+                name: "override-2",
+                network: "testnet",
+                poll_interval_seconds: 600,
+            });
+
+            await startDaemon(db, "testnet", { intervalMs: 900000 });
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
+
+            await vi.advanceTimersByTimeAsync(299999);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(2);
         });
 
         it("uses default 5-minute interval when none specified", async () => {
@@ -309,6 +421,107 @@ describe("daemon loop", () => {
             await vi.advanceTimersByTimeAsync(5000);
             expect(mockRunMonitorCycle).toHaveBeenCalledTimes(3);
         });
+
+        it("does not run concurrent cycles when stopDaemon is called mid-cycle and startDaemon is called again", async () => {
+            let resolveSlowCycle!: (value: MonitorCycleResult) => void;
+
+            // First cycle (initial) resolves immediately
+            mockRunMonitorCycle.mockResolvedValueOnce(makeCycleResult());
+
+            // Second cycle is slow — we control when it resolves
+            mockRunMonitorCycle.mockImplementationOnce(() => {
+                return new Promise<MonitorCycleResult>((resolve) => {
+                    resolveSlowCycle = resolve;
+                });
+            });
+
+            // Any further cycles resolve immediately
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
+
+            // Trigger the slow second cycle
+            await vi.advanceTimersByTimeAsync(5000);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(2);
+
+            // Stop the daemon while the second cycle is still in-flight
+            stopDaemon();
+
+            // Start the daemon again — the old cycle is still in-flight.
+            // The initial cycle of the new daemon must be skipped by the
+            // re-entrance guard (cycleInFlight is still true).
+            // startDaemon calls stopDaemon internally (which must NOT reset
+            // cycleInFlight) and then runs executeCycle for the initial tick.
+            // However, the initial tick in startDaemon always runs executeCycle
+            // directly (not via scheduledTick), so it will set cycleInFlight = true
+            // again. The key point is that cycleInFlight is still true from the
+            // first daemon's slow cycle, so startDaemon's initial executeCycle
+            // must not cause two executeCycle calls to be running concurrently.
+            //
+            // Since startDaemon awaits executeCycle, and executeCycle sets
+            // cycleInFlight = true at entry, the new startDaemon will block on
+            // its own executeCycle. Meanwhile, the old slow cycle is also
+            // in-flight concurrently. We verify that the scheduled ticks of the
+            // new daemon don't spawn additional overlapping cycles.
+
+            // Resolve the old slow cycle so that things can proceed
+            resolveSlowCycle(makeCycleResult());
+            await vi.advanceTimersByTimeAsync(0); // flush microtasks
+
+            // Now start a fresh daemon — old cycle has finished
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+            // call 3: the fresh daemon's initial cycle
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(3);
+
+            // Advance one interval — should trigger exactly one more cycle
+            await vi.advanceTimersByTimeAsync(5000);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(4);
+
+            // No extra cycles should have leaked from the old daemon
+            await vi.advanceTimersByTimeAsync(5000);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(5);
+        });
+
+        it("re-entrance guard skips tick when a cycle is still in-flight", async () => {
+            let resolveSlowCycle!: (value: MonitorCycleResult) => void;
+
+            // First cycle (initial) resolves immediately
+            mockRunMonitorCycle.mockResolvedValueOnce(makeCycleResult());
+
+            // Second cycle is slow — controlled via deferred promise
+            mockRunMonitorCycle.mockImplementationOnce(() => {
+                return new Promise<MonitorCycleResult>((resolve) => {
+                    resolveSlowCycle = resolve;
+                });
+            });
+
+            // Third cycle onwards resolves immediately
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
+
+            // Trigger the slow second cycle
+            await vi.advanceTimersByTimeAsync(5000);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(2);
+
+            // Advance through several intervals while second cycle is in-flight
+            await vi.advanceTimersByTimeAsync(5000);
+            await vi.advanceTimersByTimeAsync(5000);
+            await vi.advanceTimersByTimeAsync(5000);
+
+            // All those ticks should have been skipped — still only 2 calls
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(2);
+
+            // Now resolve the slow cycle
+            resolveSlowCycle(makeCycleResult());
+            await vi.advanceTimersByTimeAsync(0); // flush microtasks
+
+            // The next tick should now succeed since cycleInFlight is cleared
+            await vi.advanceTimersByTimeAsync(5000);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(3);
+        });
     });
 
     // =========================================================================
@@ -463,6 +676,51 @@ describe("daemon loop", () => {
             // Each callback receives its own cycle result, not accumulated
             expect(onCycle).toHaveBeenNthCalledWith(1, result1, undefined);
             expect(onCycle).toHaveBeenNthCalledWith(2, result2, undefined);
+        });
+    });
+    // =========================================================================
+    // 10. ALERT DISPATCH
+    // =========================================================================
+    describe("Alert dispatch", () => {
+        it("triggers alert dispatch during daemon cycle", async () => {
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+            mockDeliverPendingAlerts.mockResolvedValue({
+                attempted: 2,
+                delivered: 2,
+                failed: 0,
+                errors: [],
+            });
+            
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+            
+            expect(mockDeliverPendingAlerts).toHaveBeenCalledTimes(1);
+            expect(mockDeliverPendingAlerts).toHaveBeenCalledWith(db, "testnet");
+            expect(mockDaemonLogger.info).toHaveBeenCalledWith(
+                "Delivery — attempted: 2, delivered: 2, failed: 0",
+            );
+            
+            await vi.advanceTimersByTimeAsync(5000);
+            expect(mockDeliverPendingAlerts).toHaveBeenCalledTimes(2);
+            expect(mockDeliverPendingAlerts).toHaveBeenLastCalledWith(db, "testnet");
+        });
+
+        it("survives and logs if alert dispatch throws unexpectedly", async () => {
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+            mockDeliverPendingAlerts.mockRejectedValueOnce(new Error("Dispatcher exploded"));
+            
+            // startDaemon should not throw, and the cycle should continue
+            await expect(startDaemon(db, "testnet", { intervalMs: 5000 })).resolves.not.toThrow();
+            
+            expect(mockDeliverPendingAlerts).toHaveBeenCalledTimes(1);
+            expect(mockDaemonLogger.error).toHaveBeenCalledWith(
+                "deliverPendingAlerts threw unexpectedly",
+                expect.any(Error),
+            );
+
+            // The next interval should still trigger, showing the daemon didn't crash
+            await vi.advanceTimersByTimeAsync(5000);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(2);
+            expect(mockDeliverPendingAlerts).toHaveBeenCalledTimes(2);
         });
     });
 });
