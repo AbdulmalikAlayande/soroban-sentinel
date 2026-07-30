@@ -2,6 +2,7 @@ import { registerAlertChannel, type ChannelDefinition } from "./registry.js";
 import { sendWebhookAlert } from "./webhook.js";
 import { SlackChannel } from "./slack.js";
 import { sendPagerDutyAlert } from "./pagerduty.js";
+import { sendGoogleChatAlert } from "./googlechat.js";
 
 let registered = false;
 
@@ -38,6 +39,13 @@ export function registerBuiltinChannels(): void {
             channel: { send: (target, event) => sendPagerDutyAlert(target, event) },
             targetOption: "routingKey",
             missingTargetError: "Error: --routing-key is required when --type is pagerduty.",
+            supportsSigning: false,
+        },
+        {
+            name: "googlechat",
+            channel: { send: sendGoogleChatAlert },
+            targetOption: "url",
+            missingTargetError: "Error: --url is required when --type is googlechat.",
             supportsSigning: false,
         },
         {
