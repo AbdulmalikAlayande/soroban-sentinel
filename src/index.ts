@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { initLogger } from "./logging/index.js";
 import { registerWatchCommand } from "./commands/watch.js";
 import { registerStatusCommand } from "./commands/status.js";
+import { registerFleetCommand } from "./commands/fleet.js";
 import { registerCheckCommand } from "./commands/check.js";
 import { registerDaemonCommand } from "./commands/daemon.js";
 import { registerAlertsCommand } from "./commands/alerts.js";
@@ -33,6 +34,7 @@ program
 
 registerWatchCommand(program);
 registerStatusCommand(program);
+registerFleetCommand(program);
 registerCheckCommand(program);
 registerDaemonCommand(program);
 registerAlertsCommand(program);

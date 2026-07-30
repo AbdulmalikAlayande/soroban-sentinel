@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { convertLedgerCloseTimeToSeconds, formatTimeToCloseLedger, classifyTTL, statusIndicator, formatContractID, formatSecretKey } from "../../src/utils/formatting";
+import { convertLedgerCloseTimeToSeconds, formatTimeToCloseLedger, classifyTTL, statusIndicator, formatContractID, formatSecretKey, formatFleetCSV, type FleetEntryRow } from "../../src/utils/formatting";
 
 describe("convertLedgerCloseTimeToSeconds", () => {
     it("should convert ledger close time to seconds using 5.5s average", () => {
@@ -132,4 +132,95 @@ describe("formatSecretKey", () => {
     const key = "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     expect(formatSecretKey(key).length).toBe(11);
   });
+});
+
+describe("formatFleetCSV", () => {
+    it("outputs a valid CSV with only the header row when empty", () => {
+        const result = formatFleetCSV([]);
+        expect(result).toBe("contract_id,entry_key_xdr,entry_type,remaining_ttl,status\n");
+    });
+
+    it("outputs correct CSV for multiple rows", () => {
+        const rows: FleetEntryRow[] = [
+            {
+                contractId: "C1",
+                entryKeyXdr: "K1",
+                entryType: "instance",
+                remainingTTL: 1000,
+                status: "critical"
+            },
+            {
+                contractId: "C2",
+                entryKeyXdr: "K2",
+                entryType: "wasm",
+                remainingTTL: null,
+                status: "unknown"
+            }
+        ];
+        const result = formatFleetCSV(rows);
+        const expected = [
+            "contract_id,entry_key_xdr,entry_type,remaining_ttl,status",
+            "C1,K1,instance,1000,critical",
+            "C2,K2,wasm,,unknown"
+        ].join("\n") + "\n";
+        expect(result).toBe(expected);
+    });
+
+    it("escapes fields containing commas correctly", () => {
+        const rows: FleetEntryRow[] = [
+            {
+                contractId: "Example, Contract",
+                entryKeyXdr: "K1",
+                entryType: "instance",
+                remainingTTL: 1000,
+                status: "critical"
+            }
+        ];
+        const result = formatFleetCSV(rows);
+        expect(result).toContain('"Example, Contract",K1,instance,1000,critical');
+    });
+
+    it("escapes fields containing quotes correctly according to RFC 4180", () => {
+        const rows: FleetEntryRow[] = [
+            {
+                contractId: 'My "Contract"',
+                entryKeyXdr: "K1",
+                entryType: "instance",
+                remainingTTL: 1000,
+                status: "critical"
+            }
+        ];
+        const result = formatFleetCSV(rows);
+        expect(result).toContain('"My ""Contract""",K1,instance,1000,critical');
+    });
+
+    it("handles fields with other special characters like whitespaces or empty values correctly", () => {
+        const rows: FleetEntryRow[] = [
+            {
+                contractId: "  C 1  ",
+                entryKeyXdr: "",
+                entryType: "temporary",
+                remainingTTL: 0,
+                status: "expired"
+            }
+        ];
+        const result = formatFleetCSV(rows);
+        expect(result).toContain('  C 1  ,,temporary,0,expired');
+    });
+
+    it("protects against CSV formula injection on string values by prefixing with a single quote", () => {
+        const rows: FleetEntryRow[] = [
+            {
+                contractId: "=SUM(A1:A10)",
+                entryKeyXdr: "+123",
+                entryType: "-abc",
+                remainingTTL: -5000,
+                status: "@critical"
+            }
+        ];
+        const result = formatFleetCSV(rows);
+        // remainingTTL is a number so its negative value -5000 should NOT be prefixed with a single quote.
+        // String values starting with =, +, -, @ should be prefixed with a single quote.
+        expect(result).toContain('\'=SUM(A1:A10),\'+123,\'-abc,-5000,\'@critical');
+    });
 });

@@ -32,12 +32,15 @@ export function classifyTTL(remainingLedgers: number): TTLStatus {
     return "ok";
 }
 
-export function statusIndicator(status: TTLStatus): string {
+export type FleetStatus = TTLStatus | "unknown";
+
+export function statusIndicator(status: FleetStatus): string {
   switch (status) {
     case "ok": return chalk.bold.green("OK");
     case "warning": return chalk.bold.yellow("WARNING");
     case "critical": return chalk.bold.red("CRITICAL");
     case "expired": return chalk.bold.magenta("EXPIRED");
+    case "unknown": return chalk.bold.dim("UNKNOWN");
   }
 }
 
@@ -65,4 +68,41 @@ export function formatSecretKey(key: string | null): string | null {
         return `${key.slice(0, 4)}...${key.slice(-4)}`;
     }
     return key;
+}
+
+export interface FleetEntryRow {
+    contractId: string;
+    entryKeyXdr: string;
+    entryType: string;
+    remainingTTL: number | null;
+    status: FleetStatus;
+}
+
+export function escapeCSVCell(value: string | number | null | undefined): string {
+    if (value === null || value === undefined) {
+        return "";
+    }
+    let str = String(value);
+    if (typeof value === "string") {
+        if (str.startsWith("=") || str.startsWith("+") || str.startsWith("-") || str.startsWith("@")) {
+            str = "'" + str;
+        }
+    }
+    if (str.includes('"') || str.includes(",") || str.includes("\n") || str.includes("\r")) {
+        return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+}
+
+export function formatFleetCSV(rows: FleetEntryRow[]): string {
+    let csv = "contract_id,entry_key_xdr,entry_type,remaining_ttl,status\n";
+    for (const row of rows) {
+        const contractId = escapeCSVCell(row.contractId);
+        const entryKeyXdr = escapeCSVCell(row.entryKeyXdr);
+        const entryType = escapeCSVCell(row.entryType);
+        const remainingTTL = row.remainingTTL !== null && row.remainingTTL !== undefined ? String(row.remainingTTL) : "";
+        const status = escapeCSVCell(row.status);
+        csv += `${contractId},${entryKeyXdr},${entryType},${remainingTTL},${status}\n`;
+    }
+    return csv;
 }
