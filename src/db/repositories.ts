@@ -124,6 +124,25 @@ export function getContract(db: Database.Database, id: string): Contract | undef
   return db.prepare("SELECT * FROM contracts WHERE id = ?").get(id) as Contract | undefined;
 }
 
+export function getContractsByTag(db: Database.Database, tag: string): Contract[] {
+  const normalizedTag = tag.trim();
+  if (!normalizedTag) {
+    return [];
+  }
+
+  const contracts = db.prepare("SELECT * FROM contracts").all() as Contract[];
+  return contracts.filter((contract) => {
+    if (!contract.tags) {
+      return false;
+    }
+
+    return contract.tags
+      .split(",")
+      .map((candidate) => candidate.trim())
+      .includes(normalizedTag);
+  });
+}
+
 export function getAllContracts(db: Database.Database): Contract[] {
   return db.prepare("SELECT * FROM contracts").all() as Contract[];
 }
