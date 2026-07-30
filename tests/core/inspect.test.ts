@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { xdr } from "@stellar/stellar-sdk";
+import { xdr, Address } from "@stellar/stellar-sdk";
 import {
     parseSacBalance,
     buildSacBalanceKeyXdr,
@@ -423,5 +423,256 @@ describe("SAC Decoder Core", () => {
             expect(result.isSac).toBe(false);
             expect(result.results).toHaveLength(0);
         });
+
+        it("continues gracefully when DB lookup throws (contract stays null)", async () => {
+            vi.spyOn(repoLib, "getContract").mockImplementation(() => {
+                throw new Error("DB not initialized");
+            });
+
+            vi.spyOn(StellarRpcClient.prototype, "getContractInstanceEntry").mockResolvedValue({
+                entryKeyXdr: "AAAA",
+                latestLedger: 100,
+                liveUntilLedgerSeq: 200,
+                lastModifiedLedgerSeq: 50,
+                remainingTTL: 100,
+                executableType: "contractExecutableWasm",
+                wasmHash: "abcd1234",
+            });
+
+            vi.spyOn(StellarRpcClient.prototype as any, "getContractStorageEntries").mockResolvedValue([]);
+
+            // Should not throw — DB error is caught internally
+            const result = await inspectContract({} as any, "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC", {
+                entries: [],
+                network: "testnet",
+            });
+
+            // Falls back to supplied network option
+            expect(result.network).toBe("testnet");
+            expect(result.contractName).toBeNull();
+            expect(result.success).toBe(true);
+        });
+
+        it("returns error when buildSacBalanceKeyXdr throws inside try/catch", async () => {
+            vi.spyOn(repoLib, "getContract").mockReturnValue(null);
+
+            vi.spyOn(StellarRpcClient.prototype, "getContractInstanceEntry").mockResolvedValue({
+                entryKeyXdr: "AAAA",
+                latestLedger: 100,
+                liveUntilLedgerSeq: 200,
+                lastModifiedLedgerSeq: 50,
+                remainingTTL: 100,
+                executableType: "contractExecutableStellarAsset",
+                wasmHash: null,
+            });
+
+            vi.spyOn(StellarRpcClient.prototype as any, "getSacDecimals").mockResolvedValue(7);
+
+            const result = await inspectContract({} as any, "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC", {
+                // Malformed address triggers buildSacBalanceKeyXdr to throw
+                entries: ["balance:INVALID_ADDRESS_NOT_VALID_STELLAR"],
+                network: "testnet",
+            });
+
+            expect(result.success).toBe(false);
+            expect(result.error).toContain("Failed to locate balance slot");
+        });
+
+        it("falls back to zero balance when parseSacBalance throws on corrupt valXdr", async () => {
+            vi.spyOn(repoLib, "getContract").mockReturnValue(null);
+
+            vi.spyOn(StellarRpcClient.prototype, "getContractInstanceEntry").mockResolvedValue({
+                entryKeyXdr: "AAAA",
+                latestLedger: 100,
+                liveUntilLedgerSeq: 200,
+                lastModifiedLedgerSeq: 50,
+                remainingTTL: 100,
+                executableType: "contractExecutableStellarAsset",
+                wasmHash: null,
+            });
+
+            vi.spyOn(StellarRpcClient.prototype as any, "getSacDecimals").mockResolvedValue(7);
+
+            const expectedKeyXdr = buildSacBalanceKeyXdr(
+                "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+                "GBEA5Z3MBTLHEQHZYU3GUZIKABRADWJSOSD62GHBIVUUAWRMXTU6U2EW",
+            );
+
+            // Provide a corrupt valXdr that parseSacBalance cannot decode
+            vi.spyOn(StellarRpcClient.prototype as any, "getContractStorageEntries").mockResolvedValue([
+                {
+                    entryKeyXdr: expectedKeyXdr,
+                    latestLedger: 100,
+                    liveUntilLedgerSeq: 5000,
+                    lastModifiedLedgerSeq: 90,
+                    remainingTTL: 4900,
+                    valXdr: xdr.ScVal.scvString("not-a-map").toXDR("base64"),
+                },
+            ]);
+
+            const result = await inspectContract({} as any, "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC", {
+                entries: ["balance:GBEA5Z3MBTLHEQHZYU3GUZIKABRADWJSOSD62GHBIVUUAWRMXTU6U2EW"],
+                network: "testnet",
+            });
+
+            // Should still succeed, just with fallback zero balance
+            expect(result.success).toBe(true);
+            const entry = result.results![0]!;
+            expect(entry.found).toBe(true);
+            expect(entry.balance!.amount).toBe(0n);
+            expect(entry.formattedBalance).toBe("0");
+        });
+
+        it("returns found=false for a balance entry not present in RPC response", async () => {
+            vi.spyOn(repoLib, "getContract").mockReturnValue(null);
+
+            vi.spyOn(StellarRpcClient.prototype, "getContractInstanceEntry").mockResolvedValue({
+                entryKeyXdr: "AAAA",
+                latestLedger: 100,
+                liveUntilLedgerSeq: 200,
+                lastModifiedLedgerSeq: 50,
+                remainingTTL: 100,
+                executableType: "contractExecutableStellarAsset",
+                wasmHash: null,
+            });
+
+            vi.spyOn(StellarRpcClient.prototype as any, "getSacDecimals").mockResolvedValue(7);
+
+            // Return empty — key not found on-chain
+            vi.spyOn(StellarRpcClient.prototype as any, "getContractStorageEntries").mockResolvedValue([]);
+
+            const result = await inspectContract({} as any, "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC", {
+                entries: ["balance:GBEA5Z3MBTLHEQHZYU3GUZIKABRADWJSOSD62GHBIVUUAWRMXTU6U2EW"],
+                network: "testnet",
+            });
+
+            expect(result.success).toBe(true);
+            const entry = result.results![0]!;
+            expect(entry.found).toBe(false);
+            expect(entry.type).toBe("balance");
+            expect(entry.status).toBe("unknown");
+            // Fallback default balance values for not-found balance entries
+            expect(entry.balance!.amount).toBe(0n);
+            expect(entry.formattedBalance).toBe("0");
+        });
     });
 });
+
+// =============================================================================
+// Additional coverage for missing branches
+// =============================================================================
+
+describe("formatTokenBalance — additional branches", () => {
+    it("formats a negative amount with decimals", () => {
+        expect(formatTokenBalance(-10500000n, 7)).toBe("-1.05");
+        expect(formatTokenBalance(-10000000n, 7)).toBe("-1");
+    });
+
+    it("trims trailing zeros from remainder correctly", () => {
+        // 10500000 / 10^7 = 1.05 — trailing zero after '5' must be trimmed
+        expect(formatTokenBalance(10500000n, 7)).toBe("1.05");
+        // 10000000 / 10^7 = 1.0000000 — all decimals trimmed → "1"
+        expect(formatTokenBalance(10000000n, 7)).toBe("1");
+        // 1000 / 10^3 = 1.000 → "1"
+        expect(formatTokenBalance(1000n, 3)).toBe("1");
+        // 1050 / 10^3 = 1.050 → "1.05"
+        expect(formatTokenBalance(1050n, 3)).toBe("1.05");
+    });
+
+    it("handles decimals=0 correctly (no fractional part)", () => {
+        expect(formatTokenBalance(999n, 0)).toBe("999");
+        expect(formatTokenBalance(0n, 0)).toBe("0");
+    });
+});
+
+describe("parseSacBalance — additional branches", () => {
+    it("throws on invalid base64 string (fromXDR fails)", () => {
+        expect(() => parseSacBalance("!!!not-valid-base64!!!")).toThrow("Invalid SAC balance map layout");
+    });
+
+    it("throws when scValToNative fails on a corrupt ScVal", () => {
+        // A valid ScvMap structure that passes the switch check but lacks 'amount' field
+        const map = xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({
+                key: xdr.ScVal.scvSymbol("other"),
+                val: xdr.ScVal.scvBool(true),
+            }),
+        ]);
+        expect(() => parseSacBalance(map)).toThrow("Invalid SAC balance map layout");
+    });
+});
+
+describe("decodeScVal — additional ScVal type branches", () => {
+    it("decodes i64 ScVal", () => {
+        const scVal = xdr.ScVal.scvI64(new xdr.Int64(-42n));
+        const result = decodeScVal(scVal.toXDR("base64"));
+        expect(result.type).toBe("scvI64");
+        expect(result.value).toBe("-42");
+    });
+
+    it("decodes u128 ScVal", () => {
+        const scVal = xdr.ScVal.scvU128(new xdr.UInt128Parts({ hi: 0n, lo: 999999n }));
+        const result = decodeScVal(scVal.toXDR("base64"));
+        expect(result.type).toBe("scvU128");
+        expect(result.value).toBe("999999");
+    });
+
+    it("decodes i256 ScVal", () => {
+        const scVal = xdr.ScVal.scvI256(
+            new xdr.Int256Parts({ hiHi: 0n, hiLo: 0n, loHi: 0n, loLo: 100n }),
+        );
+        const result = decodeScVal(scVal.toXDR("base64"));
+        expect(result.type).toBe("scvI256");
+        expect(result.value).toBe("100");
+    });
+
+    it("decodes u256 ScVal", () => {
+        const scVal = xdr.ScVal.scvU256(
+            new xdr.UInt256Parts({ hiHi: 0n, hiLo: 0n, loHi: 0n, loLo: 77n }),
+        );
+        const result = decodeScVal(scVal.toXDR("base64"));
+        expect(result.type).toBe("scvU256");
+        expect(result.value).toBe("77");
+    });
+
+    it("decodes scvAddress ScVal (happy path)", () => {
+        const addr = Address.fromString("GBEA5Z3MBTLHEQHZYU3GUZIKABRADWJSOSD62GHBIVUUAWRMXTU6U2EW");
+        const scVal = addr.toScVal();
+        const result = decodeScVal(scVal.toXDR("base64"));
+        expect(result.type).toBe("scvAddress");
+        // scValToNative returns the address string
+        expect(typeof result.value).toBe("string");
+        expect(result.value).toBe("GBEA5Z3MBTLHEQHZYU3GUZIKABRADWJSOSD62GHBIVUUAWRMXTU6U2EW");
+    });
+
+    it("handles empty scvMap (null-guard in map branch)", () => {
+        const scVal = xdr.ScVal.scvMap([]);
+        const result = decodeScVal(scVal.toXDR("base64"));
+        expect(result.type).toBe("scvMap");
+        expect(result.value).toEqual([]);
+    });
+
+    it("handles empty scvVec (null-guard in vec branch)", () => {
+        const scVal = xdr.ScVal.scvVec([]);
+        const result = decodeScVal(scVal.toXDR("base64"));
+        expect(result.type).toBe("scvVec");
+        expect(result.value).toEqual([]);
+    });
+
+    it("handles default (unknown) ScVal type via scValToNative", () => {
+        // scvContractInstance is a valid but uncommon type that falls to default
+        // We can use scvLedgerKeyContractInstance which hits the default branch
+        const scVal = xdr.ScVal.scvLedgerKeyContractInstance();
+        const result = decodeScVal(scVal.toXDR("base64"));
+        // Should either get a native value or the fallback string — either way, no throw
+        expect(result.type).toBe("scvLedgerKeyContractInstance");
+        expect(result).toHaveProperty("value");
+    });
+});
+
+// =============================================================================
+// Fallback try/catch paths inside decodeScValRecursive
+// Catch-branch coverage for scvAddress, bigint, and default is provided in
+// tests/core/inspect.catch.test.ts which uses a module-level vi.mock to force
+// scValToNative to throw for specific ScVal types.
+// =============================================================================
