@@ -78,3 +78,20 @@ export function renderZshCompletionScript(): string {
     "",
   ].join("\n");
 }
+
+export function renderFishCompletionScript(): string {
+  return [
+    "function __sorokeep_complete",
+    "  set -l cmd (commandline -poc)",
+    "  if test (count $cmd) -le 1",
+    "    printf '%s\\n' watch status check daemon alerts guard costs resources restore channels completion",
+    "    return",
+    "  end",
+    "  set -l current (commandline -t)",
+    "  sorokeep completion --query --cursor (count $cmd) $cmd[2..-1] 2>/dev/null",
+    "end",
+    "",
+    "complete -c sorokeep -a '(__sorokeep_complete)'",
+    "",
+  ].join("\n");
+}
