@@ -67,6 +67,18 @@ export interface ExtensionRecord {
     executed_at: string;
 }
 
+export interface ContractGroup {
+    id: number;
+    name: string;
+    created_at: string;
+}
+
+export interface ContractGroupMember {
+    group_id: number;
+    contract_id: string;
+    added_at: string;
+}
+
 // ---------------------------- Database Access Functions For Schema: Contract ----------------------------
 export function insertContract(db: Database.Database, contract: {id: string; name?: string; network: string; wasm_hash?: string; tags?: string;}): void {
     db.prepare(`
@@ -410,4 +422,65 @@ export function getAlertHistory(db: Database.Database, contractId: string, limit
         ? db.prepare(sql).all(contractId, limit)
         : db.prepare(sql).all(contractId)
     ) as AlertHistoryRecord[];
+}
+
+// ---------------------------- Database Access Functions For Schema: ContractGroup ----------------------------
+
+export function createGroup(db: Database.Database, name: string): ContractGroup {
+    const result = db.prepare(
+        "INSERT INTO contract_groups (name) VALUES (?)"
+    ).run(name);
+    return {
+        id: Number(result.lastInsertRowid),
+        name,
+        created_at: new Date().toISOString(),
+    };
+}
+
+export function getGroupByName(db: Database.Database, name: string): ContractGroup | undefined {
+    return db.prepare("SELECT * FROM contract_groups WHERE name = ?").get(name) as ContractGroup | undefined;
+}
+
+export function getAllGroups(db: Database.Database): ContractGroup[] {
+    return db.prepare("SELECT * FROM contract_groups ORDER BY name ASC").all() as ContractGroup[];
+}
+
+export function deleteGroup(db: Database.Database, name: string): boolean {
+    const result = db.prepare("DELETE FROM contract_groups WHERE name = ?").run(name);
+    return result.changes > 0;
+}
+
+export function addContractToGroup(db: Database.Database, groupId: number, contractId: string): void {
+    db.prepare(
+        "INSERT OR IGNORE INTO contract_group_members (group_id, contract_id) VALUES (?, ?)"
+    ).run(groupId, contractId);
+}
+
+export function removeContractFromGroup(db: Database.Database, groupId: number, contractId: string): boolean {
+    const result = db.prepare(
+        "DELETE FROM contract_group_members WHERE group_id = ? AND contract_id = ?"
+    ).run(groupId, contractId);
+    return result.changes > 0;
+}
+
+export function getGroupMembers(db: Database.Database, groupId: number): ContractGroupMember[] {
+    return db.prepare(
+        "SELECT * FROM contract_group_members WHERE group_id = ? ORDER BY added_at ASC"
+    ).all(groupId) as ContractGroupMember[];
+}
+
+export function getGroupsForContract(db: Database.Database, contractId: string): ContractGroup[] {
+    return db.prepare(`
+        SELECT cg.* FROM contract_groups cg
+        JOIN contract_group_members cgm ON cg.id = cgm.group_id
+        WHERE cgm.contract_id = ?
+        ORDER BY cg.name ASC
+    `).all(contractId) as ContractGroup[];
+}
+
+export function isContractInGroup(db: Database.Database, groupId: number, contractId: string): boolean {
+    const row = db.prepare(
+        "SELECT 1 FROM contract_group_members WHERE group_id = ? AND contract_id = ? LIMIT 1"
+    ).get(groupId, contractId);
+    return row !== undefined;
 }
