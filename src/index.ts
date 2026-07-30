@@ -19,6 +19,7 @@ import { registerBudgetCommand } from "./commands/budget.js";
 import { registerDbCommand } from "./commands/db.js";
 import { registerPauseCommand } from "./commands/pause.js";
 import { registerResumeCommand } from "./commands/resume.js";
+import { registerDoctorCommand } from "./commands/doctor.js";
 
 initLogger({ mode: "cli" });
 
@@ -27,7 +28,7 @@ const program = new Command();
 program
   .name("sorokeep")
   .description(
-    "Sorokeep — The missing operations layer for deployed Soroban smart contracts",
+    "Sorokeep - The missing operations layer for deployed Soroban smart contracts",
   )
   .version("0.1.2")
   .option("--extension-jitter-ms <ms>", "Jitter window in ms applied to extension submissions", parseInt);
@@ -50,6 +51,7 @@ registerBudgetCommand(program);
 registerDbCommand(program);
 registerPauseCommand(program);
 registerResumeCommand(program);
+registerDoctorCommand(program);
 
 program.parse(process.argv);
 
