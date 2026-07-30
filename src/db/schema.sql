@@ -195,6 +195,19 @@ CREATE TABLE IF NOT EXISTS contract_budgets (
 
 
 
+CREATE TABLE IF NOT EXISTS contract_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS contract_group_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id INTEGER NOT NULL REFERENCES contract_groups(id) ON DELETE CASCADE,
+    contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+    UNIQUE(group_id, contract_id)
+);
+
 CREATE TABLE IF NOT EXISTS resource_usage_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
