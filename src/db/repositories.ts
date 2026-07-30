@@ -1327,3 +1327,71 @@ export function getLatestResourceUsageLog(
     `).get(contractId) as ResourceUsageLog | undefined;
 }
 
+
+// ─── digest_configs ───────────────────────────────────────────────────────────
+
+/**
+ * Represents one scheduled fleet-health digest delivery configuration.
+ *
+ * Stored in the `digest_configs` table (separate from `alert_configs` because
+ * digests are fleet-wide with no contract FK or threshold_ledgers column — see
+ * the inline comment in schema.sql for the full justification).
+ */
+export interface DigestConfig {
+    id: number;
+    /** Stellar network this config applies to. */
+    network: string;
+    /** Any registered alert channel name (same registry as alert_configs). */
+    channel_type: string;
+    channel_target: string;
+    /** How frequently (ms) to send a digest for this config. */
+    interval_ms: number;
+    webhook_secret: string | null;
+    created_at: string;
+}
+
+/**
+ * Insert a new digest configuration.
+ * Returns the auto-assigned row id.
+ */
+export function insertDigestConfig(
+    db: Database.Database,
+    config: {
+        network: string;
+        channel_type: string;
+        channel_target: string;
+        interval_ms: number;
+        webhook_secret?: string | null;
+    },
+): number {
+    const result = db.prepare(`
+        INSERT INTO digest_configs (network, channel_type, channel_target, interval_ms, webhook_secret)
+        VALUES (@network, @channel_type, @channel_target, @interval_ms, @webhook_secret)
+    `).run({
+        network: config.network,
+        channel_type: config.channel_type,
+        channel_target: config.channel_target,
+        interval_ms: config.interval_ms,
+        webhook_secret: config.webhook_secret ?? null,
+    });
+    return result.lastInsertRowid as number;
+}
+
+/**
+ * Return all digest configurations for a given Stellar network.
+ */
+export function getDigestConfigsForNetwork(
+    db: Database.Database,
+    network: string,
+): DigestConfig[] {
+    return db.prepare(`
+        SELECT * FROM digest_configs WHERE network = ? ORDER BY id ASC
+    `).all(network) as DigestConfig[];
+}
+
+/**
+ * Delete a digest configuration by its primary key.
+ */
+export function deleteDigestConfig(db: Database.Database, id: number): void {
+    db.prepare("DELETE FROM digest_configs WHERE id = ?").run(id);
+}

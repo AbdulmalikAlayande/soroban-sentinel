@@ -1,8 +1,9 @@
 import type Database from "better-sqlite3";
 import { runMonitorCycle, type MonitorCycleResult } from "../core/monitor.js";
-import { deliverPendingAlerts } from "../alerts/dispatcher.js";
+import { deliverPendingAlerts, deliverSingleAlert } from "../alerts/dispatcher.js";
 import { vacuumDatabase } from "../db/database.js";
-import { aggregateDailyCostSnapshots, getAllContracts } from "../db/repositories.js";
+import { aggregateDailyCostSnapshots, getAllContracts, getDigestConfigsForNetwork } from "../db/repositories.js";
+import { buildFleetDigestPayload } from "../core/digest.js";
 import { getLogger } from "../logging/index.js";
 import type { Logger } from "../logging/types.js";
 
@@ -25,6 +26,13 @@ export interface DaemonOptions {
     feeSponsorSecret?: string;
     /** How frequently to run vacuum maintenance. Defaults to 24 hours. */
     vacuumIntervalMs?: number;
+    /**
+     * How frequently to send a fleet-health digest. Defaults to 24 hours.
+     * A digest is only sent if at least one digest_config exists for the
+     * network — this option controls the daemon-side interval gate, not the
+     * per-config interval stored in the database.
+     */
+    digestIntervalMs?: number;
     /** Called after every cycle with the result (or null + error on failure). */
     onCycle?: (result: MonitorCycleResult | null, error?: Error) => void;
 }
@@ -33,11 +41,14 @@ export interface DaemonOptions {
 
 const DEFAULT_INTERVAL_MS = 300_000; // 5 minutes
 const DEFAULT_VACUUM_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const DEFAULT_DIGEST_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let cycleInFlight = false;
 let vacuumIntervalMs = DEFAULT_VACUUM_INTERVAL_MS;
 let lastVacuumAt = 0;
+let digestIntervalMs = DEFAULT_DIGEST_INTERVAL_MS;
+let lastDigestAt = 0;
 
 // ─── Core API ─────────────────────────────────────────────────────────────────
 
@@ -64,11 +75,13 @@ export async function startDaemon(
 
     const intervalMs = options?.intervalMs ?? DEFAULT_INTERVAL_MS;
     vacuumIntervalMs = options?.vacuumIntervalMs ?? DEFAULT_VACUUM_INTERVAL_MS;
+    digestIntervalMs = options?.digestIntervalMs ?? DEFAULT_DIGEST_INTERVAL_MS;
     const rpcUrl = options?.rpcUrl;
     const onCycle = options?.onCycle;
     const effectiveIntervalMs = resolvePollIntervalMs(db, network, intervalMs);
 
     lastVacuumAt = Date.now();
+    lastDigestAt = Date.now();
     logger().info(`Daemon starting — network: ${network}, interval: ${intervalMs}ms`);
 
     // Run the initial cycle immediately.
@@ -176,6 +189,7 @@ async function scheduledTick(
     }
 
     await runScheduledVacuum(db);
+    await runScheduledDigest(db, network);
     await executeCycle(db, network, rpcUrl, feeSponsorSecret, onCycle);
 }
 
@@ -197,6 +211,82 @@ async function runScheduledVacuum(db: Database.Database): Promise<void> {
     } else {
         logger().info("Scheduled maintenance: database vacuum skipped due to busy database");
     }
+}
+
+/**
+ * Send a fleet-health digest if the configured digest interval has elapsed.
+ *
+ * Mirrors the runScheduledVacuum pattern: a `lastDigestAt` timestamp is
+ * checked each tick — the digest fires at most once per `digestIntervalMs`,
+ * regardless of how many monitor cycles have run.  If no digest_configs exist
+ * for the network the function returns immediately without building a payload.
+ *
+ * Errors are caught and logged so a digest failure can never crash the daemon.
+ */
+async function runScheduledDigest(db: Database.Database, network: string): Promise<void> {
+    if (Date.now() - lastDigestAt < digestIntervalMs) {
+        return;
+    }
+
+    const configs = getDigestConfigsForNetwork(db, network);
+    if (configs.length === 0) {
+        // No digest configs for this network — reset the timer so we check again
+        // after the next interval rather than querying every single tick.
+        lastDigestAt = Date.now();
+        return;
+    }
+
+    logger().info(`Scheduled digest: building fleet-health digest for network ${network}`);
+
+    let payload;
+    try {
+        // Use 0 as the currentLedger sentinel when we don't have a fresh ledger
+        // from an RPC call here.  The digest records the ledger at which the
+        // last monitor cycle completed, but the daemon loop doesn't thread that
+        // through.  Callers that need an accurate ledger should pass it via
+        // BuildFleetDigestOptions.  For the scheduled job the relative remaining
+        // TTLs (live_until_ledger - currentLedger) are computed from DB values
+        // which already represent absolute ledger numbers; using the last
+        // checked ledger from each contract row would give slightly different
+        // results per contract.  The simplest correct behaviour is to pass 0 and
+        // let callers override via options; alternatively a dedicated "latest
+        // ledger" column on contracts could be used.  For now the scheduler
+        // uses the most-recent last_checked_ledger across all contracts as an
+        // approximation.
+        const latestLedger = resolveLatestLedger(db, network);
+        payload = buildFleetDigestPayload(db, network, latestLedger);
+    } catch (buildErr: unknown) {
+        logger().error(
+            "Scheduled digest: buildFleetDigestPayload threw unexpectedly — skipping",
+            buildErr,
+        );
+        lastDigestAt = Date.now();
+        return;
+    }
+
+    // Deliver to each configured channel (best-effort — failures are logged but
+    // do not prevent subsequent deliveries or crash the daemon).
+    for (const config of configs) {
+        try {
+            await deliverSingleAlert(
+                config.channel_type,
+                config.channel_target,
+                payload,
+                config.webhook_secret,
+            );
+            logger().info(
+                `Scheduled digest delivered — channel: ${config.channel_type}, target: ${config.channel_target}`,
+            );
+        } catch (deliveryErr: unknown) {
+            logger().warn(
+                `Scheduled digest delivery failed — channel: ${config.channel_type}, ` +
+                `target: ${config.channel_target}: ${deliveryErr instanceof Error ? deliveryErr.message : String(deliveryErr)}`,
+            );
+        }
+    }
+
+    lastDigestAt = Date.now();
+    logger().info("Scheduled digest: completed");
 }
 
 /**
@@ -226,4 +316,19 @@ function resolvePollIntervalMs(db: Database.Database, network: string, fallbackI
     }
 
     return Math.min(...overrides) * 1000;
+}
+
+/**
+ * Return the highest `last_checked_ledger` across all active contracts on the
+ * given network as a best-effort approximation of the current ledger.  Falls
+ * back to 0 if no contracts have been checked yet.
+ */
+function resolveLatestLedger(db: Database.Database, network: string): number {
+    const contracts = getAllContracts(db).filter(
+        (c) => c.network === network && c.active === 1,
+    );
+    const ledgers = contracts
+        .map((c) => c.last_checked_ledger)
+        .filter((v): v is number => typeof v === "number" && v > 0);
+    return ledgers.length > 0 ? Math.max(...ledgers) : 0;
 }

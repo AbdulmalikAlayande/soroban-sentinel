@@ -210,3 +210,25 @@ CREATE INDEX IF NOT EXISTS idx_resource_usage_logs_contract_id
 CREATE INDEX IF NOT EXISTS idx_resource_usage_logs_recorded_at
     ON resource_usage_logs(recorded_at DESC);
 
+-- Scheduled fleet-health digest configurations.
+-- Intentionally separate from alert_configs: digests are fleet-wide (no
+-- contract_id FK), carry no threshold_ledgers, and represent a different
+-- delivery shape (FleetDigestPayload vs. AlertEvent).  Mixing them into
+-- alert_configs would require nullable columns and a sentinel value for
+-- threshold_ledgers, which is a worse tradeoff than a dedicated table.
+-- channel_type is validated at the application layer (same reasoning as
+-- alert_configs — no fixed SQL enum so new channels need no migration).
+CREATE TABLE IF NOT EXISTS digest_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    network TEXT NOT NULL DEFAULT 'testnet',
+    channel_type TEXT NOT NULL CHECK(channel_type <> ''),
+    channel_target TEXT NOT NULL,
+    -- How frequently (in milliseconds) to send a digest for this config.
+    -- Defaults to 86400000 (24 hours) if the application layer does not
+    -- override it.  Stored here so that multiple configs on the same network
+    -- can each have independent intervals.
+    interval_ms INTEGER NOT NULL DEFAULT 86400000,
+    webhook_secret TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
