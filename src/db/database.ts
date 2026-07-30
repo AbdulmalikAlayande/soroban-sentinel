@@ -117,8 +117,8 @@ function migrateAlertConfigsChannelTypeCheck(db: Database.Database): void {
         )
     `);
     db.exec(`
-        INSERT INTO alert_configs_new (id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, created_at)
-        SELECT id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, created_at
+        INSERT INTO alert_configs_new (id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, quiet_hours_start, quiet_hours_end, quiet_hours_timezone, created_at)
+        SELECT id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, quiet_hours_start, quiet_hours_end, quiet_hours_timezone, created_at
         FROM alert_configs
     `);
     db.exec(`DROP TABLE alert_configs;`);
@@ -163,8 +163,8 @@ function relaxChannelTypeChecks(db: Database.Database): void {
             )
         `);
         db.exec(`
-            INSERT INTO alert_configs_relaxed (id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, created_at)
-            SELECT id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, created_at
+            INSERT INTO alert_configs_relaxed (id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, quiet_hours_start, quiet_hours_end, quiet_hours_timezone, created_at)
+            SELECT id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, quiet_hours_start, quiet_hours_end, quiet_hours_timezone, created_at
             FROM alert_configs
         `);
         db.exec(`DROP TABLE alert_configs;`);
