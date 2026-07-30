@@ -29,7 +29,8 @@ program
   .description(
     "Sorokeep — The missing operations layer for deployed Soroban smart contracts",
   )
-  .version("0.1.2");
+  .version("0.1.2")
+  .option("--extension-jitter-ms <ms>", "Jitter window in ms applied to extension submissions", parseInt);
 
 registerWatchCommand(program);
 registerStatusCommand(program);
@@ -51,3 +52,8 @@ registerPauseCommand(program);
 registerResumeCommand(program);
 
 program.parse(process.argv);
+
+const opts = program.opts();
+if (opts.extensionJitterMs) {
+    process.env.EXTENSION_JITTER_MS = opts.extensionJitterMs.toString();
+}
