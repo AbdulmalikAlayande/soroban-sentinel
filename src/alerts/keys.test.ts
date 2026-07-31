@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // --- 1. CORE IMPLEMENTATION CODE ---
 // ==========================================
 
-import { KeychainStore, SecureKeypairStore, KeysCliController } from "../../src/alerts/keys";
+import { KeychainStore, SecureKeypairStore, KeysCliController } from "./keys";
 
 // ==========================================
 // --- 2. TDD AUTOMATED TEST SUITE ---

@@ -48,12 +48,6 @@ CREATE TABLE IF NOT EXISTS alert_configs (
     channel_target TEXT NOT NULL,
     threshold_ledgers INTEGER NOT NULL,
     webhook_secret TEXT,
-    -- Quiet-hours / maintenance-window support (issue #325).
-    -- All three columns are nullable: NULL means no quiet window is configured.
-    -- HH:MM 24-hour format.  quiet_hours_timezone must be a valid IANA tz name.
-    quiet_hours_start    TEXT,
-    quiet_hours_end      TEXT,
-    quiet_hours_timezone TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 

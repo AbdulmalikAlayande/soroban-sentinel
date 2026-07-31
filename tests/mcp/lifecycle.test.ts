@@ -1,12 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { PassThrough } from "stream";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type Database from "better-sqlite3";
 import { createMcpServer } from "../../src/mcp/server.js";
 import { getDatabaseForTesting } from "../../src/db/database.js";
 
 describe("MCP Server Lifecycle", () => {
-    let mockDb: Database.Database;
+    let mockDb: any;
 
     beforeEach(() => {
         mockDb = getDatabaseForTesting();

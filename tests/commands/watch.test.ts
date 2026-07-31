@@ -6,11 +6,13 @@ import * as watchCore from "../../src/core/watch";
 import * as watchConfig from "../../src/utils/watch-config";
 import * as repositories from "../../src/db/repositories";
 import readline from "node:readline";
+import * as deploymentLog from "../../src/core/deployment_log";
 
 vi.mock("../../src/db/database");
 vi.mock("../../src/core/watch");
 vi.mock("../../src/utils/watch-config");
 vi.mock("../../src/db/repositories");
+vi.mock("../../src/core/deployment_log");
 
 describe("Watch Command CLI", () => {
   let program: Command;
@@ -242,6 +244,67 @@ describe("Watch Command CLI", () => {
     );
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("1 failed"));
     expect(mockExit).toHaveBeenCalledWith(1);
+  });
+
+  it("registers contracts auto-discovered from deployment log with --from-deployment-log and exits gracefully on failure", async () => {
+    const firstId = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
+    const secondId = "CD2R4QQV6KJ6P7JX5TURH6K7W2K4XQ6G5V5VJQ4X6UR6P6JQ6P2M4ABC";
+
+    vi.mocked(deploymentLog.parseDeploymentLog).mockReturnValue([firstId, secondId]);
+
+    vi.mocked(watchCore.watchContract)
+      .mockResolvedValueOnce({
+        success: true,
+        instance: { remainingTTL: 100 },
+        wasm: null,
+      } as any)
+      .mockResolvedValueOnce({
+        success: true,
+        instance: { remainingTTL: 200 },
+        wasm: null,
+      } as any);
+
+    await actionFn(undefined, {
+      fromDeploymentLog: "deploy.log",
+      network: "testnet",
+    });
+
+    expect(deploymentLog.parseDeploymentLog).toHaveBeenCalledWith("deploy.log");
+
+    expect(watchCore.watchContract).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({
+        contractId: firstId,
+        network: "testnet",
+      }),
+    );
+    expect(watchCore.watchContract).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({
+        contractId: secondId,
+        network: "testnet",
+      }),
+    );
+    expect(mockLog).toHaveBeenCalledWith(
+      expect.stringContaining("Batch registration summary"),
+    );
+    expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("2 succeeded"));
+  });
+
+  it("exits with 1 and logs error when --from-deployment-log parsing fails", async () => {
+    vi.mocked(deploymentLog.parseDeploymentLog).mockImplementation(() => {
+      throw new Error("No valid contract IDs found in the deployment log");
+    });
+
+    await actionFn(undefined, {
+      fromDeploymentLog: "invalid.log",
+      network: "testnet",
+    });
+
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("No valid contract IDs found"));
   });
 });
 

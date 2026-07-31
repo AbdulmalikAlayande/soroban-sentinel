@@ -2,7 +2,6 @@ import { registerAlertChannel, type ChannelDefinition } from "./registry.js";
 import { sendWebhookAlert } from "./webhook.js";
 import { SlackChannel } from "./slack.js";
 import { sendPagerDutyAlert } from "./pagerduty.js";
-import { sendOpsgenieAlert } from "./opsgenie.js";
 
 let registered = false;
 

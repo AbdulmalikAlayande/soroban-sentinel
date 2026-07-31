@@ -66,11 +66,6 @@ export class Migrator {
     /**
      * Executes all pending migrations sequentially.
      * Each migration script is executed in its own transaction.
-     *
-     * If a migration consists solely of ADD COLUMN statements and the column
-     * already exists (i.e. the schema was created from a schema.sql that already
-     * includes the column), the "duplicate column name" error is swallowed and
-     * the migration is still recorded as applied — the intent is fulfilled.
      */
     public run(): void {
         this.init();
@@ -85,30 +80,8 @@ export class Migrator {
                 this.db.prepare("INSERT INTO schema_migrations (version) VALUES (?);").run(migration.version);
             });
 
-            try {
-                // Execute migration transaction
-                runMigrationTx();
-            } catch (err: unknown) {
-                // If every statement in this migration is an ALTER TABLE ADD COLUMN
-                // and the column already exists (schema.sql was applied first on a
-                // fresh / test DB), swallow the error and record the migration as
-                // applied — the column is already there, so the intent is fulfilled.
-                const message = err instanceof Error ? err.message : String(err);
-                const isAddColumnMigration = sql
-                    .split(";")
-                    .map((s) => s.trim())
-                    .filter((s) => s.length > 0 && !s.startsWith("--"))
-                    .every((s) => /^ALTER\s+TABLE\s+\S+\s+ADD\s+COLUMN/i.test(s));
-
-                if (isAddColumnMigration && /duplicate column name/i.test(message)) {
-                    // All statements add columns that already exist — mark as applied.
-                    this.db
-                        .prepare("INSERT OR IGNORE INTO schema_migrations (version) VALUES (?);")
-                        .run(migration.version);
-                } else {
-                    throw err;
-                }
-            }
+            // Execute migration transaction
+            runMigrationTx();
         }
     }
 }
