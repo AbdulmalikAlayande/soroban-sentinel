@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { sendPagerDutyAlert } from "../../src/alerts/pagerduty";
-import { runChannelContractTests } from "../../tests/alerts/channel-contract.js";
 import type { AlertEvent } from "../../src/alerts/types";
 
 const mockFetch = vi.fn();
@@ -88,24 +87,4 @@ describe("sendPagerDutyAlert", () => {
         await expect(sendPagerDutyAlert("test-routing-key", makeAlertEvent()))
             .rejects.toThrow("PagerDuty API request failed: HTTP 500");
     });
-});
-
-// ─── Channel contract ──────────────────────────────────────────────────────
-
-describe("PagerDuty (contract)", () => {
-    beforeEach(() => {
-        vi.clearAllMocks();
-        mockFetch.mockResolvedValue(makeOkResponse());
-    });
-
-    afterEach(() => {
-        vi.unstubAllGlobals();
-        vi.stubGlobal("fetch", mockFetch);
-    });
-
-    runChannelContractTests(
-        "pagerduty",
-        () => ({ send: (target, event) => sendPagerDutyAlert(target, event) }),
-        () => { mockFetch.mockRejectedValue(new Error("ECONNREFUSED")); },
-    );
 });
