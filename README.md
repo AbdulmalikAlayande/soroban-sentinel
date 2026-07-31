@@ -1,9 +1,6 @@
 <p align="center">
   <h1 align="center">Sorokeep</h1>
   <p align="center">
-    <a href="README.pt.md">Português (Brasil)</a>
-  </p>
-  <p align="center">
     The missing operations layer for deployed Soroban smart contracts.
     <br />
     Monitor TTLs. Get alerted before expiration. Auto-extend storage. Restore archived entries.
@@ -22,6 +19,9 @@
 </p>
 
 <br />
+
+## Why This Exists
+
 Soroban's storage model is uncommon among major smart contract platforms: **state expires.** Every ledger entry — contract instances, persistent storage, WASM code — has a Time-To-Live (TTL). When it runs out, the entry is archived. If a contract's instance entry expires, the entire contract stops working. If persistent storage entries expire, user data becomes inaccessible until someone pays to restore it.
 
 This is by design — state archival keeps Stellar lean and scalable. But it means **you must actively manage the lifecycle of your contract's state, or it dies.**
@@ -659,11 +659,6 @@ Testnet (`https://soroban-testnet.stellar.org`) and Mainnet (`https://mainnet.so
 Email is not yet implemented. The CLI will reject `--type email` with a clear error message. Webhook and Slack are the supported channels today.
 
 ## Roadmap
-
-Track overall progress on the [Sorokeep Roadmap board](https://github.com/AbdulmalikAlayande/sorokeep/projects) — issues are grouped by phase (`phase-1` through `phase-15`) with Todo/In Progress/Done status.
-
-> **Note:** The board is configured via a proposal at [`docs/roadmap-board-proposal.md`](docs/roadmap-board-proposal.md).
-> If you're a maintainer, follow that doc to create and link the board.
 
 - Plugin interface for alert channels — so a new channel (Matrix, MS Teams, email) doesn't require touching core dispatch code or the DB schema
 - Prometheus `/metrics` endpoint for teams with existing observability stacks

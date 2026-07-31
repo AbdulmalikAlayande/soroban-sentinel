@@ -46,12 +46,6 @@ export interface AlertConfig {
     channel_target: string;
     threshold_ledgers: number;
     webhook_secret: string | null;
-    /** HH:MM (24-hour) start of the quiet / maintenance window, or null if not configured. */
-    quiet_hours_start: string | null;
-    /** HH:MM (24-hour) end of the quiet / maintenance window, or null if not configured. */
-    quiet_hours_end: string | null;
-    /** IANA timezone name used to interpret quiet_hours_start / quiet_hours_end, or null. */
-    quiet_hours_timezone: string | null;
     created_at: Date;
 }
 
@@ -279,19 +273,13 @@ export function insertAlertConfig(db: Database.Database, config: {
   channel_target: string;
   threshold_ledgers: number;
   webhook_secret?: string;
-  quiet_hours_start?: string | null;
-  quiet_hours_end?: string | null;
-  quiet_hours_timezone?: string | null;
 }): void {
   db.prepare(`
-    INSERT INTO alert_configs (contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, quiet_hours_start, quiet_hours_end, quiet_hours_timezone)
-    VALUES (@contract_id, @channel_type, @channel_target, @threshold_ledgers, @webhook_secret, @quiet_hours_start, @quiet_hours_end, @quiet_hours_timezone)
+    INSERT INTO alert_configs (contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret)
+    VALUES (@contract_id, @channel_type, @channel_target, @threshold_ledgers, @webhook_secret)
   `).run({
     ...config,
     webhook_secret: config.webhook_secret ?? null,
-    quiet_hours_start: config.quiet_hours_start ?? null,
-    quiet_hours_end: config.quiet_hours_end ?? null,
-    quiet_hours_timezone: config.quiet_hours_timezone ?? null,
   });
 }
 
@@ -656,12 +644,6 @@ export interface UndeliveredAlert {
     firedAtLedger: number;
     firedAt: string;
     retryCount: number;
-    /** HH:MM (24-hour) start of the quiet window, or null if not configured. */
-    quietHoursStart: string | null;
-    /** HH:MM (24-hour) end of the quiet window, or null if not configured. */
-    quietHoursEnd: string | null;
-    /** IANA timezone for the quiet window, or null if not configured. */
-    quietHoursTimezone: string | null;
 }
 
 /** Maximum number of delivery attempts before giving up on an alert. */
@@ -694,10 +676,7 @@ export function getUndeliveredAlerts(
             af.ttl_at_fire   AS remainingTTL,
             af.fired_at_ledger AS firedAtLedger,
             af.fired_at      AS firedAt,
-            af.retry_count   AS retryCount,
-            ac.quiet_hours_start    AS quietHoursStart,
-            ac.quiet_hours_end      AS quietHoursEnd,
-            ac.quiet_hours_timezone AS quietHoursTimezone
+            af.retry_count   AS retryCount
         FROM alerts_fired af
         JOIN alert_configs ac  ON ac.id  = af.alert_config_id
         JOIN contract_entries ce ON ce.id = af.contract_entry_id

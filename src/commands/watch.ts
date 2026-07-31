@@ -13,6 +13,7 @@ import {
 } from "../utils/formatting.js";
 import { watchContract } from "../core/watch.js";
 import { loadWatchContractsFile } from "../utils/watch-config.js";
+import { parseDeploymentLog } from "../core/deployment_log.js";
 
 const logger = getLogger().child({ component: "WatchCommand" });
 
@@ -39,9 +40,49 @@ export const registerWatchCommand = (program: Command): void => {
       "--from-file <path>",
       "Load multiple contract registrations from a YAML or JSON file",
     )
+    .option(
+      "--from-deployment-log <path>",
+      "Load multiple contract registrations auto-discovered from a Soroban CLI deployment log",
+    )
     .action(async (contractId, options) => {
       try {
         const db = getDatabase();
+
+        if (options.fromDeploymentLog) {
+          const contractIds = parseDeploymentLog(options.fromDeploymentLog);
+          const results = [] as Array<{
+            contractId: string;
+            name?: string;
+            network: string;
+            status: "SUCCESS" | "FAILED";
+            message: string;
+          }>;
+
+          for (const cid of contractIds) {
+            const watchResult = await watchContract(db, {
+              contractId: cid,
+              network: options.network,
+              rpcUrl: options.rpcUrl,
+              noIntrospection: options.noIntrospection,
+            });
+
+            results.push({
+              contractId: cid,
+              network: options.network,
+              status: watchResult.success ? "SUCCESS" : "FAILED",
+              message: watchResult.success
+                ? `Registered ${formatContractID(cid)}`
+                : watchResult.error,
+            });
+          }
+
+          printBatchSummary(results);
+
+          if (results.some((result) => result.status === "FAILED")) {
+            process.exit(1);
+          }
+          return;
+        }
 
         if (options.fromFile) {
           const configs = loadWatchContractsFile(options.fromFile);
