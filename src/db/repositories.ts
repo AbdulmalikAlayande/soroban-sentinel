@@ -846,11 +846,11 @@ export function getChannelDeliveryStats(
         JOIN alert_configs ac ON ac.id = af.alert_config_id
         WHERE ac.channel_type = ?
     `;
-    const params: any[] = [MAX_RETRY_COUNT, MAX_RETRY_COUNT, channelType];
+    const params: Array<number | string> = [MAX_RETRY_COUNT, MAX_RETRY_COUNT, channelType];
     
     if (days !== undefined && days > 0) {
-        sql += \` AND af.fired_at >= datetime('now', ?)\`;
-        params.push(\`-\${days} days\`);
+        sql += ` AND af.fired_at >= datetime('now', ?)`;
+        params.push(`-${days} days`);
     }
 
     const row = db.prepare(sql).get(...params) as any;
