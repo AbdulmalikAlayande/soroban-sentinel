@@ -670,6 +670,16 @@ E-mail ainda não foi implementado. O CLI rejeitará `--type email` com uma mens
 - Dashboard web para monitoramento visual de TTL
 - Operações em lote multi-contrato
 
+## Obter Ajuda
+
+**Problemas com o daemon?** Veja [docs/troubleshooting.md](docs/troubleshooting.md) para um guia completo cobrindo modos de falha comuns (ciclos travados, alertas não disparando, extensão automática bloqueada, erros de RPC) com comandos de diagnóstico e etapas de resolução.
+
+Se você está preso ou tem dúvidas:
+- Verifique [issues abertos](https://github.com/AbdulmalikAlayande/sorokeep/issues)
+- Entre em contato no X: [@The_good_man02](https://twitter.com/The_good_man02)
+
+Para problemas de segurança (vazamento de chaves, transações não intencionais), veja [SECURITY.md](SECURITY.md) em vez de abrir uma issue pública.
+
 ## Contribuir
 
 Contribuições são bem-vindas. Veja [CONTRIBUTING.md](CONTRIBUTING.md) para diretrizes, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) para como o sistema funciona em tempo de execução e [SECURITY.md](SECURITY.md) para relato de vulnerabilidades. Este projeto segue um [Código de Conduta](CODE_OF_CONDUCT.md).
