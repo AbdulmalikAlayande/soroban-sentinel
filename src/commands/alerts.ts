@@ -14,6 +14,7 @@ import {
 import { formatContractID, formatTimeToCloseLedger } from "../utils/formatting.js";
 import { deliverSingleAlert } from "../alerts/dispatcher.js";
 import { buildAlertEvent } from "../alerts/types.js";
+import { renderAlertTemplate } from "../alerts/templates.js";
 import { getAlertChannel, listAlertChannels } from "../alerts/registry.js";
 import { registerBuiltinChannels } from "../alerts/builtins.js";
 
@@ -283,6 +284,7 @@ export function registerAlertsCommand(program: Command): void {
         .command("test")
         .description("Send a test alert to verify channel connectivity")
         .requiredOption("--id <id>", "The alert configuration ID to test")
+        .option("--dry-run", "Print the exact payload and do not call the delivery function")
         .action(async (options) => {
             const id = parseInt(options.id, 10);
             if (isNaN(id)) {
@@ -298,6 +300,28 @@ export function registerAlertsCommand(program: Command): void {
             }
 
             const testEvent = buildTestEvent(config.contract_id, config.threshold_ledgers);
+
+            if (options.dryRun) {
+                if (config.channel_type === "webhook") {
+                    const customMessage = renderAlertTemplate("webhook", testEvent);
+                    let body: string;
+                    if (customMessage !== null) {
+                        body = customMessage;
+                    } else {
+                        body = JSON.stringify(testEvent);
+                    }
+
+                    if (config.webhook_secret) {
+                        const { createHmac } = await import("node:crypto");
+                        const signature = createHmac("sha256", config.webhook_secret).update(body).digest("hex");
+                        console.log(`X-Sorokeep-Signature: sha256=${signature}`);
+                    }
+                    console.log(body);
+                } else {
+                    console.log(JSON.stringify(testEvent));
+                }
+                return;
+            }
 
             console.log(`Sending test alert to ${config.channel_type}:${config.channel_target}...`);
 
