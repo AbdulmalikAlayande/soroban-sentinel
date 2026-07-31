@@ -823,6 +823,55 @@ export function getAlertHistory(db: Database.Database, contractId: string, limit
     ) as AlertHistoryRecord[];
 }
 
+export interface ChannelDeliveryStats {
+    totalAttempts: number;
+    deliveredCount: number;
+    failedCount: number;
+    abandonedCount: number;
+    successRate: number;
+}
+
+export function getChannelDeliveryStats(
+    db: Database.Database,
+    channelType: string,
+    days?: number
+): ChannelDeliveryStats {
+    let sql = `
+        SELECT
+            COUNT(af.id) as totalAttempts,
+            SUM(CASE WHEN af.delivered = 1 THEN 1 ELSE 0 END) as deliveredCount,
+            SUM(CASE WHEN af.delivered = 0 AND af.retry_count >= ? THEN 1 ELSE 0 END) as abandonedCount,
+            SUM(CASE WHEN af.delivered = 0 AND af.retry_count < ? THEN 1 ELSE 0 END) as failedCount
+        FROM alerts_fired af
+        JOIN alert_configs ac ON ac.id = af.alert_config_id
+        WHERE ac.channel_type = ?
+    `;
+    const params: any[] = [MAX_RETRY_COUNT, MAX_RETRY_COUNT, channelType];
+    
+    if (days !== undefined && days > 0) {
+        sql += \` AND af.fired_at >= datetime('now', ?)\`;
+        params.push(\`-\${days} days\`);
+    }
+
+    const row = db.prepare(sql).get(...params) as any;
+
+    if (!row) {
+        return { totalAttempts: 0, deliveredCount: 0, failedCount: 0, abandonedCount: 0, successRate: 0 };
+    }
+
+    const total = row.totalAttempts || 0;
+    const delivered = row.deliveredCount || 0;
+    const successRate = total > 0 ? (delivered / total) * 100 : 0;
+
+    return {
+        totalAttempts: total,
+        deliveredCount: delivered,
+        failedCount: row.failedCount || 0,
+        abandonedCount: row.abandonedCount || 0,
+        successRate: successRate,
+    };
+}
+
 // ---------------------------- Channel Accounts ----------------------------
 
 export interface ChannelAccount {
