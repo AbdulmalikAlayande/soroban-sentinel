@@ -550,6 +550,87 @@ describe("Database Repositories", () => {
             expect(configs[0].channel_type).toBe("matrix");
         });
 
+    describe("Contract Groups", () => {
+        it("creates a group and gets contracts in it", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.insertContract(db, { id: "C2", network: "testnet" });
+
+            const groupId = repo.createGroup(db, { name: "My Fleet" });
+            expect(groupId).toBeGreaterThan(0);
+
+            repo.addContractToGroup(db, { group_id: groupId, contract_id: "C1" });
+            repo.addContractToGroup(db, { group_id: groupId, contract_id: "C2" });
+
+            const contracts = repo.getContractsInGroup(db, groupId);
+            expect(contracts.length).toBe(2);
+            expect(contracts.map(c => c.id).sort()).toEqual(["C1", "C2"]);
+        });
+
+        it("removes a contract from a group", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.insertContract(db, { id: "C2", network: "testnet" });
+
+            const groupId = repo.createGroup(db, { name: "Fleet" });
+            repo.addContractToGroup(db, { group_id: groupId, contract_id: "C1" });
+            repo.addContractToGroup(db, { group_id: groupId, contract_id: "C2" });
+
+            repo.removeContractFromGroup(db, { group_id: groupId, contract_id: "C1" });
+
+            const contracts = repo.getContractsInGroup(db, groupId);
+            expect(contracts.length).toBe(1);
+            expect(contracts[0].id).toBe("C2");
+        });
+
+        it("gets groups for a contract", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+
+            const g1 = repo.createGroup(db, { name: "Group A" });
+            const g2 = repo.createGroup(db, { name: "Group B" });
+
+            repo.addContractToGroup(db, { group_id: g1, contract_id: "C1" });
+            repo.addContractToGroup(db, { group_id: g2, contract_id: "C1" });
+
+            const groups = repo.getGroupsForContract(db, "C1");
+            expect(groups.length).toBe(2);
+            expect(groups.map(g => g.name).sort()).toEqual(["Group A", "Group B"]);
+        });
+
+        it("deleting a contract removes its group memberships (cascade) without deleting the group", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.insertContract(db, { id: "C2", network: "testnet" });
+
+            const groupId = repo.createGroup(db, { name: "Fleet" });
+            repo.addContractToGroup(db, { group_id: groupId, contract_id: "C1" });
+            repo.addContractToGroup(db, { group_id: groupId, contract_id: "C2" });
+
+            repo.deleteContract(db, "C1");
+
+            const contracts = repo.getContractsInGroup(db, groupId);
+            expect(contracts.length).toBe(1);
+            expect(contracts[0].id).toBe("C2");
+        });
+
+        it("deleting a group removes memberships without deleting the underlying contracts", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.insertContract(db, { id: "C2", network: "testnet" });
+
+            const groupId = repo.createGroup(db, { name: "Fleet" });
+            repo.addContractToGroup(db, { group_id: groupId, contract_id: "C1" });
+            repo.addContractToGroup(db, { group_id: groupId, contract_id: "C2" });
+
+            // Delete the group via raw SQL (cascade automatically removes memberships)
+            db.prepare("DELETE FROM contract_groups WHERE id = ?").run(groupId);
+
+            // Both contracts should still exist
+            expect(repo.getContract(db, "C1")).toBeDefined();
+            expect(repo.getContract(db, "C2")).toBeDefined();
+
+            // The group should be empty
+            const contracts = repo.getContractsInGroup(db, groupId);
+            expect(contracts.length).toBe(0);
+        });
+    });
+
         it("crud resource alert configs and records fired", () => {
             repo.insertContract(db, { id: "C1", network: "testnet" });
             repo.insertResourceAlertConfig(db, {

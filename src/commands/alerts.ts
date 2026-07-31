@@ -39,6 +39,14 @@ export function registerAlertsCommand(program: Command): void {
         .option("--threshold <ledgers>", "Threshold in number of ledgers (for TTL-based alerts)", (val) => parseInt(val, 10))
         .option("--cpu-limit <instructions>", "CPU instruction limit for resource alerts (default: 100,000,000)", (val) => parseInt(val, 10))
         .option("--mem-limit <bytes>", "Memory byte limit for resource alerts (default: 50,000,000)", (val) => parseInt(val, 10))
+        .option(
+            "--quiet-hours <start-end>",
+            "Suppress alerts during a maintenance window. Format: HH:MM-HH:MM (24-hour), e.g. '22:00-06:00'. Requires --timezone.",
+        )
+        .option(
+            "--timezone <tz>",
+            "IANA timezone name for --quiet-hours interpretation, e.g. 'America/New_York' or 'UTC'.",
+        )
         .action((options) => {
             const contractId = options.contract;
 
@@ -135,23 +143,55 @@ export function registerAlertsCommand(program: Command): void {
                     process.exit(1);
                 }
 
-                const alertConfigId = insertAlertConfig(db, {
+                // ── Quiet-hours / timezone validation ──────────────────────────
+                let quietHoursStart: string | undefined;
+                let quietHoursEnd: string | undefined;
+                let quietHoursTimezone: string | undefined;
+
+                if (options.quietHours || options.timezone) {
+                    if (!options.quietHours || !options.timezone) {
+                        console.error(chalk.red("Error: --quiet-hours and --timezone must be used together."));
+                        process.exit(1);
+                    }
+
+                    // Validate HH:MM-HH:MM format.
+                    const qhMatch = (options.quietHours as string).match(
+                        /^(\d{2}:\d{2})-(\d{2}:\d{2})$/,
+                    );
+                    if (!qhMatch) {
+                        console.error(chalk.red("Error: --quiet-hours must be in HH:MM-HH:MM format, e.g. '22:00-06:00'."));
+                        process.exit(1);
+                    }
+
+                    // Validate IANA timezone.
+                    try {
+                        new Intl.DateTimeFormat("en-US", { timeZone: options.timezone });
+                    } catch {
+                        console.error(chalk.red(`Error: --timezone '${options.timezone}' is not a valid IANA timezone name.`));
+                        process.exit(1);
+                    }
+
+                    quietHoursStart = qhMatch[1];
+                    quietHoursEnd = qhMatch[2];
+                    quietHoursTimezone = options.timezone as string;
+                }
+
+                insertAlertConfig(db, {
                     contract_id: contractId,
                     channel_type: primaryType,
                     channel_target: primaryTarget,
                     threshold_ledgers: threshold,
                     webhook_secret: webhookSecret,
+                    quiet_hours_start: quietHoursStart,
+                    quiet_hours_end: quietHoursEnd,
+                    quiet_hours_timezone: quietHoursTimezone,
                 });
 
-                for (const addT of additionalTargets) {
-                    addTargetToAlertConfig(db, alertConfigId, addT.type, addT.target);
+                let successMsg = `Successfully added alert config: type=${options.type}, target=${target}, threshold=${threshold} ledgers`;
+                if (quietHoursStart) {
+                    successMsg += `, quiet hours=${quietHoursStart}-${quietHoursEnd} (${quietHoursTimezone})`;
                 }
-
-                console.log(
-                    chalk.green(
-                        `Successfully added alert config: type=${primaryType}, target=${primaryTarget}, threshold=${threshold} ledgers`
-                    )
-                );
+                console.log(chalk.green(successMsg));
 
                 if (webhookSecret) {
                     console.log(`  ${chalk.bold("Webhook secret:")} ${webhookSecret}`);
