@@ -186,7 +186,10 @@ function validateWebhookUrl(webhookUrl: string): void {
         );
     }
 
-    if (!parsed.hostname.includes("webhook.office.com")) {
+    const hostname = parsed.hostname.toLowerCase();
+    const isGenuineTeamsHost = hostname === "webhook.office.com" || hostname.endsWith(".webhook.office.com");
+
+    if (parsed.protocol !== "https:" || !isGenuineTeamsHost) {
         throw new Error(
             `Invalid Teams webhook URL: "${webhookUrl}". ` +
             "Expected a URL like https://<tenant>.webhook.office.com/webhookb2/...",

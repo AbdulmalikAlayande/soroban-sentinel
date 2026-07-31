@@ -73,6 +73,18 @@ export function registerBuiltinChannels(): void {
             supportsSigning: false,
         },
         {
+            name: "teams",
+            channel: {
+                send: async (target, event) => {
+                    const { sendTeamsAlert } = await import("./teams.js");
+                    await sendTeamsAlert(target, event);
+                },
+            },
+            targetOption: "url",
+            missingTargetError: "Error: --url is required when --type is teams. Paste the full Teams webhook URL.",
+            supportsSigning: false,
+        },
+        {
             name: "matrix",
             channel: {
                 send: async (target, event) => {
