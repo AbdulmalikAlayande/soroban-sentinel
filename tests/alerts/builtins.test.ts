@@ -8,6 +8,7 @@ const mockSendPagerDutyAlert = vi.fn().mockResolvedValue(undefined);
 const mockSendDiscordAlert = vi.fn().mockResolvedValue(undefined);
 const mockSendTelegramAlert = vi.fn().mockResolvedValue(undefined);
 const mockSendOpsgenieAlert = vi.fn().mockResolvedValue(undefined);
+const mockSendMatrixAlert = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("../../src/alerts/webhook.js", () => ({
     sendWebhookAlert: (...args: unknown[]) => mockSendWebhookAlert(...args),
@@ -32,6 +33,9 @@ vi.mock("../../src/alerts/telegram.js", () => ({
 vi.mock("../../src/alerts/opsgenie.js", () => ({
     sendOpsgenieAlert: (...args: unknown[]) => mockSendOpsgenieAlert(...args),
 }));
+vi.mock("../../src/alerts/matrix.js", () => ({
+    sendMatrixAlert: (...args: unknown[]) => mockSendMatrixAlert(...args),
+}));
 
 const event = { type: "threshold_crossed", contractId: "C1" } as unknown as AlertEvent;
 
@@ -44,15 +48,15 @@ describe("registerBuiltinChannels", () => {
         registerBuiltinChannels();
     });
 
-    it("registers exactly the six built-in channel names", () => {
+    it("registers exactly the seven built-in channel names", () => {
         const names = listAlertChannels().map((d) => d.name).sort();
-        expect(names).toEqual(["discord", "opsgenie", "pagerduty", "slack", "telegram", "webhook"]);
+        expect(names).toEqual(["discord", "matrix", "opsgenie", "pagerduty", "slack", "telegram", "webhook"]);
     });
 
     it("is idempotent — calling it again does not throw", async () => {
         const { registerBuiltinChannels } = await import("../../src/alerts/builtins");
         expect(() => registerBuiltinChannels()).not.toThrow();
-        expect(listAlertChannels()).toHaveLength(6);
+        expect(listAlertChannels()).toHaveLength(7);
     });
 
     it("only webhook supports HMAC signing", () => {
@@ -68,6 +72,7 @@ describe("registerBuiltinChannels", () => {
         ["discord", "url"],
         ["telegram", "channel"],
         ["opsgenie", "routingKey"],
+        ["matrix", "channel"],
     ] as const)("%s reads its target from --%s", (name, targetOption) => {
         expect(getAlertChannel(name)?.targetOption).toBe(targetOption);
     });
@@ -102,6 +107,11 @@ describe("registerBuiltinChannels", () => {
         expect(mockSendOpsgenieAlert).toHaveBeenCalledWith("opsgenie-api-key", event);
     });
 
+    it("matrix definition delegates to sendMatrixAlert (lazily imported)", async () => {
+        await getAlertChannel("matrix")!.channel.send("!roomid:matrix.org", event);
+        expect(mockSendMatrixAlert).toHaveBeenCalledWith("!roomid:matrix.org", event);
+    });
+
     it("each missingTargetError message matches the historical CLI wording", () => {
         expect(getAlertChannel("webhook")?.missingTargetError).toBe(
             "Error: --url is required when --type is webhook.",
@@ -120,6 +130,9 @@ describe("registerBuiltinChannels", () => {
         );
         expect(getAlertChannel("opsgenie")?.missingTargetError).toBe(
             "Error: --routing-key is required when --type is opsgenie (use your Opsgenie API key).",
+        );
+        expect(getAlertChannel("matrix")?.missingTargetError).toBe(
+            "Error: --channel is required when --type is matrix (use the Matrix room ID).",
         );
     });
 });
