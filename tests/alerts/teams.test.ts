@@ -74,6 +74,22 @@ describe("sendTeamsAlert", () => {
             await expect(sendTeamsAlert("https://example.com/hook", makeAlertEvent())).rejects.toThrow();
             expect(mockFetch).not.toHaveBeenCalled();
         });
+
+        it("rejects a lookalike hostname that merely contains the Teams domain as a substring", async () => {
+            // e.g. "webhook.office.com.evil.com" — a naive `.includes()` check
+            // would incorrectly accept this as a genuine Microsoft host.
+            await expect(
+                sendTeamsAlert("https://x.webhook.office.com.evil.com/webhookb2/abc", makeAlertEvent()),
+            ).rejects.toThrow(/Invalid Teams webhook URL/);
+            expect(mockFetch).not.toHaveBeenCalled();
+        });
+
+        it("rejects a non-https Teams webhook URL", async () => {
+            await expect(
+                sendTeamsAlert("http://contoso.webhook.office.com/webhookb2/abc", makeAlertEvent()),
+            ).rejects.toThrow(/Invalid Teams webhook URL/);
+            expect(mockFetch).not.toHaveBeenCalled();
+        });
     });
 
     describe("Adaptive Card JSON payload structure", () => {
