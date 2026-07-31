@@ -280,7 +280,7 @@ describe("alerts command", () => {
             );
         });
 
-        it("exits with 1 for email type (not implemented)", () => {
+        it("exits with 1 for email type when --channel (recipient address) is missing", () => {
             parseExpectExit([
                 "alerts", "add",
                 "--contract", contractID,
@@ -290,8 +290,23 @@ describe("alerts command", () => {
             ]);
 
             expect(consoleErrorSpy).toHaveBeenCalledWith(
-                expect.stringContaining("not yet implemented")
+                expect.stringContaining("--channel is required")
             );
+        });
+
+        it("registers an email alert config when --channel (recipient address) is provided", () => {
+            parse([
+                "alerts", "add",
+                "--contract", contractID,
+                "--type", "email",
+                "--channel", "ops@example.com",
+                "--threshold", "1000",
+            ]);
+
+            const configs = getAlertConfigsForContract(mockDb, contractID);
+            expect(configs).toHaveLength(1);
+            expect(configs[0]!.channel_type).toBe("email");
+            expect(configs[0]!.channel_target).toBe("ops@example.com");
         });
 
         it("exits with 1 for an unknown channel type", () => {
