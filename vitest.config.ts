@@ -6,6 +6,15 @@ export default defineConfig({
     environment: "node",
     pool: "forks",
     include: ["tests/**/*.test.ts", "src/**/*.test.ts"],
+    include: ["tests/**/*.test.ts"],
+    server: {
+      deps: {
+        inline: ["./scripts/generate-man.ts"],
+      },
+    },
+    typecheck: {
+      tsconfig: "./tsconfig.test.json",
+    },
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],

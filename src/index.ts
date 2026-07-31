@@ -1,25 +1,6 @@
 #!/usr/bin/env node
-import { Command } from "commander";
 import { initLogger } from "./logging/index.js";
-import { registerAlertChannel } from "./alerts/registry.js";
-import { registerWatchCommand } from "./commands/watch.js";
-import { registerStatusCommand } from "./commands/status.js";
-import { registerCheckCommand } from "./commands/check.js";
-import { registerDaemonCommand } from "./commands/daemon.js";
-import { registerAlertsCommand } from "./commands/alerts.js";
-import { registerGuardCommand } from "./commands/guard.js";
-import { registerCostsCommand } from "./commands/costs.js";
-import { registerResourcesCommand } from "./commands/resources.js";
-import { registerRestoreCommand } from "./commands/restore.js";
-import { registerChannelsCommand } from "./commands/channels.js";
-import { registerMcpCommand } from "./commands/mcp.js";
-import { registerHistoryCommand } from "./commands/history.js";
-import { registerCompletionCommand } from "./commands/completion.js";
-import { registerInspectCommand } from "./commands/inspect.js";
-import { registerBudgetCommand } from "./commands/budget.js";
-import { registerDbCommand } from "./commands/db.js";
-import { registerPauseCommand } from "./commands/pause.js";
-import { registerResumeCommand } from "./commands/resume.js";
+import { createProgram } from "./cli/program.js";
 
 type ChannelPluginRegistration = (register: typeof registerAlertChannel) => void | Promise<void>;
 
@@ -59,67 +40,10 @@ async function loadChannelPlugin(packageName: string): Promise<void> {
 
 initLogger({ mode: "cli" });
 
-const program = new Command();
-let channelPluginsLoaded = false;
+const program = createProgram();
+program.parse(process.argv);
 
-program
-  .name("sorokeep")
-  .description(
-    "Sorokeep — The missing operations layer for deployed Soroban smart contracts",
-  )
-  .version("0.1.2")
-  .option(
-    "--channel-plugin <package>",
-    "Load an external npm package that registers an alert channel",
-    collectRepeatedOption,
-    [],
-  );
-
-program.hook("preAction", async (_thisCommand, actionCommand) => {
-  if (channelPluginsLoaded) {
-    return;
-  }
-
-  const channelPlugins = normalizeChannelPlugins(
-    actionCommand.optsWithGlobals().channelPlugin,
-  );
-
-  if (channelPlugins.length === 0) {
-    channelPluginsLoaded = true;
-    return;
-  }
-
-  for (const channelPlugin of channelPlugins) {
-    try {
-      await loadChannelPlugin(channelPlugin);
-    } catch (error: unknown) {
-      console.error(
-        `Failed to load channel plugin "${channelPlugin}": ${formatErrorMessage(error)}`,
-      );
-      process.exit(1);
-    }
-  }
-
-  channelPluginsLoaded = true;
-});
-
-registerWatchCommand(program);
-registerStatusCommand(program);
-registerCheckCommand(program);
-registerDaemonCommand(program);
-registerAlertsCommand(program);
-registerGuardCommand(program);
-registerCostsCommand(program);
-registerResourcesCommand(program);
-registerRestoreCommand(program);
-registerChannelsCommand(program);
-registerMcpCommand(program);
-registerHistoryCommand(program);
-registerCompletionCommand(program);
-registerInspectCommand(program);
-registerBudgetCommand(program);
-registerDbCommand(program);
-registerPauseCommand(program);
-registerResumeCommand(program);
-
-await program.parseAsync(process.argv);
+const opts = program.opts();
+if (opts.extensionJitterMs) {
+    process.env.EXTENSION_JITTER_MS = opts.extensionJitterMs.toString();
+}
