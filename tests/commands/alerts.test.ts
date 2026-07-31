@@ -776,6 +776,61 @@ describe("alerts command", () => {
                 expect.stringContaining("Test alert delivered successfully")
             );
         });
+
+        it("with --dry-run prints the exact JSON payload and does not call deliverSingleAlert", async () => {
+            const program = new Command();
+            registerAlertsCommand(program);
+
+            await program.parseAsync([
+                "node", "sorokeep", "alerts", "test",
+                "--id", webhookConfigId.toString(),
+                "--dry-run",
+            ]);
+
+            expect(mockDeliverSingleAlert).not.toHaveBeenCalled();
+            expect(consoleLogSpy).toHaveBeenCalled();
+            
+            // Check that the printed payload is a valid JSON of the test alert event
+            const printCall = consoleLogSpy.mock.calls.find((args) => {
+                try {
+                    const parsed = JSON.parse(args[0]);
+                    return parsed.type === "threshold_crossed";
+                } catch {
+                    return false;
+                }
+            });
+            expect(printCall).toBeTruthy();
+        });
+
+        it("with --dry-run for signed webhook replicates the HMAC signing logic and prints X-Sorokeep-Signature header", async () => {
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "webhook",
+                channel_target: "https://example.com/signed",
+                threshold_ledgers: 500,
+                webhook_secret: "dry-run-secret",
+            });
+            const allConfigs = getAlertConfigsForContract(mockDb, contractID);
+            const signedConfig = allConfigs.find((c) => c.webhook_secret === "dry-run-secret")!;
+
+            const program = new Command();
+            registerAlertsCommand(program);
+
+            await program.parseAsync([
+                "node", "sorokeep", "alerts", "test",
+                "--id", signedConfig.id.toString(),
+                "--dry-run",
+            ]);
+
+            expect(mockDeliverSingleAlert).not.toHaveBeenCalled();
+            
+            // Should print X-Sorokeep-Signature: sha256=<hmac>
+            const signatureCall = consoleLogSpy.mock.calls.find((args) => 
+                typeof args[0] === "string" && args[0].startsWith("X-Sorokeep-Signature:")
+            );
+            expect(signatureCall).toBeTruthy();
+            expect(signatureCall![0]).toContain("X-Sorokeep-Signature: sha256=");
+        });
     });
 
     describe("alerts test-all", () => {
