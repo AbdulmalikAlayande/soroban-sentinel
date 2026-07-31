@@ -26,7 +26,7 @@ export function registerRestoreCommand(program: Command): void {
                 if (!contract) {
                     if (options.json) {
                         printOutput({ success: false, error: "contract_not_found", contractId }, true);
-                        process.exit(1);
+                        process.exitCode = 1;
                         return;
                     }
                     console.error(chalk.red(`Contract ${formatContractID(contractId)} not found. Run 'sorokeep watch' first.`));
@@ -40,7 +40,7 @@ export function registerRestoreCommand(program: Command): void {
                     if (!secretKey) {
                         if (options.json) {
                             printOutput({ success: false, error: "missing_keypair_env", contractId, keypairEnv: options.keypairEnv }, true);
-                            process.exit(1);
+                            process.exitCode = 1;
                             return;
                         }
                         console.error(chalk.red(`Environment variable ${options.keypairEnv} is not set`));
@@ -53,7 +53,7 @@ export function registerRestoreCommand(program: Command): void {
                 if (!secretKey) {
                     if (options.json) {
                         printOutput({ success: false, error: "missing_keypair", contractId }, true);
-                        process.exit(1);
+                        process.exitCode = 1;
                         return;
                     }
                     console.error(chalk.red("--keypair or --keypair-env is required for restoration"));
@@ -65,7 +65,7 @@ export function registerRestoreCommand(program: Command): void {
                 if (options.all && options.entry && options.entry.length > 0) {
                     if (options.json) {
                         printOutput({ success: false, error: "invalid_selection", contractId, message: "Use either --entry <keyXdr> or --all, not both" }, true);
-                        process.exit(1);
+                        process.exitCode = 1;
                         return;
                     }
                     console.error(chalk.red("Use either --entry <keyXdr> or --all, not both"));
@@ -80,7 +80,7 @@ export function registerRestoreCommand(program: Command): void {
                 } else {
                     if (options.json) {
                         printOutput({ success: false, error: "missing_selection", contractId, message: "Specify --entry <keyXdr> or --all to select entries to restore" }, true);
-                        process.exit(1);
+                        process.exitCode = 1;
                         return;
                     }
                     console.error(chalk.red("Specify --entry <keyXdr> or --all to select entries to restore"));
@@ -106,7 +106,7 @@ export function registerRestoreCommand(program: Command): void {
                         entryCount: entryKeys.length,
                     }, true);
                     if (!result.success) {
-                        process.exit(1);
+                        process.exitCode = 1;
                     }
                     return;
                 }
@@ -135,7 +135,7 @@ export function registerRestoreCommand(program: Command): void {
                 logger.error("Restore command failed", { error: msg });
                 if (options.json) {
                     printOutput({ success: false, error: msg, contractId }, true);
-                    process.exit(1);
+                    process.exitCode = 1;
                     return;
                 }
                 console.error(chalk.red(`Error: ${msg}`));

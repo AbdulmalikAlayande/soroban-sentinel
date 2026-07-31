@@ -29,7 +29,7 @@ export function registerInspectCommand(program: Command): void {
                 if (!result.success) {
                     if (options.json) {
                         printOutput({ success: false, error: result.error, contractId }, true);
-                        process.exit(1);
+                        process.exitCode = 1;
                         return;
                     }
                     spinner.fail(chalk.red("Inspection failed"));
@@ -95,7 +95,7 @@ export function registerInspectCommand(program: Command): void {
                 const msg = error instanceof Error ? error.message : String(error);
                 if (options.json) {
                     printOutput({ success: false, error: msg, contractId }, true);
-                    process.exit(1);
+                    process.exitCode = 1;
                     return;
                 }
                 spinner.fail(chalk.red("Error"));

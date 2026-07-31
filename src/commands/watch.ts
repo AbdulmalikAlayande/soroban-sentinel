@@ -82,7 +82,7 @@ export const registerWatchCommand = (program: Command): void => {
               results,
             }, true);
             if (results.some((result) => result.status === "FAILED")) {
-              process.exit(1);
+              process.exitCode = 1;
             }
             return;
           }
@@ -102,7 +102,7 @@ export const registerWatchCommand = (program: Command): void => {
               error: "contract_id_required",
               message: "A contract ID is required unless --from-file is provided.",
             }, true);
-            process.exit(1);
+            process.exitCode = 1;
             return;
           }
 
@@ -116,9 +116,11 @@ export const registerWatchCommand = (program: Command): void => {
         }
 
         const displayId = formatContractID(contractId);
-        const spinner = ora(
-          `Registering contract ${formatContractID(contractId)} and discovering entries...`,
-        ).start();
+        const spinner = !options.json
+          ? ora(
+              `Registering contract ${formatContractID(contractId)} and discovering entries...`,
+            ).start()
+          : undefined;
         const watchResult = await watchContract(db, {
           contractId,
           network: options.network,
@@ -130,11 +132,11 @@ export const registerWatchCommand = (program: Command): void => {
         if (!watchResult.success) {
           if (options.json) {
             printOutput({ success: false, error: watchResult.error, contractId, network: options.network }, true);
-            process.exit(1);
+            process.exitCode = 1;
             return;
           }
 
-          spinner.fail(chalk.red(watchResult.error));
+          spinner?.fail(chalk.red(watchResult.error));
           process.exit(1);
           return;
         }
@@ -147,7 +149,7 @@ export const registerWatchCommand = (program: Command): void => {
           }, true);
           return;
         }
-        spinner.succeed(
+        spinner?.succeed(
           chalk.green(
             `Contract ${options.name || displayId} registered successfully.`,
           ),
@@ -201,7 +203,7 @@ export const registerWatchCommand = (program: Command): void => {
         logger.error("Watch command failed", { error: errorMessage });
         if (options.json) {
           printOutput({ success: false, error: errorMessage, message: "Failed to watch contract" }, true);
-          process.exit(1);
+          process.exitCode = 1;
           return;
         }
         console.log(chalk.red(`Failed to watch contract: ${errorMessage}`));
