@@ -27,6 +27,12 @@ export function createProgram() {
       "Sorokeep — The missing operations layer for deployed Soroban smart contracts",
     )
     .version("0.1.2")
+    .option(
+      "--channel-plugin <package>",
+      "Load an external npm package that registers additional alert channels",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [],
+    )
     .option("--extension-jitter-ms <ms>", "Jitter window in ms applied to extension submissions", parseInt);
 
   registerWatchCommand(program);

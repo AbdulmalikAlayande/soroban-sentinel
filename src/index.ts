@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { initLogger } from "./logging/index.js";
+import { registerAlertChannel } from "./alerts/registry.js";
 import { createProgram } from "./cli/program.js";
 
 type ChannelPluginRegistration = (register: typeof registerAlertChannel) => void | Promise<void>;
@@ -41,9 +42,30 @@ async function loadChannelPlugin(packageName: string): Promise<void> {
 initLogger({ mode: "cli" });
 
 const program = createProgram();
-program.parse(process.argv);
+const loadedChannelPlugins = new Set<string>();
 
-const opts = program.opts();
-if (opts.extensionJitterMs) {
+program.hook("preAction", async () => {
+  const opts = program.opts();
+
+  if (opts.extensionJitterMs) {
     process.env.EXTENSION_JITTER_MS = opts.extensionJitterMs.toString();
-}
+  }
+
+  for (const packageName of normalizeChannelPlugins(opts.channelPlugin)) {
+    if (loadedChannelPlugins.has(packageName)) {
+      continue;
+    }
+
+    try {
+      await loadChannelPlugin(packageName);
+      loadedChannelPlugins.add(packageName);
+    } catch (error) {
+      console.error(
+        `Failed to load channel plugin "${packageName}": ${formatErrorMessage(error)}`,
+      );
+      process.exit(1);
+    }
+  }
+});
+
+await program.parseAsync(process.argv);
