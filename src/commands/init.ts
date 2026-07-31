@@ -39,8 +39,8 @@ export function registerInitCommand(program: Command): void {
         const channelTarget = options.channelTarget;
 
         const guardEnabled = options.guardEnabled ? true : options.guardDisabled ? false : true;
-        const guardTargetTtlLedgers = options.targetTtl ? Number(options.targetTtl) : undefined;
-        const guardThresholdLedgers = options.threshold ? Number(options.threshold) : undefined;
+        const guardTargetTtlLedgers = options.targetTtl === undefined ? undefined : Number(options.targetTtl);
+        const guardThresholdLedgers = options.threshold === undefined ? undefined : Number(options.threshold);
 
         if (nonInteractive) {
           if (!contractId || !channelType || !channelTarget) {
@@ -88,7 +88,9 @@ export function registerInitCommand(program: Command): void {
           const availableChannels = listAlertChannels().map((channel) => channel.name).join(", ");
           const resolvedChannelType = channelType || (await rl.question(`Alert channel type [${availableChannels}]: `));
           const resolvedChannelTarget = channelTarget || (await rl.question("Channel target: "));
-          const enableGuard = guardEnabled || normalizeYesNo(await rl.question("Enable auto-extension guard? [Y/n]: "), true);
+          const enableGuard = options.guardEnabled || options.guardDisabled
+            ? guardEnabled
+            : normalizeYesNo(await rl.question("Enable auto-extension guard? [Y/n]: "), true);
           const resolvedTargetTtlLedgers = guardTargetTtlLedgers ?? Number(await rl.question("Guard target TTL in ledgers [100000]: ") || 100000);
           const resolvedThresholdLedgers = guardThresholdLedgers ?? Number(await rl.question("Guard threshold in ledgers [20000]: ") || 20000);
 

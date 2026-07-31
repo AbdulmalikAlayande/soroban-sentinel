@@ -61,6 +61,24 @@ export async function runInitWizard(answers: InitAnswers): Promise<InitResult> {
     };
   }
 
+  const targetTtlLedgers = answers.guardTargetTtlLedgers ?? 100_000;
+  const thresholdLedgers = answers.guardThresholdLedgers ?? 20_000;
+  const isPositiveInteger = (value: number): boolean => Number.isSafeInteger(value) && value > 0;
+  if (!isPositiveInteger(targetTtlLedgers) || !isPositiveInteger(thresholdLedgers)) {
+    return {
+      success: false,
+      contractId,
+      error: "Guard target and threshold values must be positive integers.",
+    };
+  }
+  if (thresholdLedgers >= targetTtlLedgers) {
+    return {
+      success: false,
+      contractId,
+      error: "Guard threshold must be less than the target TTL.",
+    };
+  }
+
   const db = getDatabase();
   const watchResult = await watchContract(db, {
     contractId,
@@ -74,16 +92,6 @@ export async function runInitWizard(answers: InitAnswers): Promise<InitResult> {
       success: false,
       contractId,
       error: watchResult.error,
-    };
-  }
-
-  const targetTtlLedgers = answers.guardTargetTtlLedgers ?? 100_000;
-  const thresholdLedgers = answers.guardThresholdLedgers ?? 20_000;
-  if (targetTtlLedgers <= 0 || thresholdLedgers <= 0) {
-    return {
-      success: false,
-      contractId,
-      error: "Guard target and threshold values must be positive integers.",
     };
   }
 

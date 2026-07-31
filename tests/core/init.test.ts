@@ -9,11 +9,12 @@ import * as dbModule from "../../src/db/database";
 describe("runInitWizard", () => {
   const contractId = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
   let db: Database.Database;
+  let watchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     db = getDatabaseForTesting();
     vi.spyOn(dbModule, "getDatabase").mockReturnValue(db);
-    vi.spyOn(watchCore, "watchContract").mockImplementation(async (_db, options) => {
+    watchSpy = vi.spyOn(watchCore, "watchContract").mockImplementation(async (_db, options) => {
       insertContract(db, {
         id: options.contractId,
         name: options.name ?? "sample-contract",
@@ -93,5 +94,40 @@ describe("runInitWizard", () => {
     expect(getContract(db, "bad-contract-id")).toBeUndefined();
     expect(getAlertConfigsForContract(db, "bad-contract-id")).toEqual([]);
     expect(getExtensionPolicy(db, "bad-contract-id")).toBeUndefined();
+  });
+
+  it("rejects non-integer guard values before watching the contract", async () => {
+    const result = await runInitWizard({
+      contractId,
+      network: "testnet",
+      channelType: "slack",
+      channelTarget: "#alerts",
+      guardEnabled: true,
+      guardTargetTtlLedgers: NaN,
+      guardThresholdLedgers: 20000,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("positive integers");
+    expect(watchSpy).not.toHaveBeenCalled();
+    expect(getContract(db, contractId)).toBeUndefined();
+    expect(getExtensionPolicy(db, contractId)).toBeUndefined();
+  });
+
+  it("rejects a guard threshold equal to or above the target TTL", async () => {
+    const result = await runInitWizard({
+      contractId,
+      network: "testnet",
+      channelType: "slack",
+      channelTarget: "#alerts",
+      guardEnabled: true,
+      guardTargetTtlLedgers: 1000,
+      guardThresholdLedgers: 1000,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("must be less than");
+    expect(watchSpy).not.toHaveBeenCalled();
+    expect(getExtensionPolicy(db, contractId)).toBeUndefined();
   });
 });
