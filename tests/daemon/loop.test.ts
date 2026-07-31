@@ -111,6 +111,104 @@ describe("daemon loop", () => {
             expect(mockVacuumDatabase).toHaveBeenCalledTimes(2);
         });
 
+        it("handles forward system clock jumps without vacuuming on every tick", async () => {
+            // Simulate a system clock jump (DST, NTP correction, or wake from suspend)
+            // where the clock suddenly jumps forward by a large amount.
+            // The vacuum check uses Date.now() - lastVacuumAt, so a forward jump
+            // should cause the next vacuum to fire immediately (since enough time
+            // has "passed" according to the clock), but NOT on every subsequent tick.
+            
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+            mockVacuumDatabase.mockReturnValue(true);
+
+            const tickMs = 5000;
+            const vacuumIntervalMs = 20000;
+
+            // Start at a known time
+            vi.setSystemTime(1000000);
+            
+            await startDaemon(db, "testnet", { intervalMs: tickMs, vacuumIntervalMs });
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(0);
+
+            // Advance to the first vacuum (20s elapsed)
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(1);
+
+            // Now simulate a large forward clock jump (e.g., system woke from suspend
+            // after 2 hours). Set system time forward by 2 hours.
+            const currentTime = Date.now();
+            const clockJumpMs = 2 * 60 * 60 * 1000; // 2 hours
+            vi.setSystemTime(currentTime + clockJumpMs);
+
+            // Advance one tick — the vacuum should fire because 
+            // Date.now() - lastVacuumAt is now 2+ hours, which is >= vacuumIntervalMs
+            await vi.advanceTimersByTimeAsync(tickMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(2);
+
+            // BUT — the next tick should NOT vacuum again, because lastVacuumAt
+            // was updated when vacuum ran. Advance another tick (5s).
+            await vi.advanceTimersByTimeAsync(tickMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(2); // still 2
+
+            // Advance the remaining interval to verify normal behavior resumes
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs - tickMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(3);
+        });
+
+        it("handles backward system clock jumps without skipping vacuum indefinitely", async () => {
+            // Simulate a backward clock jump (manual clock adjustment, NTP correction).
+            // The vacuum check uses Date.now() - lastVacuumAt, so if the clock jumps
+            // backward, lastVacuumAt could be in the "future" relative to Date.now(),
+            // causing Date.now() - lastVacuumAt to be negative or very small.
+            // We want to verify that vacuum doesn't get skipped forever.
+            
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+            mockVacuumDatabase.mockReturnValue(true);
+
+            const tickMs = 5000;
+            const vacuumIntervalMs = 20000;
+
+            // Start at a known time
+            vi.setSystemTime(2000000);
+            
+            await startDaemon(db, "testnet", { intervalMs: tickMs, vacuumIntervalMs });
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(0);
+
+            // Advance to the first vacuum (20s elapsed)
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(1);
+
+            // Now simulate a backward clock jump (e.g., clock was wrong and gets corrected).
+            // Jump back by 1 hour.
+            const currentTime = Date.now();
+            const clockJumpMs = -1 * 60 * 60 * 1000; // -1 hour
+            vi.setSystemTime(currentTime + clockJumpMs);
+
+            // After a backward jump, Date.now() - lastVacuumAt will be negative
+            // (lastVacuumAt is now in the "future"). The current implementation
+            // will skip vacuum until the clock catches up to lastVacuumAt + vacuumIntervalMs.
+            
+            // Advance several ticks — vacuum should NOT fire yet because
+            // Date.now() - lastVacuumAt < vacuumIntervalMs (it's negative).
+            await vi.advanceTimersByTimeAsync(tickMs);
+            await vi.advanceTimersByTimeAsync(tickMs);
+            await vi.advanceTimersByTimeAsync(tickMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(1); // still 1
+
+            // Now advance the clock enough to catch up past the backward jump
+            // plus the vacuum interval. We need to advance by:
+            // (1 hour to catch up) + (20s vacuum interval)
+            const catchUpMs = Math.abs(clockJumpMs) + vacuumIntervalMs;
+            await vi.advanceTimersByTimeAsync(catchUpMs);
+            
+            // Vacuum should have fired at some point during this advancement
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(2);
+
+            // Verify normal behavior resumes
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(3);
+        });
+
         it("skips scheduled vacuum when the database is already in a transaction", async () => {
             mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
             mockVacuumDatabase.mockReturnValue(true);
