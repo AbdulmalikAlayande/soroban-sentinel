@@ -10,6 +10,7 @@ import {
     insertResourceAlertConfig,
     getContract,
     getAlertHistory,
+    getChannelDeliveryStats,
 } from "../db/repositories.js";
 import { formatContractID, formatTimeToCloseLedger } from "../utils/formatting.js";
 import { deliverSingleAlert } from "../alerts/dispatcher.js";
@@ -442,6 +443,33 @@ export function registerAlertsCommand(program: Command): void {
                     console.log(chalk.dim(`    Resolved: ${record.resolvedAt}`));
                 }
             }
+            console.log();
+        });
+
+    // ── alerts stats ───────────────────────────────────────────────────
+    alerts
+        .command("stats")
+        .description("View delivery stats and success rates for an alert channel")
+        .requiredOption("--type <type>", "The notification channel type (e.g., webhook, slack)")
+        .option("--days <days>", "Number of days to look back (default: all time)", (val) => parseInt(val, 10))
+        .action((options) => {
+            const db = getDatabase();
+
+            const stats = getChannelDeliveryStats(db, options.type, options.days);
+
+            console.log(`\n${chalk.bold("Delivery Stats")} — ${chalk.cyan(options.type)}`);
+            if (options.days) {
+                console.log(chalk.dim(`Over the last ${options.days} days`));
+            }
+            console.log();
+            console.log(`  Total Attempts: ${stats.totalAttempts}`);
+            console.log(`  Delivered:      ${chalk.green(stats.deliveredCount)}`);
+            console.log(`  Failed:         ${chalk.yellow(stats.failedCount)}`);
+            console.log(`  Abandoned:      ${chalk.red(stats.abandonedCount)}`);
+            console.log();
+
+            const rateColor = stats.successRate >= 90 ? chalk.green : (stats.successRate >= 50 ? chalk.yellow : chalk.red);
+            console.log(`  Success Rate:   ${rateColor(stats.successRate.toFixed(1))}%`);
             console.log();
         });
 }
