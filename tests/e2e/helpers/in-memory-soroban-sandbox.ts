@@ -37,9 +37,14 @@ export class InMemorySorobanSandbox {
 
     latestLedger: number;
     rpcUrl = "";
+    private failureRate = 0;
 
     private constructor(initialLedger: number) {
         this.latestLedger = initialLedger;
+    }
+
+    setFailureRate(rate: number): void {
+        this.failureRate = Math.max(0, Math.min(1, rate));
     }
 
     static async start(options?: { initialLedger?: number }): Promise<InMemorySorobanSandbox> {
@@ -179,6 +184,9 @@ export class InMemorySorobanSandbox {
     }
 
     private getLedgerEntries(keyXdrs: string[]): unknown {
+        if (Math.random() < this.failureRate) {
+            throw new Error("Injected RPC failure (chaos test)");
+        }
         const entries = keyXdrs.flatMap((keyXdr) => {
             const key = xdr.LedgerKey.fromXDR(keyXdr, "base64");
 
