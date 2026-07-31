@@ -11,7 +11,7 @@ export function registerDoctorCommand(program: Command): void {
 
             for (const result of results) {
                 const prefix = result.status === "ok" ? chalk.green("PASS") : result.status === "warn" ? chalk.yellow("WARN") : chalk.red("FAIL");
-                console.log("${prefix} ${result.check}: ${result.detail}");
+                console.log(`${prefix} ${result.check}: ${result.detail}`);
             }
 
             const hasFailure = results.some((result) => result.status === "fail");

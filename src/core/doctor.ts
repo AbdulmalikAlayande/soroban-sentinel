@@ -1,19 +1,14 @@
-import os from "node:os";
 import fs from "node:fs";
-import path from "node:path";
 import { getDatabase } from "../db/database.js";
 import { getAlertConfigsForContract, getAllContracts } from "../db/repositories.js";
 import { StellarRpcClient } from "../rpc/client.js";
 import { listAlertChannels } from "../alerts/registry.js";
+import { getSorokeepDir } from "../utils/config.js";
 
 export interface DiagnosticResult {
     check: string;
     status: "ok" | "warn" | "fail";
     detail: string;
-}
-
-function getDataDirectory(): string {
-    return path.join(os.homedir(), ".sorokeep");
 }
 
 function getRequiredCredentialEnvVar(channelType: string): string | undefined {
@@ -34,10 +29,10 @@ export async function runDiagnostics(): Promise<DiagnosticResult[]> {
     results.push({
         check: "node version",
         status: "ok",
-        detail: "Node.js ${nodeVersion}",
+        detail: `Node.js ${nodeVersion}`,
     });
 
-    const dataDir = getDataDirectory();
+    const dataDir = getSorokeepDir();
     try {
         if (!fs.existsSync(dataDir)) {
             fs.mkdirSync(dataDir, { recursive: true });
@@ -46,13 +41,13 @@ export async function runDiagnostics(): Promise<DiagnosticResult[]> {
         results.push({
             check: "data directory",
             status: "ok",
-            detail: "Writable: ${dataDir}",
+            detail: `Writable: ${dataDir}`,
         });
     } catch (error: unknown) {
         results.push({
             check: "data directory",
             status: "fail",
-            detail: "Unable to write to ${dataDir}: ${error instanceof Error ? error.message : String(error)}",
+            detail: `Unable to write to ${dataDir}: ${error instanceof Error ? error.message : String(error)}`,
         });
     }
 
@@ -84,7 +79,7 @@ export async function runDiagnostics(): Promise<DiagnosticResult[]> {
         results.push({
             check: "rpc reachability",
             status: "fail",
-            detail: "RPC check failed: ${error instanceof Error ? error.message : String(error)}",
+            detail: `RPC check failed: ${error instanceof Error ? error.message : String(error)}`,
         });
     }
 
@@ -103,7 +98,7 @@ export async function runDiagnostics(): Promise<DiagnosticResult[]> {
                 continue;
             }
             if (!process.env[envVar]) {
-                credentialWarnings.push("${config.channel_type} (${contract.id}) -> ${envVar}");
+                credentialWarnings.push(`${config.channel_type} (${contract.id}) -> ${envVar}`);
             }
         }
     }
@@ -112,7 +107,7 @@ export async function runDiagnostics(): Promise<DiagnosticResult[]> {
         results.push({
             check: "alert-channel credentials",
             status: "warn",
-            detail: "Missing env vars: ${credentialWarnings.join(", ")}",
+            detail: `Missing env vars: ${credentialWarnings.join(", ")}`,
         });
     } else {
         results.push({

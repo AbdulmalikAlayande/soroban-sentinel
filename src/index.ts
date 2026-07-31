@@ -28,7 +28,7 @@ const program = new Command();
 program
   .name("sorokeep")
   .description(
-    "Sorokeep - The missing operations layer for deployed Soroban smart contracts",
+    "Sorokeep — The missing operations layer for deployed Soroban smart contracts",
   )
   .version("0.1.2")
   .option("--extension-jitter-ms <ms>", "Jitter window in ms applied to extension submissions", parseInt);
