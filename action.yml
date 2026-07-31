@@ -34,6 +34,22 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Resolve project root
+      id: project-root
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -f "${{ github.action_path }}/package-lock.json" ]; then
+          echo "root=${{ github.action_path }}" >> "$GITHUB_OUTPUT"
+        elif [ -f "${{ github.workspace }}/package-lock.json" ]; then
+          echo "root=${{ github.workspace }}" >> "$GITHUB_OUTPUT"
+        else
+          echo "::error title=Sorokeep setup failed::Could not find package-lock.json in the action directory or the workspace."
+          echo "action_path=${{ github.action_path }}"
+          echo "workspace=${{ github.workspace }}"
+          exit 1
+        fi
+
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
@@ -42,12 +58,12 @@ runs:
     - name: Install dependencies
       shell: bash
       run: npm ci
-      working-directory: ${{ github.action_path }}
+      working-directory: ${{ steps.project-root.outputs.root }}
 
     - name: Build sorokeep
       shell: bash
       run: npm run build
-      working-directory: ${{ github.action_path }}
+      working-directory: ${{ steps.project-root.outputs.root }}
 
     - name: Run TTL check
       id: ttl-check
@@ -57,5 +73,5 @@ runs:
         SOROKEEP_NETWORK: ${{ inputs.network }}
         SOROKEEP_THRESHOLD: ${{ inputs.threshold }}
         SOROKEEP_RPC_URL: ${{ inputs.rpc-url }}
-        GITHUB_ACTION_PATH: ${{ github.action_path }}
-      run: ${{ github.action_path }}/action/entrypoint.sh
+        SOROKEEP_PROJECT_ROOT: ${{ steps.project-root.outputs.root }}
+      run: ${{ steps.project-root.outputs.root }}/action/entrypoint.sh

@@ -7,7 +7,7 @@ CONTRACT_ID="${SOROKEEP_CONTRACT_ID}"
 NETWORK="${SOROKEEP_NETWORK:-testnet}"
 THRESHOLD="${SOROKEEP_THRESHOLD:-500}"
 RPC_URL="${SOROKEEP_RPC_URL:-}"
-ACTION_PATH="${GITHUB_ACTION_PATH:-.}"
+PROJECT_ROOT="${SOROKEEP_PROJECT_ROOT:-${GITHUB_ACTION_PATH:-.}}"
 
 ARGS=("${CONTRACT_ID}" --network "${NETWORK}" --threshold "${THRESHOLD}" --json)
 if [ -n "${RPC_URL}" ]; then
@@ -18,7 +18,7 @@ echo "::group::Sorokeep TTL check — contract ${CONTRACT_ID} on ${NETWORK} (thr
 
 # Run check; capture output and exit code without aborting on failure.
 set +e
-CHECK_JSON=$(node "${ACTION_PATH}/dist/index.js" check "${ARGS[@]}")
+CHECK_JSON=$(node "${PROJECT_ROOT}/dist/index.js" check "${ARGS[@]}")
 CHECK_EXIT=$?
 set -e
 
