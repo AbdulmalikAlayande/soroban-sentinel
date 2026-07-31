@@ -64,6 +64,37 @@ export function registerBuiltinChannels(): void {
             missingTargetError: "Error: --channel is required when --type is telegram (use chat ID or @channelname).",
             supportsSigning: false,
         },
+        {
+            name: "opsgenie",
+            channel: { send: (target, event) => sendOpsgenieAlert(target, event) },
+            targetOption: "routingKey",
+            missingTargetError: "Error: --routing-key is required when --type is opsgenie (use your Opsgenie API key).",
+            supportsSigning: false,
+        },
+        {
+            name: "teams",
+            channel: {
+                send: async (target, event) => {
+                    const { sendTeamsAlert } = await import("./teams.js");
+                    await sendTeamsAlert(target, event);
+                },
+            },
+            targetOption: "url",
+            missingTargetError: "Error: --url is required when --type is teams. Paste the full Teams webhook URL.",
+            supportsSigning: false,
+        },
+        {
+            name: "matrix",
+            channel: {
+                send: async (target, event) => {
+                    const { sendMatrixAlert } = await import("./matrix.js");
+                    await sendMatrixAlert(target, event);
+                },
+            },
+            targetOption: "channel",
+            missingTargetError: "Error: --channel is required when --type is matrix (use the Matrix room ID).",
+            supportsSigning: false,
+        },
     ];
 
     for (const def of definitions) {
