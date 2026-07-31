@@ -130,6 +130,93 @@ describe("daemon loop", () => {
             await vi.advanceTimersByTimeAsync(5000);
             expect(mockVacuumDatabase).toHaveBeenCalledTimes(1);
         });
+
+        it("does not update lastVacuumAt when vacuum is skipped due to an active transaction, so the next tick retries immediately", async () => {
+            // Use a vacuum interval much larger than the tick interval so we can
+            // observe whether lastVacuumAt was updated or not by checking if
+            // vacuum fires on the very next tick after the transaction ends.
+            const vacuumIntervalMs = 20000;
+            const tickMs = 5000;
+
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+            mockVacuumDatabase.mockReturnValue(true);
+
+            await startDaemon(db, "testnet", { intervalMs: tickMs, vacuumIntervalMs });
+
+            // Advance until the first vacuum fires (at Date.now() === vacuumIntervalMs).
+            // Ticks at 5s, 10s, 15s — none fire vacuum (not enough elapsed).
+            // Tick at 20s — fires the first vacuum.
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(1);
+            expect(mockDaemonLogger.info).toHaveBeenCalledWith(
+                "Scheduled maintenance: database vacuum completed",
+            );
+
+            // Now open an explicit transaction to force a skip.
+            db.exec("BEGIN IMMEDIATE");
+            expect(db.inTransaction).toBe(true);
+
+            // Advance another full vacuum interval — the vacuum check should run
+            // but be skipped because of the active transaction, WITHOUT updating
+            // lastVacuumAt.
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(1); // still 1 — skipped
+            expect(mockDaemonLogger.info).toHaveBeenCalledWith(
+                "Skipping scheduled vacuum — database has an active transaction",
+            );
+
+            // Close the transaction.
+            db.exec("ROLLBACK");
+            expect(db.inTransaction).toBe(false);
+
+            // Advance just ONE tick (5000ms). If lastVacuumAt had been updated
+            // during the skip (to ~40000), then 45000 - 40000 = 5000 < 20000
+            // and vacuum would NOT fire. But since lastVacuumAt is still at
+            // the old value (~20000), 45000 - 20000 = 25000 >= 20000, so
+            // vacuum fires immediately on this tick.
+            await vi.advanceTimersByTimeAsync(tickMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(2);
+            expect(mockDaemonLogger.info).toHaveBeenCalledWith(
+                "Scheduled maintenance: database vacuum completed",
+            );
+
+            // Confirm that after the successful vacuum, lastVacuumAt WAS
+            // updated — advancing by less than a full vacuum interval should
+            // NOT trigger another vacuum.
+            mockVacuumDatabase.mockClear();
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs - tickMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(0);
+        });
+
+        it("updates lastVacuumAt after a successful vacuum, preventing premature re-vacuum", async () => {
+            const vacuumIntervalMs = 20000;
+            const tickMs = 5000;
+
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+            mockVacuumDatabase.mockReturnValue(true);
+
+            await startDaemon(db, "testnet", { intervalMs: tickMs, vacuumIntervalMs });
+
+            // Let the first vacuum fire at the 20s mark.
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(1);
+            expect(mockDaemonLogger.info).toHaveBeenCalledWith(
+                "Scheduled maintenance: database vacuum completed",
+            );
+
+            // Advance by less than a full vacuum interval — vacuum should NOT
+            // fire, proving lastVacuumAt was updated and the interval is being
+            // respected.
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs - tickMs); // 15s more
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(1);
+
+            // One more tick completes the full interval — vacuum fires again.
+            await vi.advanceTimersByTimeAsync(tickMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(2);
+            expect(mockDaemonLogger.info).toHaveBeenCalledWith(
+                "Scheduled maintenance: database vacuum completed",
+            );
+        });
     });
 
     // =========================================================================
