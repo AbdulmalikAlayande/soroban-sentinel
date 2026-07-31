@@ -46,6 +46,11 @@ vi.mock("../../src/alerts/email.js", () => ({
     sendEmailAlert: (...args: unknown[]) => mockSendEmailAlert(...args),
 }));
 
+const mockSendGoogleChatAlert = vi.fn().mockResolvedValue(undefined);
+vi.mock("../../src/alerts/googlechat.js", () => ({
+    sendGoogleChatAlert: (...args: unknown[]) => mockSendGoogleChatAlert(...args),
+}));
+
 const event = { type: "threshold_crossed", contractId: "C1" } as unknown as AlertEvent;
 
 describe("registerBuiltinChannels", () => {
@@ -57,15 +62,15 @@ describe("registerBuiltinChannels", () => {
         registerBuiltinChannels();
     });
 
-    it("registers exactly the nine built-in channel names", () => {
+    it("registers exactly the ten built-in channel names", () => {
         const names = listAlertChannels().map((d) => d.name).sort();
-        expect(names).toEqual(["discord", "email", "matrix", "opsgenie", "pagerduty", "slack", "teams", "telegram", "webhook"]);
+        expect(names).toEqual(["discord", "email", "googlechat", "matrix", "opsgenie", "pagerduty", "slack", "teams", "telegram", "webhook"]);
     });
 
     it("is idempotent — calling it again does not throw", async () => {
         const { registerBuiltinChannels } = await import("../../src/alerts/builtins");
         expect(() => registerBuiltinChannels()).not.toThrow();
-        expect(listAlertChannels()).toHaveLength(9);
+        expect(listAlertChannels()).toHaveLength(10);
     });
 
     it("only webhook supports HMAC signing", () => {
@@ -84,6 +89,7 @@ describe("registerBuiltinChannels", () => {
         ["matrix", "channel"],
         ["teams", "url"],
         ["email", "channel"],
+        ["googlechat", "url"],
     ] as const)("%s reads its target from --%s", (name, targetOption) => {
         expect(getAlertChannel(name)?.targetOption).toBe(targetOption);
     });
@@ -133,6 +139,11 @@ describe("registerBuiltinChannels", () => {
         expect(mockSendEmailAlert).toHaveBeenCalledWith("ops@example.com", event);
     });
 
+    it("googlechat definition delegates to sendGoogleChatAlert", async () => {
+        await getAlertChannel("googlechat")!.channel.send("https://chat.googleapis.com/v1/spaces/XXX/messages", event);
+        expect(mockSendGoogleChatAlert).toHaveBeenCalledWith("https://chat.googleapis.com/v1/spaces/XXX/messages", event);
+    });
+
     it("each missingTargetError message matches the historical CLI wording", () => {
         expect(getAlertChannel("webhook")?.missingTargetError).toBe(
             "Error: --url is required when --type is webhook.",
@@ -160,6 +171,9 @@ describe("registerBuiltinChannels", () => {
         );
         expect(getAlertChannel("email")?.missingTargetError).toBe(
             "Error: --channel is required when --type is email (use the recipient email address).",
+        );
+        expect(getAlertChannel("googlechat")?.missingTargetError).toBe(
+            "Error: --url is required when --type is googlechat.",
         );
     });
 });
