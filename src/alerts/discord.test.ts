@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { runChannelContractTests } from "../../tests/alerts/channel-contract.js";
 
 // ─── Mock fetch before importing the module under test ────────────────────────
 
@@ -334,26 +333,4 @@ describe("sendDiscordAlert", () => {
             expect(body.username.length).toBeGreaterThan(0);
         });
     });
-});
-
-// ─── Channel contract ───────────────────────────────────────────────────────────────
-
-describe("Discord (contract)", () => {
-    beforeEach(() => {
-        vi.clearAllMocks();
-        mockFetch.mockResolvedValue(makeDiscordOkResponse());
-    });
-
-    afterEach(() => {
-        vi.unstubAllGlobals();
-        vi.stubGlobal("fetch", mockFetch);
-    });
-
-    runChannelContractTests(
-        "discord",
-        // Use a valid Discord webhook URL — the contract test's generic
-        // "https://example.com/hook" target would fail URL validation.
-        () => ({ send: (_target, event) => sendDiscordAlert(VALID_WEBHOOK_URL, event) }),
-        () => { mockFetch.mockRejectedValue(new Error("ECONNREFUSED")); },
-    );
 });

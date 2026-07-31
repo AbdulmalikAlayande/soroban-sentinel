@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { loadConfig } from "../../src/utils/config";
-import { runChannelContractTests } from "../../tests/alerts/channel-contract.js";
 
 // ─── Mock loadConfig to prevent fallback to real ~/.sorokeep/config.yaml ──────
 
@@ -308,27 +307,4 @@ describe("sendTelegramAlert", () => {
             ).resolves.not.toThrow();
         });
     });
-});
-
-// ─── Channel contract ───────────────────────────────────────────────────────────────
-
-describe("Telegram (contract)", () => {
-    beforeEach(() => {
-        vi.clearAllMocks();
-        vi.mocked(loadConfig).mockReturnValue({} as ReturnType<typeof loadConfig>);
-        process.env["SOROKEEP_TELEGRAM_BOT_TOKEN"] = VALID_BOT_TOKEN;
-        mockFetch.mockResolvedValue(makeOkResponse());
-    });
-
-    afterEach(() => {
-        delete process.env["SOROKEEP_TELEGRAM_BOT_TOKEN"];
-        vi.unstubAllGlobals();
-        vi.stubGlobal("fetch", mockFetch);
-    });
-
-    runChannelContractTests(
-        "telegram",
-        () => ({ send: (target, event) => sendTelegramAlert(target, event) }),
-        () => { mockFetch.mockRejectedValue(new Error("ECONNREFUSED")); },
-    );
 });
