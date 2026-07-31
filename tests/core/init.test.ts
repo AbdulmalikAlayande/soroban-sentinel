@@ -52,6 +52,7 @@ describe("runInitWizard", () => {
       guardEnabled: true,
       guardTargetTtlLedgers: 150000,
       guardThresholdLedgers: 25000,
+      alertThresholdLedgers: 30000,
     });
 
     expect(result.success).toBe(true);
@@ -68,7 +69,7 @@ describe("runInitWizard", () => {
       contract_id: contractId,
       channel_type: "slack",
       channel_target: "#alerts",
-      threshold_ledgers: 25000,
+      threshold_ledgers: 30000,
     });
 
     const policy = getExtensionPolicy(db, contractId);
@@ -78,6 +79,89 @@ describe("runInitWizard", () => {
       target_ttl_ledgers: 150000,
       extend_when_below_ledgers: 25000,
     }));
+  });
+
+  it("keeps the alert threshold independent from the guard threshold", async () => {
+    await runInitWizard({
+      contractId,
+      network: "testnet",
+      channelType: "slack",
+      channelTarget: "#alerts",
+      guardEnabled: true,
+      guardTargetTtlLedgers: 150000,
+      guardThresholdLedgers: 25000,
+    });
+
+    const alerts = getAlertConfigsForContract(db, contractId);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({ threshold_ledgers: 20000 });
+
+    const policy = getExtensionPolicy(db, contractId);
+    expect(policy).toMatchObject({ extend_when_below_ledgers: 25000 });
+  });
+
+  it("does not create duplicate alert configs when run twice", async () => {
+    const answers = {
+      contractId,
+      network: "testnet",
+      channelType: "slack",
+      channelTarget: "#alerts",
+      guardEnabled: true,
+      guardTargetTtlLedgers: 150000,
+      guardThresholdLedgers: 25000,
+    };
+
+    expect((await runInitWizard(answers)).success).toBe(true);
+    expect((await runInitWizard(answers)).success).toBe(true);
+
+    const alerts = getAlertConfigsForContract(db, contractId);
+    expect(alerts).toHaveLength(1);
+    expect(getExtensionPolicy(db, contractId)).toBeDefined();
+  });
+
+  it("rejects an unsupported alert channel type before watching the contract", async () => {
+    const result = await runInitWizard({
+      contractId,
+      network: "testnet",
+      channelType: "pigeon",
+      channelTarget: "#alerts",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Unsupported alert channel type");
+    expect(watchSpy).not.toHaveBeenCalled();
+  });
+
+  it("propagates watch failures and writes no alert config or policy", async () => {
+    watchSpy.mockResolvedValue({ success: false, contractId, error: "RPC unreachable" } as any);
+
+    const result = await runInitWizard({
+      contractId,
+      network: "testnet",
+      channelType: "slack",
+      channelTarget: "#alerts",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("RPC unreachable");
+    expect(getAlertConfigsForContract(db, contractId)).toEqual([]);
+    expect(getExtensionPolicy(db, contractId)).toBeUndefined();
+  });
+
+  it("rejects a non-integer alert threshold before watching the contract", async () => {
+    const result = await runInitWizard({
+      contractId,
+      network: "testnet",
+      channelType: "slack",
+      channelTarget: "#alerts",
+      guardTargetTtlLedgers: 150000,
+      guardThresholdLedgers: 25000,
+      alertThresholdLedgers: NaN,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("positive integers");
+    expect(watchSpy).not.toHaveBeenCalled();
   });
 
   it("rejects invalid contract IDs before writing any database records", async () => {

@@ -4,8 +4,6 @@ import { getDatabase } from "../db/database.js";
 import { insertAlertConfig, upsertExtensionPolicy } from "../db/repositories.js";
 import { watchContract } from "./watch.js";
 
-registerBuiltinChannels();
-
 export interface InitAnswers {
   contractId: string;
   network?: string;
@@ -16,6 +14,7 @@ export interface InitAnswers {
   guardEnabled?: boolean;
   guardTargetTtlLedgers?: number;
   guardThresholdLedgers?: number;
+  alertThresholdLedgers?: number;
 }
 
 export interface InitResult {
@@ -25,6 +24,8 @@ export interface InitResult {
 }
 
 export async function runInitWizard(answers: InitAnswers): Promise<InitResult> {
+  registerBuiltinChannels();
+
   const contractId = answers.contractId?.trim();
   if (!contractId || !contractId.startsWith("C") || contractId.length !== 56) {
     return {
@@ -63,12 +64,17 @@ export async function runInitWizard(answers: InitAnswers): Promise<InitResult> {
 
   const targetTtlLedgers = answers.guardTargetTtlLedgers ?? 100_000;
   const thresholdLedgers = answers.guardThresholdLedgers ?? 20_000;
+  const alertThresholdLedgers = answers.alertThresholdLedgers ?? 20_000;
   const isPositiveInteger = (value: number): boolean => Number.isSafeInteger(value) && value > 0;
-  if (!isPositiveInteger(targetTtlLedgers) || !isPositiveInteger(thresholdLedgers)) {
+  if (
+    !isPositiveInteger(targetTtlLedgers) ||
+    !isPositiveInteger(thresholdLedgers) ||
+    !isPositiveInteger(alertThresholdLedgers)
+  ) {
     return {
       success: false,
       contractId,
-      error: "Guard target and threshold values must be positive integers.",
+      error: "Guard target, guard threshold, and alert threshold values must be positive integers.",
     };
   }
   if (thresholdLedgers >= targetTtlLedgers) {
@@ -95,19 +101,22 @@ export async function runInitWizard(answers: InitAnswers): Promise<InitResult> {
     };
   }
 
-  insertAlertConfig(db, {
-    contract_id: contractId,
-    channel_type: channelType,
-    channel_target: target,
-    threshold_ledgers: thresholdLedgers,
+  const persist = db.transaction(() => {
+    db.prepare("DELETE FROM alert_configs WHERE contract_id = ?").run(contractId);
+    insertAlertConfig(db, {
+      contract_id: contractId,
+      channel_type: channelType,
+      channel_target: target,
+      threshold_ledgers: alertThresholdLedgers,
+    });
+    upsertExtensionPolicy(db, {
+      contract_id: contractId,
+      enabled: answers.guardEnabled !== false,
+      target_ttl_ledgers: targetTtlLedgers,
+      extend_when_below_ledgers: thresholdLedgers,
+    });
   });
-
-  upsertExtensionPolicy(db, {
-    contract_id: contractId,
-    enabled: answers.guardEnabled !== false,
-    target_ttl_ledgers: targetTtlLedgers,
-    extend_when_below_ledgers: thresholdLedgers,
-  });
+  persist();
 
   return {
     success: true,
