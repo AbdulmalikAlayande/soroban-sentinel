@@ -6,6 +6,10 @@ import { Contract, xdr, Keypair, StrKey } from "@stellar/stellar-sdk";
 const FIXTURE_CONTRACT_ID = StrKey.encodeContract(Buffer.alloc(32, 7));
 const MISSING_CONTRACT_ID = StrKey.encodeContract(Buffer.from("missing".padEnd(32, "a")));
 
+function makeTestSignerSecret(seedByte: number): string {
+    return Keypair.fromRawEd25519Seed(Buffer.alloc(32, seedByte)).secret();
+}
+
 vi.mock("@stellar/stellar-sdk", async () =>  {
     const actualModule = await vi.importActual<any>("@stellar/stellar-sdk");
     const moduleRPC = actualModule.rpc as Record<string, unknown>;
@@ -364,10 +368,10 @@ describe("StellarRpcClient", () => {
             durability: xdr.ContractDataDurability.persistent()
         })).toXDR("base64");
 
-        const secretKey = Keypair.random().secret();
+        const signerSecret = makeTestSignerSecret(11);
 
         it("submitExtension succeeds", async () => {
-            const result = await client.submitExtension([dummyKey], 1000, secretKey);
+            const result = await client.submitExtension([dummyKey], 1000, signerSecret);
             expect(result.success).toBe(true);
             expect(result.txHash).toBe("mock-tx-hash");
         });
@@ -375,30 +379,30 @@ describe("StellarRpcClient", () => {
         it("submitExtension handles simulation error (expired sequence number)", async () => {
             const simFailClient = new StellarRpcClient("testnet", "https://sim-fail-seq.com");
             simFailClient["server"].simulateTransaction = vi.fn().mockResolvedValue({ error: "txBadSeq" });
-            await expect(simFailClient.submitExtension([dummyKey], 1000, secretKey)).rejects.toThrow("Expired sequence number");
+            await expect(simFailClient.submitExtension([dummyKey], 1000, signerSecret)).rejects.toThrow("Expired sequence number");
         });
 
         it("submitExtension handles simulation error (insufficient balance)", async () => {
             const simFailClient = new StellarRpcClient("testnet", "https://sim-fail-bal.com");
             simFailClient["server"].simulateTransaction = vi.fn().mockResolvedValue({ error: "txInsufficientBalance" });
-            await expect(simFailClient.submitExtension([dummyKey], 1000, secretKey)).rejects.toThrow("Insufficient wallet balance");
+            await expect(simFailClient.submitExtension([dummyKey], 1000, signerSecret)).rejects.toThrow("Insufficient wallet balance");
         });
 
         it("submitExtension handles simulation error (invalid footprint)", async () => {
             const simFailClient = new StellarRpcClient("testnet", "https://sim-fail-key.com");
             simFailClient["server"].simulateTransaction = vi.fn().mockResolvedValue({ error: "invalid footprint" });
-            await expect(simFailClient.submitExtension([dummyKey], 1000, secretKey)).rejects.toThrow("Invalid footprint key");
+            await expect(simFailClient.submitExtension([dummyKey], 1000, signerSecret)).rejects.toThrow("Invalid footprint key");
         });
 
         it("submitExtension handles send error", async () => {
             const sendErrorClient = new StellarRpcClient("testnet", "https://send-error.com");
-            const result = await sendErrorClient.submitExtension([dummyKey], 1000, secretKey);
+            const result = await sendErrorClient.submitExtension([dummyKey], 1000, signerSecret);
             expect(result.success).toBe(false);
             expect(result.error).toContain("Something went wrong");
         });
 
         it("submitRestore succeeds", async () => {
-            const result = await client.submitRestore([dummyKey], secretKey);
+            const result = await client.submitRestore([dummyKey], signerSecret);
             expect(result.success).toBe(true);
         });
 
@@ -538,10 +542,10 @@ describe("StellarRpcClient", () => {
             durability: xdr.ContractDataDurability.persistent()
         })).toXDR("base64");
 
-        const secretKey = Keypair.random().secret();
+        const signerSecret = makeTestSignerSecret(22);
 
         it("simulateExtension returns minResourceFee from footprint simulation", async () => {
-            const publicKey = Keypair.fromSecret(secretKey).publicKey();
+            const publicKey = Keypair.fromSecret(signerSecret).publicKey();
             const result = await client.simulateExtension([dummyKey], 100000, publicKey);
             expect(result.success).toBe(true);
             expect(result.minResourceFee).toBe(100);
@@ -549,7 +553,7 @@ describe("StellarRpcClient", () => {
 
         it("simulateExtension propagates error when RPC simulation fails", async () => {
             const simFailClient = new StellarRpcClient("testnet", "https://sim-fail.com");
-            const publicKey = Keypair.fromSecret(secretKey).publicKey();
+            const publicKey = Keypair.fromSecret(signerSecret).publicKey();
             const result = await simFailClient.simulateExtension([dummyKey], 100000, publicKey);
             expect(result.success).toBe(false);
             expect(result.error).toBe("Simulation failed");
@@ -559,7 +563,7 @@ describe("StellarRpcClient", () => {
             const simulateSpy = vi.spyOn(client["server"] as any, "simulateTransaction");
             const sendSpy = vi.spyOn(client["server"] as any, "sendTransaction");
 
-            await client.submitExtension([dummyKey], 100000, secretKey);
+            await client.submitExtension([dummyKey], 100000, signerSecret);
 
             // simulateTransaction must be called before sendTransaction
             expect(simulateSpy).toHaveBeenCalledTimes(1);
@@ -569,7 +573,7 @@ describe("StellarRpcClient", () => {
         });
 
         it("submitExtension parses feeCharged from the transaction result", async () => {
-            const result = await client.submitExtension([dummyKey], 100000, secretKey);
+            const result = await client.submitExtension([dummyKey], 100000, signerSecret);
             expect(result.success).toBe(true);
             expect(result.feeCharged).toBe(1234);
         });
@@ -584,7 +588,7 @@ describe("StellarRpcClient", () => {
             });
             mockClient["server"].getAccount = vi.fn().mockResolvedValue(
                 new (await import("@stellar/stellar-sdk")).Account(
-                    Keypair.fromSecret(secretKey).publicKey(), "1"
+                    Keypair.fromSecret(signerSecret).publicKey(), "1"
                 )
             );
             mockClient["server"].simulateTransaction = vi.fn().mockResolvedValue({
@@ -597,7 +601,7 @@ describe("StellarRpcClient", () => {
                 hash: "tx-no-fee",
             });
 
-            const result = await mockClient.submitExtension([dummyKey], 100000, secretKey);
+            const result = await mockClient.submitExtension([dummyKey], 100000, signerSecret);
             expect(result.success).toBe(true);
             expect(result.feeCharged).toBeUndefined();
 
@@ -1027,7 +1031,7 @@ describe("StellarRpcClient", () => {
             await expect(timeoutClient.checkHealth()).rejects.toThrow();
             
             const publicKey = Keypair.random().publicKey();
-            const secretKey = Keypair.random().secret();
+            const signerSecret = makeTestSignerSecret(33);
             const dummyKey = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
                 contract: xdr.ScAddress.scAddressTypeContract(Buffer.from("a".repeat(32)) as any),
                 key: xdr.ScVal.scvLedgerKeyContractInstance(),
@@ -1040,7 +1044,7 @@ describe("StellarRpcClient", () => {
         });
         
         it("exercises transaction result parsing branches", async () => {
-            const secretKey = Keypair.random().secret();
+            const signerSecret = makeTestSignerSecret(44);
             const dummyKey = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
                 contract: xdr.ScAddress.scAddressTypeContract(Buffer.from("a".repeat(32)) as any),
                 key: xdr.ScVal.scvLedgerKeyContractInstance(),
@@ -1048,24 +1052,24 @@ describe("StellarRpcClient", () => {
             })).toXDR("base64");
             
             // Test successful submission
-            const result1 = await client.submitExtension([dummyKey], 100000, secretKey);
+            const result1 = await client.submitExtension([dummyKey], 100000, signerSecret);
             expect(result1.success).toBe(true);
             expect(result1.txHash).toBe("mock-tx-hash");
             expect(result1.feeCharged).toBe(1234);
             
             // Test error handling branches
             const errorClient = new StellarRpcClient("testnet", "https://send-error.com");
-            const result2 = await errorClient.submitExtension([dummyKey], 100000, secretKey);
+            const result2 = await errorClient.submitExtension([dummyKey], 100000, signerSecret);
             expect(result2.success).toBe(false);
             expect(result2.error).toContain("Something went wrong");
             
             const failClient = new StellarRpcClient("testnet", "https://send-fail.com");
-            const result3 = await failClient.submitExtension([dummyKey], 100000, secretKey);
+            const result3 = await failClient.submitExtension([dummyKey], 100000, signerSecret);
             expect(result3.success).toBe(false);
             expect(result3.error).toContain("Transaction send error");
             
             const paymentFailClient = new StellarRpcClient("testnet", "https://payment-fail.com");
-            const result4 = await paymentFailClient.submitExtension([dummyKey], 100000, secretKey);
+            const result4 = await paymentFailClient.submitExtension([dummyKey], 100000, signerSecret);
             expect(result4.success).toBe(false);
             expect(result4.error).toContain("Payment failed");
         });
