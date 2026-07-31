@@ -37,10 +37,14 @@ export function registerGuardCommand(program: Command): void {
                     process.exit(1);
                 }
 
-                const targetTTL = parseInt(options.targetTtl ?? "100000", 10);
-                const threshold = parseInt(options.threshold ?? "20000", 10);
+                const targetTtlRaw = options.targetTtl ?? "100000";
+                const thresholdRaw = options.threshold ?? "20000";
+                const targetTTL = Number(targetTtlRaw);
+                const threshold = Number(thresholdRaw);
+                const isValidLedgerCount = (raw: string, value: number): boolean =>
+                    /^\d+$/.test(raw) && Number.isSafeInteger(value) && value > 0;
 
-                if (isNaN(targetTTL) || targetTTL <= 0) {
+                if (!isValidLedgerCount(targetTtlRaw, targetTTL)) {
                     if (options.json) {
                         printOutput({ success: false, error: "invalid_target_ttl", contractId, targetTtl: options.targetTtl }, true);
                         process.exitCode = 1;
@@ -50,7 +54,7 @@ export function registerGuardCommand(program: Command): void {
                     process.exit(1);
                 }
 
-                 if (isNaN(threshold) || threshold <= 0) {
+                 if (!isValidLedgerCount(thresholdRaw, threshold)) {
                      if (options.json) {
                          printOutput({ success: false, error: "invalid_threshold", contractId, threshold: options.threshold }, true);
                          process.exitCode = 1;

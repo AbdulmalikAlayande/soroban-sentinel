@@ -12,7 +12,7 @@ import {
   printOutput,
   statusIndicator,
 } from "../utils/formatting.js";
-import { watchContract } from "../core/watch.js";
+import { watchContract, type WatchResult } from "../core/watch.js";
 import { loadWatchContractsFile } from "../utils/watch-config.js";
 
 const logger = getLogger().child({ component: "WatchCommand" });
@@ -47,13 +47,14 @@ export const registerWatchCommand = (program: Command): void => {
 
         if (options.fromFile) {
           const configs = loadWatchContractsFile(options.fromFile);
-          const results = [] as Array<{
-            contractId: string;
-            name?: string;
-            network: string;
-            status: "SUCCESS" | "FAILED";
-            message: string;
-          }>;
+          const results = [] as Array<
+            WatchResult & {
+              name?: string;
+              network: string;
+              status: "SUCCESS" | "FAILED";
+              message: string;
+            }
+          >;
 
           for (const config of configs) {
             const watchResult = await watchContract(db, {
@@ -66,6 +67,7 @@ export const registerWatchCommand = (program: Command): void => {
             });
 
             results.push({
+              ...watchResult,
               contractId: config.contractId,
               name: config.name,
               network: config.network,
