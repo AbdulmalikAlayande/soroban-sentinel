@@ -107,3 +107,9 @@ export function formatPrometheus(snapshot: MetricsSnapshot): string {
 
     return lines.join("\n");
 }
+import { Registry } from "prom-client";
+
+export const register = new Registry();
+
+import { budgetRemainingGauge } from "./metrics/budget.js";
+register.registerMetric(budgetRemainingGauge);

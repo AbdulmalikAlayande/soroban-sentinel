@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { Command } from "commander";
 import { initLogger } from "./logging/index.js";
 import { registerWatchCommand } from "./commands/watch.js";
 import { registerStatusCommand } from "./commands/status.js";
@@ -52,4 +51,14 @@ registerPauseCommand(program);
 registerResumeCommand(program);
 registerMetricsCommand(program);
 
+import { createProgram } from "./cli/program.js";
+
+initLogger({ mode: "cli" });
+
+const program = createProgram();
 program.parse(process.argv);
+
+const opts = program.opts();
+if (opts.extensionJitterMs) {
+    process.env.EXTENSION_JITTER_MS = opts.extensionJitterMs.toString();
+}
