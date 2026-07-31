@@ -17,6 +17,7 @@ import { registerBudgetCommand } from "../commands/budget.js";
 import { registerDbCommand } from "../commands/db.js";
 import { registerPauseCommand } from "../commands/pause.js";
 import { registerResumeCommand } from "../commands/resume.js";
+import { registerInitCommand } from "../commands/init.js";
 
 export function createProgram() {
   const program = new Command();
@@ -47,6 +48,7 @@ export function createProgram() {
   registerDbCommand(program);
   registerPauseCommand(program);
   registerResumeCommand(program);
+  registerInitCommand(program);
 
   return program;
 }
