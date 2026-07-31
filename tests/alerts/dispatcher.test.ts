@@ -10,6 +10,8 @@ import {
 } from "../../src/db/repositories";
 import { deliverPendingAlerts } from "../../src/alerts/dispatcher";
 import type { AlertChannel } from "../../src/alerts/types";
+import { registerAlertChannel, getAlertChannel, _resetRegistryForTesting } from "../../src/alerts/registry";
+import { registerBuiltinChannels, _resetBuiltinRegistrationForTesting } from "../../src/alerts/builtins";
 
 function mockChannel(): AlertChannel & { send: ReturnType<typeof vi.fn> } {
     return { send: vi.fn().mockResolvedValue(undefined) };
@@ -275,31 +277,44 @@ describe("deliverPendingAlerts", () => {
         });
 
         it("stops retrying after custom maxRetries limit", async () => {
-            const mockSendCustomAlert = vi.fn().mockRejectedValue(new Error("fail"));
-            // We use webhook here but override it in the registry just for this test
-            registerAlertChannel("webhook", { maxRetries: 2 });
-            
-            const { alertFiredId } = seedContractWithAlert(db, { contractId: "CA" });
+            // Swap in a webhook definition with a lower retry cap for this test only.
+            _resetRegistryForTesting();
+            registerAlertChannel({
+                name: "webhook",
+                channel: channels.webhook,
+                targetOption: "url",
+                missingTargetError: "Error: --url is required when --type is webhook.",
+                supportsSigning: true,
+                maxRetries: 2,
+            });
 
-            // Run 2 cycles — each should attempt delivery
+            channels.webhook.send.mockRejectedValue(new Error("fail"));
+            const { alertFiredId } = seedAlert(db, { contractId: "CA" });
+
+            // Run 2 cycles — each should attempt delivery.
             for (let i = 0; i < 2; i++) {
-                await deliverPendingAlerts(db, "testnet");
+                await deliverPendingAlerts(db, "testnet", channels);
             }
+            expect(channels.webhook.send).toHaveBeenCalledTimes(2);
 
-            expect(mockSendWebhookAlert).toHaveBeenCalledTimes(2);
-
-            // Next cycle should NOT attempt delivery — alert excluded by retry cap of 2
-            await deliverPendingAlerts(db, "testnet");
-            expect(mockSendWebhookAlert).toHaveBeenCalledTimes(2);
+            // Next cycle should NOT attempt delivery — alert excluded by retry cap of 2.
+            await deliverPendingAlerts(db, "testnet", channels);
+            expect(channels.webhook.send).toHaveBeenCalledTimes(2);
 
             const row = db
                 .prepare("SELECT retry_count, delivered FROM alerts_fired WHERE id = ?")
                 .get(alertFiredId) as { retry_count: number; delivered: number };
             expect(row.retry_count).toBe(2);
             expect(row.delivered).toBe(0);
-            
-            // Restore default webhook limit so we don't break other tests
-            registerAlertChannel("webhook", { maxRetries: 5 });
+
+            // Restore the real registry so later tests see normal built-in defaults.
+            _resetRegistryForTesting();
+            _resetBuiltinRegistrationForTesting();
+            registerBuiltinChannels();
+        });
+
+        it("uses the global MAX_RETRY_COUNT when a channel has no maxRetries override", async () => {
+            expect(getAlertChannel("webhook")?.maxRetries).toBeUndefined();
         });
     });
 
