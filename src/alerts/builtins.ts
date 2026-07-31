@@ -72,6 +72,9 @@ export function registerBuiltinChannels(): void {
             targetOption: "channel",
             missingTargetError: "Error: --channel is required when --type is telegram (use chat ID or @channelname).",
             supportsSigning: false,
+            // Telegram's Bot API rate limits are stricter than a generic webhook's —
+            // give up sooner rather than hammering a channel that's already throttling us.
+            maxRetries: 3,
         },
         {
             name: "opsgenie",
