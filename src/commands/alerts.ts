@@ -73,13 +73,6 @@ export function registerAlertsCommand(program: Command): void {
             let target = "";
             let webhookSecret: string | undefined;
 
-            if (options.type === "email") {
-                // Not a registered channel — called out explicitly since it's a
-                // common ask, so the error is more helpful than a generic "unknown type".
-                console.error(chalk.red("Error: Email alerting is not yet implemented. Use 'webhook', 'slack', 'discord', 'telegram', or 'pagerduty'."));
-                process.exit(1);
-            }
-
             const channelDef = getAlertChannel(options.type);
             if (!channelDef) {
                 const known = listAlertChannels().map((d) => d.name).join(", ");
