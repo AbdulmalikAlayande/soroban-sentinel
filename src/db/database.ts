@@ -70,6 +70,10 @@ export function getDatabase(customPath?: string): Database.Database {
         )`,
         `ALTER TABLE contracts ADD COLUMN last_introspected_at DATETIME`,
         `ALTER TABLE contracts ADD COLUMN active INTEGER NOT NULL DEFAULT 1`,
+        // issue #325 — quiet-hours / maintenance-window columns
+        `ALTER TABLE alert_configs ADD COLUMN quiet_hours_start TEXT`,
+        `ALTER TABLE alert_configs ADD COLUMN quiet_hours_end TEXT`,
+        `ALTER TABLE alert_configs ADD COLUMN quiet_hours_timezone TEXT`,
     ];
     for (const sql of migrations) {
         try { db.exec(sql); } catch { /* column already exists — no-op */ }
@@ -106,12 +110,15 @@ function migrateAlertConfigsChannelTypeCheck(db: Database.Database): void {
             channel_target TEXT NOT NULL,
             threshold_ledgers INTEGER NOT NULL,
             webhook_secret TEXT,
+            quiet_hours_start    TEXT,
+            quiet_hours_end      TEXT,
+            quiet_hours_timezone TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     `);
     db.exec(`
-        INSERT INTO alert_configs_new (id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, created_at)
-        SELECT id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, created_at
+        INSERT INTO alert_configs_new (id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, quiet_hours_start, quiet_hours_end, quiet_hours_timezone, created_at)
+        SELECT id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, quiet_hours_start, quiet_hours_end, quiet_hours_timezone, created_at
         FROM alert_configs
     `);
     db.exec(`DROP TABLE alert_configs;`);
@@ -149,12 +156,15 @@ function relaxChannelTypeChecks(db: Database.Database): void {
                 channel_target TEXT NOT NULL,
                 threshold_ledgers INTEGER NOT NULL,
                 webhook_secret TEXT,
+                quiet_hours_start    TEXT,
+                quiet_hours_end      TEXT,
+                quiet_hours_timezone TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         `);
         db.exec(`
-            INSERT INTO alert_configs_relaxed (id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, created_at)
-            SELECT id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, created_at
+            INSERT INTO alert_configs_relaxed (id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, quiet_hours_start, quiet_hours_end, quiet_hours_timezone, created_at)
+            SELECT id, contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, quiet_hours_start, quiet_hours_end, quiet_hours_timezone, created_at
             FROM alert_configs
         `);
         db.exec(`DROP TABLE alert_configs;`);

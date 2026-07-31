@@ -1,6 +1,9 @@
 <p align="center">
   <h1 align="center">Sorokeep</h1>
   <p align="center">
+    <a href="README.pt.md">Português (Brasil)</a>
+  </p>
+  <p align="center">
     The missing operations layer for deployed Soroban smart contracts.
     <br />
     Monitor TTLs. Get alerted before expiration. Auto-extend storage. Restore archived entries.
@@ -21,6 +24,8 @@
 <br />
 
 ## Why This Exists
+
+*(Unfamiliar with Soroban/Stellar terminology like TTL, footprint, or ledger entry? Check out the [Glossary](docs/glossary.md).)*
 
 Soroban's storage model is uncommon among major smart contract platforms: **state expires.** Every ledger entry — contract instances, persistent storage, WASM code — has a Time-To-Live (TTL). When it runs out, the entry is archived. If a contract's instance entry expires, the entire contract stops working. If persistent storage entries expire, user data becomes inaccessible until someone pays to restore it.
 
@@ -64,6 +69,12 @@ npx tsx src/index.ts --help
 # Or link globally after building
 npm link
 sorokeep --help
+
+# Install the local man page
+mkdir -p ~/.local/share/man/man1
+cp man/sorokeep.1 ~/.local/share/man/man1/
+mandb 2>/dev/null || true
+man sorokeep
 ```
 
 <!--
@@ -659,6 +670,11 @@ Testnet (`https://soroban-testnet.stellar.org`) and Mainnet (`https://mainnet.so
 Email is not yet implemented. The CLI will reject `--type email` with a clear error message. Webhook and Slack are the supported channels today.
 
 ## Roadmap
+
+Track overall progress on the [Sorokeep Roadmap board](https://github.com/AbdulmalikAlayande/sorokeep/projects) — issues are grouped by phase (`phase-1` through `phase-15`) with Todo/In Progress/Done status.
+
+> **Note:** The board is configured via a proposal at [`docs/roadmap-board-proposal.md`](docs/roadmap-board-proposal.md).
+> If you're a maintainer, follow that doc to create and link the board.
 
 - Plugin interface for alert channels — so a new channel (Matrix, MS Teams, email) doesn't require touching core dispatch code or the DB schema
 - Prometheus `/metrics` endpoint for teams with existing observability stacks
