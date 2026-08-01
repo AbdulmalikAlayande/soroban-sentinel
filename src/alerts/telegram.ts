@@ -1,6 +1,7 @@
 import type { AlertEvent } from "./types.js";
 import { loadConfig } from "../utils/config.js";
 import { getLogger } from "../logging/index.js";
+import { getStellarExpertContractUrl } from "./links.js";
 import { renderAlertTemplate } from "./templates.js";
 
 const logger = getLogger().child({ component: "TelegramHandler" });
@@ -14,97 +15,112 @@ const TIMEOUT_MS = 10_000;
  * Priority: SOROKEEP_TELEGRAM_BOT_TOKEN env var > config.telegramBotToken
  */
 function resolveBotToken(): string {
-    const envToken = process.env["SOROKEEP_TELEGRAM_BOT_TOKEN"];
-    if (envToken) return envToken;
+  const envToken = process.env["SOROKEEP_TELEGRAM_BOT_TOKEN"];
+  if (envToken) return envToken;
 
-    const config = loadConfig();
-    if ("telegramBotToken" in config && typeof config.telegramBotToken === "string" && config.telegramBotToken) {
-        return config.telegramBotToken as string;
-    }
+  const config = loadConfig();
+  if (
+    "telegramBotToken" in config &&
+    typeof config.telegramBotToken === "string" &&
+    config.telegramBotToken
+  ) {
+    return config.telegramBotToken as string;
+  }
 
-    throw new Error(
-        "Telegram bot token not configured. Set SOROKEEP_TELEGRAM_BOT_TOKEN environment variable " +
-        "or add telegramBotToken to ~/.sorokeep/config.yaml.",
-    );
+  throw new Error(
+    "Telegram bot token not configured. Set SOROKEEP_TELEGRAM_BOT_TOKEN environment variable " +
+      "or add telegramBotToken to ~/.sorokeep/config.yaml.",
+  );
 }
 
 // ─── Message builder ──────────────────────────────────────────────────────────
 
 function severityEmoji(event: AlertEvent): string {
-    if (event.type === "alert_resolved") return "✅";
-    if (event.type === "state_changed") return "🔄";
-    if (event.severity === "critical") return "🔴";
-    return "⚠️";
+  if (event.type === "alert_resolved") return "✅";
+  if (event.type === "state_changed") return "🔄";
+  if (event.severity === "critical") return "🔴";
+  return "⚠️";
 }
 
 function buildMessage(event: AlertEvent): string {
-    const icon = severityEmoji(event);
-    const contractDisplay = event.contractName ?? event.contractId;
+  const icon = severityEmoji(event);
+  const contractDisplay = event.contractName ?? event.contractId;
 
-    if (event.type === "resource_alert") {
-        const level = event.severity === "critical" ? "CRITICAL" : "Warning";
-        const resourceLabel = event.resource.type === "cpu" ? "CPU" : "Memory";
-        
-        return [
-            `${icon} *Resource ${level}* — ${escapeMarkdown(contractDisplay)}`,
-            ``,
-            `*Resource:* ${resourceLabel}`,
-            `*Network:* ${escapeMarkdown(event.network)}`,
-            `*Usage:* ${event.resource.usagePercent}% \\(${event.resource.currentUsage.toLocaleString()} / ${event.resource.limit.toLocaleString()}\\)`,
-            ``,
-            `_Severity: ${escapeMarkdown(event.severity)} \\| Contract: ${escapeMarkdown(event.contractId)}_`,
-        ].join("\n");
-    }
-
-    if (event.type === "state_changed") {
-        const diffLabel = event.diff.diffType.charAt(0).toUpperCase() + event.diff.diffType.slice(1);
-        const entryLabel = event.entry.label ?? event.entry.type;
-        const oldValStr = event.diff.oldValueXdr ? `\`${escapeCode(event.diff.oldValueXdr)}\`` : "\\(none\\)";
-        const newValStr = event.diff.newValueXdr ? `\`${escapeCode(event.diff.newValueXdr)}\`` : "\\(none\\)";
-
-        return [
-            `${icon} *State ${diffLabel}* — ${escapeMarkdown(contractDisplay)}`,
-            ``,
-            `*Entry:* ${escapeMarkdown(entryLabel)}`,
-            `*Network:* ${escapeMarkdown(event.network)}`,
-            `*Change Type:* ${escapeMarkdown(event.diff.diffType)}`,
-            `*Old Value:* ${oldValStr}`,
-            `*New Value:* ${newValStr}`,
-            ``,
-            `_Contract: ${escapeMarkdown(event.contractId)}_`,
-        ].join("\n");
-    }
-
-    const status = event.type === "threshold_crossed"
-        ? `TTL ${event.severity === "critical" ? "CRITICAL" : "Warning"}`
-        : "Alert Resolved";
-
-    const entryLabel = event.entry.label ?? event.entry.type;
+  if (event.type === "resource_alert") {
+    const level = event.severity === "critical" ? "CRITICAL" : "Warning";
+    const resourceLabel = event.resource.type === "cpu" ? "CPU" : "Memory";
 
     return [
-        `${icon} *${status}* — ${escapeMarkdown(contractDisplay)}`,
-        ``,
-        `*Entry:* ${escapeMarkdown(entryLabel)}`,
-        `*Network:* ${escapeMarkdown(event.network)}`,
-        `*Remaining TTL:* ${event.threshold.currentRemainingLedgers.toLocaleString()} ledgers \\(${escapeMarkdown(event.threshold.approximateTimeRemaining)}\\)`,
-        `*Threshold:* ${event.threshold.configuredLedgers.toLocaleString()} ledgers`,
-        ``,
-        `_Severity: ${escapeMarkdown(event.severity)} \\| Contract: ${escapeMarkdown(event.contractId)}_`,
+      `${icon} *Resource ${level}* — ${escapeMarkdown(contractDisplay)}`,
+      ``,
+      `*Resource:* ${resourceLabel}`,
+      `*Network:* ${escapeMarkdown(event.network)}`,
+      `*Usage:* ${event.resource.usagePercent}% \\(${event.resource.currentUsage.toLocaleString()} / ${event.resource.limit.toLocaleString()}\\)`,
+      ``,
+      `_Severity: ${escapeMarkdown(event.severity)} \\| Contract: ${escapeMarkdown(event.contractId)}_`,
     ].join("\n");
+  }
+
+  if (event.type === "state_changed") {
+    const diffLabel =
+      event.diff.diffType.charAt(0).toUpperCase() +
+      event.diff.diffType.slice(1);
+    const entryLabel = event.entry.label ?? event.entry.type;
+    const oldValStr = event.diff.oldValueXdr
+      ? `\`${escapeCode(event.diff.oldValueXdr)}\``
+      : "\\(none\\)";
+    const newValStr = event.diff.newValueXdr
+      ? `\`${escapeCode(event.diff.newValueXdr)}\``
+      : "\\(none\\)";
+
+    return [
+      `${icon} *State ${diffLabel}* — ${escapeMarkdown(contractDisplay)}`,
+      ``,
+      `*Entry:* ${escapeMarkdown(entryLabel)}`,
+      `*Network:* ${escapeMarkdown(event.network)}`,
+      `*Change Type:* ${escapeMarkdown(event.diff.diffType)}`,
+      `*Old Value:* ${oldValStr}`,
+      `*New Value:* ${newValStr}`,
+      ``,
+      `_Contract: ${escapeMarkdown(event.contractId)}_`,
+    ].join("\n");
+  }
+
+  const status =
+    event.type === "threshold_crossed"
+      ? `TTL ${event.severity === "critical" ? "CRITICAL" : "Warning"}`
+      : "Alert Resolved";
+
+  const entryLabel = event.entry.label ?? event.entry.type;
+  const stellarExpertLink = getStellarExpertContractUrl(event);
+
+  return [
+    `${icon} *${status}* — ${escapeMarkdown(contractDisplay)}`,
+    ``,
+    `*Entry:* ${escapeMarkdown(entryLabel)}`,
+    `*Network:* ${escapeMarkdown(event.network)}`,
+    `*Remaining TTL:* ${event.threshold.currentRemainingLedgers.toLocaleString()} ledgers \\(${escapeMarkdown(event.threshold.approximateTimeRemaining)}\\)`,
+    `*Threshold:* ${event.threshold.configuredLedgers.toLocaleString()} ledgers`,
+    stellarExpertLink
+      ? `*Stellar Expert:* ${escapeMarkdown(stellarExpertLink)}`
+      : "",
+    ``,
+    `_Severity: ${escapeMarkdown(event.severity)} \\| Contract: ${escapeMarkdown(event.contractId)}_`,
+  ].join("\n");
 }
 
 /**
  * Escape special characters for Telegram MarkdownV2 format.
  */
 function escapeMarkdown(text: string): string {
-    return text.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, "\\$&");
+  return text.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, "\\$&");
 }
 
 /**
  * Escape special characters for Telegram MarkdownV2 inside inline code block (`).
  */
 function escapeCode(text: string): string {
-    return text.replace(/[\\`]/g, "\\$&");
+  return text.replace(/[\\`]/g, "\\$&");
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -115,47 +131,51 @@ function escapeCode(text: string): string {
  * Resolves the bot token from env (SOROKEEP_TELEGRAM_BOT_TOKEN) or config (telegramBotToken).
  * Throws when the token is absent, the network fails, or Telegram returns ok: false.
  */
-export async function sendTelegramAlert(chatId: string, event: AlertEvent): Promise<void> {
-    const token = resolveBotToken();
+export async function sendTelegramAlert(
+  chatId: string,
+  event: AlertEvent,
+): Promise<void> {
+  const token = resolveBotToken();
 
-    logger.debug(`Sending Telegram alert to ${chatId}`, { type: event.type, contractId: event.contractId });
+  logger.debug(`Sending Telegram alert to ${chatId}`, {
+    type: event.type,
+    contractId: event.contractId,
+  });
 
-    const url = `${TELEGRAM_API_BASE}${token}/sendMessage`;
+  const url = `${TELEGRAM_API_BASE}${token}/sendMessage`;
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
-    const customMessage = renderAlertTemplate("telegram", event);
-    const text = customMessage !== null ? customMessage : buildMessage(event);
+  const customMessage = renderAlertTemplate("telegram", event);
+  const text = customMessage !== null ? customMessage : buildMessage(event);
 
-    let response: Response;
-    try {
-        response = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                chat_id: chatId,
-                text: text,
-                parse_mode: "MarkdownV2",
-            }),
-            signal: controller.signal,
-        });
-    } finally {
-        clearTimeout(timeout);
-    }
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: text,
+        parse_mode: "MarkdownV2",
+      }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 
-    if (!response.ok) {
-        throw new Error(
-            `Telegram API request failed: HTTP ${response.status}`,
-        );
-    }
+  if (!response.ok) {
+    throw new Error(`Telegram API request failed: HTTP ${response.status}`);
+  }
 
-    const body = await response.json() as { ok: boolean; description?: string };
-    if (!body.ok) {
-        throw new Error(
-            `Telegram API error: ${body.description ?? "unknown error"}`,
-        );
-    }
+  const body = (await response.json()) as { ok: boolean; description?: string };
+  if (!body.ok) {
+    throw new Error(
+      `Telegram API error: ${body.description ?? "unknown error"}`,
+    );
+  }
 
-    logger.debug(`Telegram alert delivered successfully to ${chatId}`);
+  logger.debug(`Telegram alert delivered successfully to ${chatId}`);
 }

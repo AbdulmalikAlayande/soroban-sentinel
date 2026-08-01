@@ -1,188 +1,221 @@
 import type { AlertEvent } from "./types.js";
 import { getLogger } from "../logging/index.js";
+import { getStellarExpertContractUrl } from "./links.js";
 import { renderAlertTemplate } from "./templates.js";
 
 const logger = getLogger().child({ component: "SlackHandler" });
 const TIMEOUT_MS = 10_000;
 
 function severityEmoji(event: AlertEvent): string {
-    if (event.type === "alert_resolved") return "✅";
-    if (event.type === "state_changed") return "🔄";
-    if (event.severity === "critical") return "🔴";
-    return "⚠️";
+  if (event.type === "alert_resolved") return "✅";
+  if (event.type === "state_changed") return "🔄";
+  if (event.severity === "critical") return "🔴";
+  return "⚠️";
 }
 
 function buildBlocks(event: AlertEvent): any[] {
-    const icon = severityEmoji(event);
-    const contractDisplay = event.contractName ?? event.contractId;
+  const icon = severityEmoji(event);
+  const contractDisplay = event.contractName ?? event.contractId;
 
-    let status: string;
-    if (event.type === "resource_alert") {
-        const resourceType = event.resource.type === "cpu" ? "CPU" : "Memory";
-        status = `Resource ${resourceType} ${event.severity === "critical" ? "CRITICAL" : "Warning"}`;
-    } else if (event.type === "threshold_crossed") {
-        status = `TTL ${event.severity === "critical" ? "CRITICAL" : "Warning"}`;
-    } else if (event.type === "state_changed") {
-        const diffLabel = event.diff.diffType.charAt(0).toUpperCase() + event.diff.diffType.slice(1);
-        status = `State ${diffLabel}`;
-    } else {
-        status = "Alert Resolved";
-    }
+  let status: string;
+  if (event.type === "resource_alert") {
+    const resourceType = event.resource.type === "cpu" ? "CPU" : "Memory";
+    status = `Resource ${resourceType} ${event.severity === "critical" ? "CRITICAL" : "Warning"}`;
+  } else if (event.type === "threshold_crossed") {
+    status = `TTL ${event.severity === "critical" ? "CRITICAL" : "Warning"}`;
+  } else if (event.type === "state_changed") {
+    const diffLabel =
+      event.diff.diffType.charAt(0).toUpperCase() +
+      event.diff.diffType.slice(1);
+    status = `State ${diffLabel}`;
+  } else {
+    status = "Alert Resolved";
+  }
 
-    const header = {
-        type: "header",
-        text: {
-            type: "plain_text",
-            text: `${icon} ${status} — ${contractDisplay}`,
-            emoji: true,
+  const header = {
+    type: "header",
+    text: {
+      type: "plain_text",
+      text: `${icon} ${status} — ${contractDisplay}`,
+      emoji: true,
+    },
+  };
+
+  let details: any;
+  if (event.type === "resource_alert") {
+    const usageStr = event.resource.currentUsage.toLocaleString();
+    const limitStr = event.resource.limit.toLocaleString();
+    details = {
+      type: "section",
+      fields: [
+        {
+          type: "mrkdwn",
+          text: `*Resource:*\n${event.resource.type.toUpperCase()}`,
         },
+        { type: "mrkdwn", text: `*Network:*\n${event.network}` },
+        {
+          type: "mrkdwn",
+          text: `*Usage:*\n${usageStr} / ${limitStr} (${event.resource.usagePercent}%)`,
+        },
+        { type: "mrkdwn", text: `*Severity:*\n${event.severity}` },
+      ],
     };
-
-    let details: any;
-    if (event.type === "resource_alert") {
-        const usageStr = event.resource.currentUsage.toLocaleString();
-        const limitStr = event.resource.limit.toLocaleString();
-        details = {
-            type: "section",
-            fields: [
-                { type: "mrkdwn", text: `*Resource:*\n${event.resource.type.toUpperCase()}` },
-                { type: "mrkdwn", text: `*Network:*\n${event.network}` },
-                { type: "mrkdwn", text: `*Usage:*\n${usageStr} / ${limitStr} (${event.resource.usagePercent}%)` },
-                { type: "mrkdwn", text: `*Severity:*\n${event.severity}` },
-            ],
-        };
-    } else if (event.type === "state_changed") {
-        const entryLabel = event.entry.label ?? event.entry.type;
-        const oldVal = event.diff.oldValueXdr ?? "(none)";
-        const newVal = event.diff.newValueXdr ?? "(none)";
-        details = {
-            type: "section",
-            fields: [
-                { type: "mrkdwn", text: `*Entry:*\n${entryLabel}` },
-                { type: "mrkdwn", text: `*Network:*\n${event.network}` },
-                { type: "mrkdwn", text: `*Change Type:*\n${event.diff.diffType}` },
-                { type: "mrkdwn", text: `*Old Value:*\n\`${oldVal}\`` },
-                { type: "mrkdwn", text: `*New Value:*\n\`${newVal}\`` },
-            ],
-        };
-    } else {
-        details = {
-            type: "section",
-            fields: [
-                { type: "mrkdwn", text: `*Entry:*\n${event.entry.label ?? event.entry.type}` },
-                { type: "mrkdwn", text: `*Network:*\n${event.network}` },
-                { type: "mrkdwn", text: `*Remaining TTL:*\n${event.threshold.currentRemainingLedgers.toLocaleString()} ledgers (${event.threshold.approximateTimeRemaining})` },
-                { type: "mrkdwn", text: `*Threshold:*\n${event.threshold.configuredLedgers.toLocaleString()} ledgers` },
-            ],
-        };
-    }
-
-    const footer = {
-        type: "context",
-        elements: [
-            { type: "mrkdwn", text: `Severity: *${event.severity}* | Run \`sorokeep status ${event.contractId}\` for details.` },
-        ],
+  } else if (event.type === "state_changed") {
+    const entryLabel = event.entry.label ?? event.entry.type;
+    const oldVal = event.diff.oldValueXdr ?? "(none)";
+    const newVal = event.diff.newValueXdr ?? "(none)";
+    details = {
+      type: "section",
+      fields: [
+        { type: "mrkdwn", text: `*Entry:*\n${entryLabel}` },
+        { type: "mrkdwn", text: `*Network:*\n${event.network}` },
+        { type: "mrkdwn", text: `*Change Type:*\n${event.diff.diffType}` },
+        { type: "mrkdwn", text: `*Old Value:*\n\`${oldVal}\`` },
+        { type: "mrkdwn", text: `*New Value:*\n\`${newVal}\`` },
+      ],
     };
+  } else {
+    details = {
+      type: "section",
+      fields: [
+        {
+          type: "mrkdwn",
+          text: `*Entry:*\n${event.entry.label ?? event.entry.type}`,
+        },
+        { type: "mrkdwn", text: `*Network:*\n${event.network}` },
+        {
+          type: "mrkdwn",
+          text: `*Remaining TTL:*\n${event.threshold.currentRemainingLedgers.toLocaleString()} ledgers (${event.threshold.approximateTimeRemaining})`,
+        },
+        {
+          type: "mrkdwn",
+          text: `*Threshold:*\n${event.threshold.configuredLedgers.toLocaleString()} ledgers`,
+        },
+      ],
+    };
+  }
 
-    return [header, details, footer];
+  const footer = {
+    type: "context",
+    elements: [
+      {
+        type: "mrkdwn",
+        text: `Severity: *${event.severity}* | Run \`sorokeep status ${event.contractId}\` for details.`,
+      },
+    ],
+  };
+
+  return [header, details, footer];
 }
 
 function buildFallbackText(event: AlertEvent): string {
-    const icon = severityEmoji(event);
-    const contractDisplay = event.contractName ?? event.contractId;
+  const icon = severityEmoji(event);
+  const contractDisplay = event.contractName ?? event.contractId;
+  const stellarExpertLink = getStellarExpertContractUrl(event);
 
-    if (event.type === "resource_alert") {
-        const resourceType = event.resource.type === "cpu" ? "CPU" : "Memory";
-        const status = `Resource ${resourceType} ${event.severity === "critical" ? "CRITICAL" : "Warning"}`;
-        return (
-            `${icon} ${status} — ${contractDisplay} (${event.network}) | ` +
-            `Usage: ${event.resource.currentUsage.toLocaleString()} / ${event.resource.limit.toLocaleString()} ` +
-            `(${event.resource.usagePercent}%)`
-        );
-    } else if (event.type === "state_changed") {
-        const diffLabel = event.diff.diffType.charAt(0).toUpperCase() + event.diff.diffType.slice(1);
-        return (
-            `${icon} State ${diffLabel} — ${contractDisplay} (${event.network}) | ` +
-            `Entry: ${event.entry.label ?? event.entry.type} | ` +
-            `Old: ${event.diff.oldValueXdr ?? "(none)"} → New: ${event.diff.newValueXdr ?? "(none)"}`
-        );
-    } else if (event.type === "threshold_crossed") {
-        const status = `TTL ${event.severity === "critical" ? "CRITICAL" : "Warning"}`;
-        return (
-            `${icon} ${status} — ${contractDisplay} (${event.network}) | ` +
-            `Remaining: ${event.threshold.currentRemainingLedgers.toLocaleString()} ledgers ` +
-            `(${event.threshold.approximateTimeRemaining}) | ` +
-            `Threshold: ${event.threshold.configuredLedgers.toLocaleString()} ledgers`
-        );
-    } else {
-        return `${icon} Alert Resolved — ${contractDisplay} (${event.network})`;
-    }
+  if (event.type === "resource_alert") {
+    const resourceType = event.resource.type === "cpu" ? "CPU" : "Memory";
+    const status = `Resource ${resourceType} ${event.severity === "critical" ? "CRITICAL" : "Warning"}`;
+    return (
+      `${icon} ${status} — ${contractDisplay} (${event.network}) | ` +
+      `Usage: ${event.resource.currentUsage.toLocaleString()} / ${event.resource.limit.toLocaleString()} ` +
+      `(${event.resource.usagePercent}%)` +
+      (stellarExpertLink ? ` | Stellar Expert: ${stellarExpertLink}` : "")
+    );
+  } else if (event.type === "state_changed") {
+    const diffLabel =
+      event.diff.diffType.charAt(0).toUpperCase() +
+      event.diff.diffType.slice(1);
+    return (
+      `${icon} State ${diffLabel} — ${contractDisplay} (${event.network}) | ` +
+      `Entry: ${event.entry.label ?? event.entry.type} | ` +
+      `Old: ${event.diff.oldValueXdr ?? "(none)"} → New: ${event.diff.newValueXdr ?? "(none)"}` +
+      (stellarExpertLink ? ` | Stellar Expert: ${stellarExpertLink}` : "")
+    );
+  } else if (event.type === "threshold_crossed") {
+    const status = `TTL ${event.severity === "critical" ? "CRITICAL" : "Warning"}`;
+    return (
+      `${icon} ${status} — ${contractDisplay} (${event.network}) | ` +
+      `Remaining: ${event.threshold.currentRemainingLedgers.toLocaleString()} ledgers ` +
+      `(${event.threshold.approximateTimeRemaining}) | ` +
+      `Threshold: ${event.threshold.configuredLedgers.toLocaleString()} ledgers` +
+      (stellarExpertLink ? ` | Stellar Expert: ${stellarExpertLink}` : "")
+    );
+  } else {
+    return (
+      `${icon} Alert Resolved — ${contractDisplay} (${event.network})` +
+      (stellarExpertLink ? ` | Stellar Expert: ${stellarExpertLink}` : "")
+    );
+  }
 }
 
 export class SlackChannel {
-    constructor(private readonly webhookUrl: string) {
-        if (!webhookUrl || !webhookUrl.startsWith("http")) {
-            throw new Error("Invalid Slack webhook URL");
-        }
+  constructor(private readonly webhookUrl: string) {
+    if (!webhookUrl || !webhookUrl.startsWith("http")) {
+      throw new Error("Invalid Slack webhook URL");
     }
+  }
 
-    async send(event: AlertEvent): Promise<void> {
-        logger.debug(`Sending Slack alert to webhook`, { type: event.type, contractId: event.contractId });
+  async send(event: AlertEvent): Promise<void> {
+    logger.debug(`Sending Slack alert to webhook`, {
+      type: event.type,
+      contractId: event.contractId,
+    });
 
-        const customMessage = renderAlertTemplate("slack", event);
-        let payload: { text?: string; blocks?: any[] };
+    const customMessage = renderAlertTemplate("slack", event);
+    let payload: { text?: string; blocks?: any[] };
 
-        if (customMessage !== null) {
-            try {
-                const parsed = JSON.parse(customMessage);
-                if (parsed && typeof parsed === "object") {
-                    if (Array.isArray(parsed)) {
-                        payload = { text: buildFallbackText(event), blocks: parsed };
-                    } else {
-                        payload = {
-                            text: parsed.text ?? buildFallbackText(event),
-                            blocks: parsed.blocks,
-                        };
-                    }
-                } else {
-                    payload = { text: customMessage };
-                }
-            } catch {
-                payload = { text: customMessage };
-            }
-        } else {
+    if (customMessage !== null) {
+      try {
+        const parsed = JSON.parse(customMessage);
+        if (parsed && typeof parsed === "object") {
+          if (Array.isArray(parsed)) {
+            payload = { text: buildFallbackText(event), blocks: parsed };
+          } else {
             payload = {
-                text: buildFallbackText(event),
-                blocks: buildBlocks(event),
+              text: parsed.text ?? buildFallbackText(event),
+              blocks: parsed.blocks,
             };
+          }
+        } else {
+          payload = { text: customMessage };
         }
-
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
-        let response: Response;
-        try {
-            response = await fetch(this.webhookUrl, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload),
-                signal: controller.signal,
-            });
-        } finally {
-            clearTimeout(timeout);
-        }
-
-        if (!response.ok) {
-            let errorMsg = `HTTP ${response.status}`;
-            try {
-                const text = await response.text();
-                if (text) errorMsg += `: ${text}`;
-            } catch {
-                // ignore
-            }
-            throw new Error(errorMsg);
-        }
-
-        logger.debug(`Slack alert delivered successfully`);
+      } catch {
+        payload = { text: customMessage };
+      }
+    } else {
+      payload = {
+        text: buildFallbackText(event),
+        blocks: buildBlocks(event),
+      };
     }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+    let response: Response;
+    try {
+      response = await fetch(this.webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!response.ok) {
+      let errorMsg = `HTTP ${response.status}`;
+      try {
+        const text = await response.text();
+        if (text) errorMsg += `: ${text}`;
+      } catch {
+        // ignore
+      }
+      throw new Error(errorMsg);
+    }
+
+    logger.debug(`Slack alert delivered successfully`);
+  }
 }

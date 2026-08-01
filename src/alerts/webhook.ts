@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import type { AlertEvent } from "./types.js";
 import { getLogger } from "../logging/index.js";
+import { getStellarExpertContractUrl } from "./links.js";
 import { renderAlertTemplate } from "./templates.js";
 
 const logger = getLogger().child({ component: "WebhookHandler" });
@@ -17,49 +18,61 @@ const TIMEOUT_MS = 10_000;
  * Throws on any non-2xx response or network error.
  * The caller (dispatcher) is responsible for retry logic via the `delivered` flag.
  */
-export async function sendWebhookAlert(url: string, event: AlertEvent, secret?: string | null): Promise<void> {
-    logger.debug(`Sending webhook alert to ${url}`, { type: event.type, contractId: event.contractId });
+export async function sendWebhookAlert(
+  url: string,
+  event: AlertEvent,
+  secret?: string | null,
+): Promise<void> {
+  logger.debug(`Sending webhook alert to ${url}`, {
+    type: event.type,
+    contractId: event.contractId,
+  });
 
-    const customMessage = renderAlertTemplate("webhook", event);
-    let body: string;
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const customMessage = renderAlertTemplate("webhook", event);
+  let body: string;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
 
-    if (customMessage !== null) {
-        body = customMessage;
-        try {
-            JSON.parse(customMessage);
-        } catch {
-            headers["Content-Type"] = "text/plain";
-        }
-    } else {
-        body = JSON.stringify(event);
-    }
-
-    if (secret) {
-        const signature = createHmac("sha256", secret).update(body).digest("hex");
-        headers["X-Sorokeep-Signature"] = `sha256=${signature}`;
-    }
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
-    let response: Response;
+  if (customMessage !== null) {
+    body = customMessage;
     try {
-        response = await fetch(url, {
-            method: "POST",
-            headers,
-            body,
-            signal: controller.signal,
-        });
-    } finally {
-        clearTimeout(timeout);
+      JSON.parse(customMessage);
+    } catch {
+      headers["Content-Type"] = "text/plain";
     }
+  } else {
+    body = JSON.stringify({
+      ...event,
+      stellarExpertContractUrl: getStellarExpertContractUrl(event),
+    });
+  }
 
-    if (!response.ok) {
-        throw new Error(
-            `Webhook delivery failed: HTTP ${response.status} from ${url}`,
-        );
-    }
+  if (secret) {
+    const signature = createHmac("sha256", secret).update(body).digest("hex");
+    headers["X-Sorokeep-Signature"] = `sha256=${signature}`;
+  }
 
-    logger.debug(`Webhook alert delivered successfully to ${url}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers,
+      body,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      `Webhook delivery failed: HTTP ${response.status} from ${url}`,
+    );
+  }
+
+  logger.debug(`Webhook alert delivered successfully to ${url}`);
 }
