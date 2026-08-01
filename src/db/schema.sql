@@ -48,6 +48,12 @@ CREATE TABLE IF NOT EXISTS alert_configs (
     channel_target TEXT NOT NULL,
     threshold_ledgers INTEGER NOT NULL,
     webhook_secret TEXT,
+    -- Quiet-hours / maintenance-window support (issue #325).
+    -- All three columns are nullable: NULL means no quiet window is configured.
+    -- HH:MM 24-hour format.  quiet_hours_timezone must be a valid IANA tz name.
+    quiet_hours_start    TEXT,
+    quiet_hours_end      TEXT,
+    quiet_hours_timezone TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -67,6 +73,9 @@ CREATE TABLE IF NOT EXISTS alerts_fired (
 
 CREATE INDEX IF NOT EXISTS idx_alerts_fired_undelivered
     ON alerts_fired(delivered, retry_count);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_fired_resolved_fired_at
+    ON alerts_fired(resolved, fired_at DESC);
 
 CREATE TABLE IF NOT EXISTS channel_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -188,6 +197,19 @@ CREATE TABLE IF NOT EXISTS contract_budgets (
 );
 
 
+
+CREATE TABLE IF NOT EXISTS contract_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS contract_group_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id INTEGER NOT NULL REFERENCES contract_groups(id) ON DELETE CASCADE,
+    contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+    UNIQUE(group_id, contract_id)
+);
 
 CREATE TABLE IF NOT EXISTS resource_usage_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

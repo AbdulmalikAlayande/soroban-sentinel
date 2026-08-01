@@ -10,14 +10,32 @@ import {
     insertResourceAlertConfig,
     getContract,
     getAlertHistory,
+    getChannelDeliveryStats,
+    addTargetToAlertConfig,
 } from "../db/repositories.js";
 import { formatContractID, formatTimeToCloseLedger } from "../utils/formatting.js";
 import { deliverSingleAlert } from "../alerts/dispatcher.js";
 import { buildAlertEvent } from "../alerts/types.js";
+import { renderAlertTemplate } from "../alerts/templates.js";
 import { getAlertChannel, listAlertChannels } from "../alerts/registry.js";
 import { registerBuiltinChannels } from "../alerts/builtins.js";
 
 registerBuiltinChannels();
+
+function buildTestEvent(contractId: string, thresholdLedgers: number) {
+    return buildAlertEvent({
+        type: "threshold_crossed",
+        contractId,
+        contractName: null,
+        network: "testnet",
+        entryKeyXdr: "TEST_ENTRY_KEY",
+        entryType: "instance",
+        entryLabel: "test-entry",
+        configuredLedgers: thresholdLedgers,
+        remainingTTL: Math.floor(thresholdLedgers * 0.5),
+        firedAtLedger: 0,
+    });
+}
 
 export function registerAlertsCommand(program: Command): void {
     const alerts = program
@@ -29,14 +47,23 @@ export function registerAlertsCommand(program: Command): void {
         .command("add")
         .description("Add a new alert configuration (TTL-based or resource-based)")
         .requiredOption("--contract <id>", "The contract ID to alert on")
-        .requiredOption("--type <type>", "The notification channel type ('webhook', 'slack', 'discord', 'telegram', or 'pagerduty')")
+        .option("--type <type>", "The notification channel type ('webhook', 'slack', 'discord', 'telegram', or 'pagerduty')")
         .option("--url <url>", "Webhook URL (required if --type is webhook or discord)")
         .option("--channel <channel>", "Slack channel (required if --type is slack)")
         .option("--routing-key <key>", "PagerDuty integration key (required if --type is pagerduty)")
+        .option("--target <type:target>", "Additional targets (repeatable)", (val, prev: string[]) => prev.concat([val]), [])
         .option("--secret <secret>", "HMAC secret for webhook signing (auto-generated if omitted for webhooks)")
         .option("--threshold <ledgers>", "Threshold in number of ledgers (for TTL-based alerts)", (val) => parseInt(val, 10))
         .option("--cpu-limit <instructions>", "CPU instruction limit for resource alerts (default: 100,000,000)", (val) => parseInt(val, 10))
         .option("--mem-limit <bytes>", "Memory byte limit for resource alerts (default: 50,000,000)", (val) => parseInt(val, 10))
+        .option(
+            "--quiet-hours <start-end>",
+            "Suppress alerts during a maintenance window. Format: HH:MM-HH:MM (24-hour), e.g. '22:00-06:00'. Requires --timezone.",
+        )
+        .option(
+            "--timezone <tz>",
+            "IANA timezone name for --quiet-hours interpretation, e.g. 'America/New_York' or 'UTC'.",
+        )
         .action((options) => {
             const contractId = options.contract;
 
@@ -62,31 +89,60 @@ export function registerAlertsCommand(program: Command): void {
                 process.exit(1);
             }
 
-            let target = "";
+            let primaryType = options.type;
+            let primaryTarget = "";
             let webhookSecret: string | undefined;
 
-            if (options.type === "email") {
-                // Not a registered channel — called out explicitly since it's a
-                // common ask, so the error is more helpful than a generic "unknown type".
-                console.error(chalk.red("Error: Email alerting is not yet implemented. Use 'webhook', 'slack', 'discord', 'telegram', or 'pagerduty'."));
-                process.exit(1);
+            const additionalTargets: { type: string; target: string }[] = [];
+            if (options.target) {
+                for (const t of options.target as string[]) {
+                    const parts = t.split(":");
+                    if (parts.length < 2) {
+                        console.error(chalk.red(`Error: --target must be formatted as <type>:<target> (e.g. webhook:https://...). Got: ${t}`));
+                        process.exit(1);
+                    }
+                    const ctype = parts[0]!;
+                    const ctarget = parts.slice(1).join(":");
+
+                    const cdef = getAlertChannel(ctype);
+                    if (!cdef) {
+                        console.error(chalk.red(`Error: Unknown channel type '${ctype}' in --target ${t}`));
+                        process.exit(1);
+                    }
+                    additionalTargets.push({ type: ctype, target: ctarget });
+                }
             }
 
-            const channelDef = getAlertChannel(options.type);
-            if (!channelDef) {
-                const known = listAlertChannels().map((d) => d.name).join(", ");
-                console.error(chalk.red(`Error: --type must be one of: ${known}.`));
-                process.exit(1);
-            } else {
-                const targetValue = (options as Record<string, string | undefined>)[channelDef.targetOption];
-                if (!targetValue) {
-                    console.error(chalk.red(channelDef.missingTargetError));
+            if (!primaryType) {
+                if (additionalTargets.length === 0) {
+                    console.error(chalk.red("Error: You must specify either --type and a target flag (e.g., --url) or provide at least one --target <type>:<target> pair."));
                     process.exit(1);
                 }
-                target = targetValue as string;
+                const first = additionalTargets.shift()!;
+                primaryType = first.type;
+                primaryTarget = first.target;
 
-                if (channelDef.supportsSigning) {
+                const channelDef = getAlertChannel(primaryType);
+                if (channelDef?.supportsSigning) {
                     webhookSecret = options.secret ?? randomBytes(32).toString("hex");
+                }
+            } else {
+                const channelDef = getAlertChannel(primaryType);
+                if (!channelDef) {
+                    const known = listAlertChannels().map((d) => d.name).join(", ");
+                    console.error(chalk.red(`Error: --type must be one of: ${known}.`));
+                    process.exit(1);
+                } else {
+                    const targetValue = (options as Record<string, string | undefined>)[channelDef.targetOption];
+                    if (!targetValue) {
+                        console.error(chalk.red(channelDef.missingTargetError));
+                        process.exit(1);
+                    }
+                    primaryTarget = targetValue as string;
+
+                    if (channelDef.supportsSigning) {
+                        webhookSecret = options.secret ?? randomBytes(32).toString("hex");
+                    }
                 }
             }
 
@@ -97,19 +153,62 @@ export function registerAlertsCommand(program: Command): void {
                     process.exit(1);
                 }
 
-                insertAlertConfig(db, {
+                // ── Quiet-hours / timezone validation ──────────────────────────
+                let quietHoursStart: string | undefined;
+                let quietHoursEnd: string | undefined;
+                let quietHoursTimezone: string | undefined;
+
+                if (options.quietHours || options.timezone) {
+                    if (!options.quietHours || !options.timezone) {
+                        console.error(chalk.red("Error: --quiet-hours and --timezone must be used together."));
+                        process.exit(1);
+                    }
+
+                    // Validate HH:MM-HH:MM format.
+                    const qhMatch = (options.quietHours as string).match(
+                        /^(\d{2}:\d{2})-(\d{2}:\d{2})$/,
+                    );
+                    if (!qhMatch) {
+                        console.error(chalk.red("Error: --quiet-hours must be in HH:MM-HH:MM format, e.g. '22:00-06:00'."));
+                        process.exit(1);
+                    }
+
+                    // Validate IANA timezone.
+                    try {
+                        new Intl.DateTimeFormat("en-US", { timeZone: options.timezone });
+                    } catch {
+                        console.error(chalk.red(`Error: --timezone '${options.timezone}' is not a valid IANA timezone name.`));
+                        process.exit(1);
+                    }
+
+                    quietHoursStart = qhMatch[1];
+                    quietHoursEnd = qhMatch[2];
+                    quietHoursTimezone = options.timezone as string;
+                }
+
+                const alertConfigId = insertAlertConfig(db, {
                     contract_id: contractId,
-                    channel_type: options.type,
-                    channel_target: target,
+                    channel_type: primaryType,
+                    channel_target: primaryTarget,
                     threshold_ledgers: threshold,
                     webhook_secret: webhookSecret,
+                    quiet_hours_start: quietHoursStart,
+                    quiet_hours_end: quietHoursEnd,
+                    quiet_hours_timezone: quietHoursTimezone,
                 });
 
-                console.log(
-                    chalk.green(
-                        `Successfully added alert config: type=${options.type}, target=${target}, threshold=${threshold} ledgers`
-                    )
-                );
+                for (const extra of additionalTargets) {
+                    addTargetToAlertConfig(db, alertConfigId, extra.type, extra.target);
+                }
+
+                let successMsg = `Successfully added alert config: type=${primaryType}, target=${primaryTarget}, threshold=${threshold} ledgers`;
+                if (additionalTargets.length > 0) {
+                    successMsg += `, +${additionalTargets.length} additional target(s)`;
+                }
+                if (quietHoursStart) {
+                    successMsg += `, quiet hours=${quietHoursStart}-${quietHoursEnd} (${quietHoursTimezone})`;
+                }
+                console.log(chalk.green(successMsg));
 
                 if (webhookSecret) {
                     console.log(`  ${chalk.bold("Webhook secret:")} ${webhookSecret}`);
@@ -127,16 +226,22 @@ export function registerAlertsCommand(program: Command): void {
 
                 insertResourceAlertConfig(db, {
                     contract_id: contractId,
-                    channel_type: options.type,
-                    channel_target: target,
+                    channel_type: primaryType,
+                    channel_target: primaryTarget,
                     cpu_limit: cpuLimit,
                     mem_limit: memLimit,
                     webhook_secret: webhookSecret,
                 });
 
+                // Resource alerts don't currently support multiple targets in schema, but we can log that we aren't supporting it if there are additional targets, 
+                // or just leave them since the issue only requested it for standard alert_configs.
+                if (additionalTargets.length > 0) {
+                    console.log(chalk.yellow("Warning: Additional targets are currently only supported for TTL alerts, not resource alerts."));
+                }
+
                 console.log(
                     chalk.green(
-                        `Successfully added alert config: type=${options.type}, target=${target}, CPU=${cpuLimit.toLocaleString()} instr, MEM=${memLimit.toLocaleString()} bytes`
+                        `Successfully added alert config: type=${primaryType}, target=${primaryTarget}, CPU=${cpuLimit.toLocaleString()} instr, MEM=${memLimit.toLocaleString()} bytes`
                     )
                 );
 
@@ -184,6 +289,31 @@ export function registerAlertsCommand(program: Command): void {
             console.log();
         });
 
+    // ── alerts channels ────────────────────────────────────────────────
+    alerts
+        .command("channels")
+        .description("List all registered alert channel plugins")
+        .action(() => {
+            const channels = listAlertChannels();
+
+            if (channels.length === 0) {
+                console.log(chalk.yellow("No alert channels are registered."));
+                return;
+            }
+
+            console.log();
+            console.log(chalk.bold("  Registered Alert Channels"));
+            console.log();
+            for (const channel of channels) {
+                console.log(
+                    `  Name: ${chalk.cyan(channel.name.padEnd(12))} | ` +
+                    `Target: ${chalk.yellow(channel.targetOption.padEnd(10))} | ` +
+                    `Signing: ${chalk.green(channel.supportsSigning ? "yes" : "no")}`
+                );
+            }
+            console.log();
+        });
+
     // ── alerts remove ──────────────────────────────────────────────────
     alerts
         .command("remove")
@@ -206,6 +336,7 @@ export function registerAlertsCommand(program: Command): void {
         .command("test")
         .description("Send a test alert to verify channel connectivity")
         .requiredOption("--id <id>", "The alert configuration ID to test")
+        .option("--dry-run", "Print the exact payload and do not call the delivery function")
         .action(async (options) => {
             const id = parseInt(options.id, 10);
             if (isNaN(id)) {
@@ -220,18 +351,29 @@ export function registerAlertsCommand(program: Command): void {
                 process.exit(1);
             }
 
-            const testEvent = buildAlertEvent({
-                type: "threshold_crossed",
-                contractId: config.contract_id,
-                contractName: null,
-                network: "testnet",
-                entryKeyXdr: "TEST_ENTRY_KEY",
-                entryType: "instance",
-                entryLabel: "test-entry",
-                configuredLedgers: config.threshold_ledgers,
-                remainingTTL: Math.floor(config.threshold_ledgers * 0.5),
-                firedAtLedger: 0,
-            });
+            const testEvent = buildTestEvent(config.contract_id, config.threshold_ledgers);
+
+            if (options.dryRun) {
+                if (config.channel_type === "webhook") {
+                    const customMessage = renderAlertTemplate("webhook", testEvent);
+                    let body: string;
+                    if (customMessage !== null) {
+                        body = customMessage;
+                    } else {
+                        body = JSON.stringify(testEvent);
+                    }
+
+                    if (config.webhook_secret) {
+                        const { createHmac } = await import("node:crypto");
+                        const signature = createHmac("sha256", config.webhook_secret).update(body).digest("hex");
+                        console.log(`X-Sorokeep-Signature: sha256=${signature}`);
+                    }
+                    console.log(body);
+                } else {
+                    console.log(JSON.stringify(testEvent));
+                }
+                return;
+            }
 
             console.log(`Sending test alert to ${config.channel_type}:${config.channel_target}...`);
 
@@ -246,6 +388,66 @@ export function registerAlertsCommand(program: Command): void {
                 console.log(chalk.green("Test alert delivered successfully."));
             } else {
                 console.error(chalk.red("Test alert delivery failed. Check logs for details."));
+                process.exit(1);
+            }
+        });
+
+    // ── alerts test-all ────────────────────────────────────────────────
+    alerts
+        .command("test-all")
+        .description("Send test alerts to every configured channel for a contract")
+        .requiredOption("--contract <id>", "The contract ID to test alerts for")
+        .action(async (options) => {
+            const contractId = options.contract;
+            const db = getDatabase();
+
+            const contract = getContract(db, contractId);
+            if (!contract) {
+                console.error(chalk.red(`Error: Contract ${formatContractID(contractId)} is not registered.`));
+                process.exit(1);
+            }
+
+            const configs = getAlertConfigsForContract(db, contractId);
+            if (configs.length === 0) {
+                console.log(chalk.yellow(`No alert configurations found for contract ${formatContractID(contractId)}.`));
+                return;
+            }
+
+            const results: Array<{ channelType: string; target: string; success: boolean; }> = [];
+
+            for (const config of configs) {
+                const testEvent = buildTestEvent(config.contract_id, config.threshold_ledgers);
+                console.log(`Sending test alert to ${config.channel_type}:${config.channel_target}...`);
+
+                const success = await deliverSingleAlert(
+                    config.channel_type,
+                    config.channel_target,
+                    testEvent,
+                    config.webhook_secret,
+                );
+
+                results.push({
+                    channelType: config.channel_type,
+                    target: config.channel_target,
+                    success,
+                });
+            }
+
+            console.log();
+            console.log(chalk.bold(`  Alert Connectivity Summary for ${contract.name ?? formatContractID(contractId)}`));
+            console.log();
+            for (const result of results) {
+                console.log(
+                    `  Type: ${chalk.cyan(result.channelType.padEnd(10))} | ` +
+                    `Target: ${chalk.yellow(result.target.padEnd(30))} | ` +
+                    `Status: ${result.success ? chalk.green("success") : chalk.red("failure")}`
+                );
+            }
+            console.log();
+
+            const failedCount = results.filter((result) => !result.success).length;
+            if (failedCount > 0) {
+                console.error(chalk.red(`${failedCount} channel(s) failed connectivity testing.`));
                 process.exit(1);
             }
         });
@@ -292,6 +494,33 @@ export function registerAlertsCommand(program: Command): void {
                     console.log(chalk.dim(`    Resolved: ${record.resolvedAt}`));
                 }
             }
+            console.log();
+        });
+
+    // ── alerts stats ───────────────────────────────────────────────────
+    alerts
+        .command("stats")
+        .description("View delivery stats and success rates for an alert channel")
+        .requiredOption("--type <type>", "The notification channel type (e.g., webhook, slack)")
+        .option("--days <days>", "Number of days to look back (default: all time)", (val) => parseInt(val, 10))
+        .action((options) => {
+            const db = getDatabase();
+
+            const stats = getChannelDeliveryStats(db, options.type, options.days);
+
+            console.log(`\n${chalk.bold("Delivery Stats")} — ${chalk.cyan(options.type)}`);
+            if (options.days) {
+                console.log(chalk.dim(`Over the last ${options.days} days`));
+            }
+            console.log();
+            console.log(`  Total Attempts: ${stats.totalAttempts}`);
+            console.log(`  Delivered:      ${chalk.green(stats.deliveredCount)}`);
+            console.log(`  Failed:         ${chalk.yellow(stats.failedCount)}`);
+            console.log(`  Abandoned:      ${chalk.red(stats.abandonedCount)}`);
+            console.log();
+
+            const rateColor = stats.successRate >= 90 ? chalk.green : (stats.successRate >= 50 ? chalk.yellow : chalk.red);
+            console.log(`  Success Rate:   ${rateColor(stats.successRate.toFixed(1))}%`);
             console.log();
         });
 }

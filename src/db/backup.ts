@@ -216,8 +216,28 @@ export function exportDatabase(db: Database.Database): DatabaseBackup {
     return backup;
 }
 
-export function importDatabase(db: Database.Database, backup: DatabaseBackup): void {
+export function isDatabaseEmpty(db: Database.Database): boolean {
+    for (const table of EXPORT_TABLES) {
+        try {
+            const row = db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get();
+            if (row) return false;
+        } catch {
+            // Table doesn't exist yet
+        }
+    }
+    return true;
+}
+
+export function importDatabase(db: Database.Database, backup: DatabaseBackup, options?: { mode?: "replace" | "merge" }): void {
     validateBackup(backup);
+    const currentVersion = getCurrentSchemaVersion(db);
+
+    if (backup.schema_version === undefined) {
+        throw new Error("Invalid database backup: unknown schema version");
+    }
+    if (backup.schema_version !== currentVersion) {
+        throw new Error(`Invalid database backup: mismatched schema version. Backup is ${backup.schema_version}, current is ${currentVersion}`);
+    }
 
     const transaction = db.transaction((payload: DatabaseBackup) => {
         // Delete in dependant-first order so FK constraints are not violated
@@ -235,7 +255,7 @@ export function importDatabase(db: Database.Database, backup: DatabaseBackup): v
             // but the SQL column list uses the quoted form where needed.
             const placeholders = columns.map((col) => `@${unquote(col)}`).join(", ");
             const insert = db.prepare(
-                `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`
+                `${insertCommand} INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`
             );
 
             for (const row of rows) {

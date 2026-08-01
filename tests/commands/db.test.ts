@@ -90,7 +90,7 @@ describe("db command", () => {
             alert_configs: [],
             channel_accounts: [],
             resource_alert_configs: [],
-        });
+        }, { mode: "replace" });
         expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Database import complete"));
 
         fs.rmSync(tempDir, { recursive: true, force: true });
