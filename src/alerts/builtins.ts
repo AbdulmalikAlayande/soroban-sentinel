@@ -3,6 +3,7 @@ import { sendWebhookAlert } from "./webhook.js";
 import { SlackChannel } from "./slack.js";
 import { sendPagerDutyAlert } from "./pagerduty.js";
 import { sendOpsgenieAlert } from "./opsgenie.js";
+import { sendGoogleChatAlert } from "./googlechat.js";
 
 let registered = false;
 
@@ -42,6 +43,13 @@ export function registerBuiltinChannels(): void {
             supportsSigning: false,
         },
         {
+            name: "googlechat",
+            channel: { send: sendGoogleChatAlert },
+            targetOption: "url",
+            missingTargetError: "Error: --url is required when --type is googlechat.",
+            supportsSigning: false,
+        },
+        {
             name: "discord",
             channel: {
                 send: async (target, event) => {
@@ -64,6 +72,9 @@ export function registerBuiltinChannels(): void {
             targetOption: "channel",
             missingTargetError: "Error: --channel is required when --type is telegram (use chat ID or @channelname).",
             supportsSigning: false,
+            // Telegram's Bot API rate limits are stricter than a generic webhook's —
+            // give up sooner rather than hammering a channel that's already throttling us.
+            maxRetries: 3,
         },
         {
             name: "opsgenie",
@@ -94,6 +105,18 @@ export function registerBuiltinChannels(): void {
             },
             targetOption: "channel",
             missingTargetError: "Error: --channel is required when --type is matrix (use the Matrix room ID).",
+            supportsSigning: false,
+        },
+        {
+            name: "email",
+            channel: {
+                send: async (target, event) => {
+                    const { sendEmailAlert } = await import("./email.js");
+                    await sendEmailAlert(target, event);
+                },
+            },
+            targetOption: "channel",
+            missingTargetError: "Error: --channel is required when --type is email (use the recipient email address).",
             supportsSigning: false,
         },
     ];
