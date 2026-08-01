@@ -77,7 +77,7 @@ export async function startDaemon(
     // Start the metrics server if a port was configured.
     if (options?.metricsPort !== undefined) {
         try {
-            createMetricsServer(options.metricsPort);
+            createMetricsServer(options.metricsPort, db);
             logger().info(`Metrics server listening on http://127.0.0.1:${options.metricsPort}/metrics`);
         } catch (err: unknown) {
             logger().error("Failed to start metrics server", err);

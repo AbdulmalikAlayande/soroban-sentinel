@@ -1,6 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
 import http from "node:http";
 import { createMetricsServer, stopMetricsServer } from "../../src/observability/server.js";
+import { getDatabaseForTesting } from "../../src/db/database.js";
+import { insertContract, updateLastCheckedLedger, upsertEntry } from "../../src/db/repositories.js";
+import { TTL_GAUGE_NAME } from "../../src/observability/metrics/ttl.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -90,6 +93,30 @@ describe("Observability metrics server", () => {
                     `Line is not valid Prometheus exposition format: "${line}"`,
                 ).toBe(true);
             }
+        });
+
+        it("recomputes DB-backed metrics from the live database on every scrape when a db handle is provided", async () => {
+            const db = getDatabaseForTesting();
+            insertContract(db, { id: "C-METRICS-SMOKE", name: "MetricsSmoke", network: "testnet" });
+            updateLastCheckedLedger(db, "C-METRICS-SMOKE", 1_000);
+            upsertEntry(db, {
+                contract_id: "C-METRICS-SMOKE",
+                entry_key_xdr: "xdr-smoke",
+                entry_type: "instance",
+                live_until_ledger: 1_500,
+            });
+
+            const port = nextPort();
+            createMetricsServer(port, db);
+
+            const response = await fetchMetrics(port);
+
+            expect(response.body).toContain(TTL_GAUGE_NAME);
+            expect(response.body).toMatch(
+                new RegExp(`^${TTL_GAUGE_NAME}\\{contract_id="C-METRICS-SMOKE".*\\} 500$`, "m"),
+            );
+
+            db.close();
         });
 
         it("is idempotent — multiple GET requests all return 200", async () => {

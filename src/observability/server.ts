@@ -1,21 +1,28 @@
+import type Database from "better-sqlite3";
 import { Hono } from "hono";
 import http from "node:http";
-import { register } from "./registry.js";
+import { register, collectAllMetrics } from "./registry.js";
+
+// ─── Module-level state ──────────────────────────────────────────────────────
+
+let activeServer: http.Server | null = null;
+let activeDb: Database.Database | null = null;
 
 // ─── Application ─────────────────────────────────────────────────────────────
 
 const app = new Hono();
 
 app.get("/metrics", async (c) => {
+    // Recompute every DB-backed metric from the live database on every
+    // scrape — no caching layer, so readings always reflect the most
+    // recent monitor cycle.
+    if (activeDb) collectAllMetrics(activeDb);
+
     const body = await register.metrics();
     return c.text(body, 200, {
         "Content-Type": "text/plain; version=0.0.4",
     });
 });
-
-// ─── Module-level state ──────────────────────────────────────────────────────
-
-let activeServer: http.Server | null = null;
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -27,13 +34,16 @@ let activeServer: http.Server | null = null;
  * — it does not block or affect the monitoring loop's timer.
  *
  * @param port TCP port to listen on.
+ * @param db Optional database handle. When provided, every DB-backed
+ *   metric is recomputed from the live database on each scrape.
  */
-export function createMetricsServer(port: number): void {
+export function createMetricsServer(port: number, db?: Database.Database): void {
     // Replace any existing server so the caller gets a clean restart.
     if (activeServer) {
         activeServer.close();
         activeServer = null;
     }
+    activeDb = db ?? null;
 
     const server = http.createServer((_req, res) => {
         // Bridge the Node.js IncomingMessage → Hono Request → Node.js ServerResponse
@@ -120,6 +130,7 @@ export async function stopMetricsServer(): Promise<void> {
         activeServer!.closeIdleConnections();
         activeServer!.close(() => {
             activeServer = null;
+            activeDb = null;
             resolve();
         });
     });
