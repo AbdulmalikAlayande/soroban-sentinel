@@ -467,45 +467,41 @@ Failed alert deliveries are automatically retried on subsequent daemon cycles. A
 
 Sorokeep is an off-chain monitoring tool. It reads data from the Stellar RPC, stores it locally in SQLite, and acts on it (alerts, auto-extension, restoration). It does not run on-chain and does not require you to modify your contracts.
 
-```
-                         ┌─────────────────────┐
-                         │   Stellar Network    │
-                         │  (testnet / mainnet) │
-                         └──────────┬───────────┘
-                                    │ RPC
-                         ┌──────────▼───────────┐
-                         │   Sorokeep    │
-                         │                       │
-                         │  ┌─────────────────┐  │
-                         │  │  Monitor Cycle   │  │
-                         │  │  (fetch TTLs,    │  │
-                         │  │   detect alerts, │  │
-                         │  │   resolve)       │  │
-                         │  └────────┬────────┘  │
-                         │           │            │
-                         │  ┌────────▼────────┐  │
-                         │  │   Dispatcher     │  │
-                         │  │  (webhook/slack) │  │
-                         │  └────────┬────────┘  │
-                         │           │            │
-                         │  ┌────────▼────────┐  │
-                         │  │  Auto-Extend     │  │
-                         │  │  (guard policy)  │  │
-                         │  └─────────────────┘  │
-                         │                       │
-                         │  ┌─────────────────┐  │
-                         │  │   SQLite DB      │  │
-                         │  │  ~/.soroban-     │  │
-                         │  │   sorokeep/     │  │
-                         │  │   sorokeep.db    │  │
-                         │  └─────────────────┘  │
-                         └───────────────────────┘
-                                    │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-              ┌──────────┐  ┌────────────┐  ┌────────────┐
-              │ Webhooks │  │   Slack    │  │  Terminal  │
-              └──────────┘  └────────────┘  └────────────┘
+```mermaid
+sequenceDiagram
+    participant Loop as loop.ts
+    participant Monitor as monitor.ts
+    participant Extension as extension.ts
+    participant Dispatcher as dispatcher.ts
+    participant DB as repositories.ts
+
+    Note over Loop: executeCycle() tick
+
+    Loop->>Monitor: runMonitorCycle()
+    activate Monitor
+    
+    Note over Monitor: 1. Batch-fetch TTLs<br/>2. Update DB<br/>3. Threshold detection
+    
+    Monitor->>Extension: runAutoExtensions()
+    activate Extension
+    Note over Extension: Evaluate policies &<br/>submit ExtendFootprintTTLOp
+    Extension-->>Monitor: Extension results
+    deactivate Extension
+    
+    Monitor-->>Loop: MonitorCycleResult
+    deactivate Monitor
+
+    Loop->>Dispatcher: deliverPendingAlerts()
+    activate Dispatcher
+    Note over Dispatcher: Route queued alerts to channels<br/>(Webhook, Slack, etc.)
+    Dispatcher-->>Loop: Delivery stats
+    deactivate Dispatcher
+
+    Loop->>DB: aggregateDailyCostSnapshots()
+    activate DB
+    Note over DB: Roll extension_history<br/>into cost_daily_snapshots
+    DB-->>Loop: void
+    deactivate DB
 ```
 
 ### The Daemon Cycle
