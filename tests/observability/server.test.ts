@@ -11,7 +11,7 @@ import { TTL_GAUGE_NAME } from "../../src/observability/metrics/ttl.js";
  * Make an HTTP GET request to the local metrics server and return the
  * status, headers, and body as plain text.
  */
-function fetchMetrics(port: number): Promise<{
+function fetchMetrics(port: number, requestHeaders: Record<string, string> = {}): Promise<{
     status: number;
     headers: Record<string, string>;
     body: string;
@@ -19,7 +19,7 @@ function fetchMetrics(port: number): Promise<{
     const url = `http://127.0.0.1:${port}/metrics`;
 
     return new Promise((resolve, reject) => {
-        http.get(url, (res) => {
+        http.get(url, { headers: requestHeaders }, (res) => {
             let body = "";
             res.on("data", (chunk: string) => {
                 body += chunk;
@@ -50,6 +50,58 @@ describe("Observability metrics server", () => {
     afterEach(async () => {
         // Always clean up the server between tests
         await stopMetricsServer();
+        delete process.env["SOROKEEP_METRICS_TOKEN"];
+    });
+
+    describe("Bearer token auth", () => {
+        const TOKEN = "super-secret-metrics-token-123";
+
+        it("succeeds without any Authorization header when no token is configured (default)", async () => {
+            delete process.env["SOROKEEP_METRICS_TOKEN"];
+            const port = nextPort();
+            createMetricsServer(port);
+
+            const res = await fetchMetrics(port);
+            expect(res.status).toBe(200);
+        });
+
+        it("returns 401 with an empty body when a token is configured and no Authorization header is sent", async () => {
+            process.env["SOROKEEP_METRICS_TOKEN"] = TOKEN;
+            const port = nextPort();
+            createMetricsServer(port);
+
+            const res = await fetchMetrics(port);
+            expect(res.status).toBe(401);
+            expect(res.body).toBe("");
+        });
+
+        it("returns 401 when the token is incorrect", async () => {
+            process.env["SOROKEEP_METRICS_TOKEN"] = TOKEN;
+            const port = nextPort();
+            createMetricsServer(port);
+
+            const res = await fetchMetrics(port, { Authorization: "Bearer wrong-token" });
+            expect(res.status).toBe(401);
+            expect(res.body).toBe("");
+        });
+
+        it("returns 401 when the Authorization header isn't the Bearer scheme", async () => {
+            process.env["SOROKEEP_METRICS_TOKEN"] = TOKEN;
+            const port = nextPort();
+            createMetricsServer(port);
+
+            const res = await fetchMetrics(port, { Authorization: `Basic ${TOKEN}` });
+            expect(res.status).toBe(401);
+        });
+
+        it("succeeds with 200 when the correct Bearer token is provided", async () => {
+            process.env["SOROKEEP_METRICS_TOKEN"] = TOKEN;
+            const port = nextPort();
+            createMetricsServer(port);
+
+            const res = await fetchMetrics(port, { Authorization: `Bearer ${TOKEN}` });
+            expect(res.status).toBe(200);
+        });
     });
 
     describe("/metrics endpoint", () => {
