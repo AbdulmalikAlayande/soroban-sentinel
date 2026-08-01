@@ -84,6 +84,7 @@ const TABLE_COLUMNS: Record<(typeof EXPORT_TABLES)[number], readonly string[]> =
 };
 
 export interface DatabaseBackup {
+    schema_version?: number;
     contracts: Record<string, unknown>[];
     contract_entries: Record<string, unknown>[];
     extension_policies: Record<string, unknown>[];
@@ -92,8 +93,18 @@ export interface DatabaseBackup {
     resource_alert_configs: Record<string, unknown>[];
 }
 
+function getCurrentSchemaVersion(db: Database.Database): number {
+    try {
+        const row = db.prepare("SELECT MAX(version) as max_version FROM schema_migrations").get() as { max_version: number | null } | undefined;
+        return row?.max_version ?? 0;
+    } catch {
+        return 0;
+    }
+}
+
 export function exportDatabase(db: Database.Database): DatabaseBackup {
     return {
+        schema_version: getCurrentSchemaVersion(db),
         contracts: selectTable(db, "contracts"),
         contract_entries: selectTable(db, "contract_entries"),
         extension_policies: selectTable(db, "extension_policies"),
@@ -103,12 +114,34 @@ export function exportDatabase(db: Database.Database): DatabaseBackup {
     };
 }
 
-export function importDatabase(db: Database.Database, backup: DatabaseBackup): void {
+export function isDatabaseEmpty(db: Database.Database): boolean {
+    for (const table of EXPORT_TABLES) {
+        try {
+            const row = db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get();
+            if (row) return false;
+        } catch {
+            // Table doesn't exist yet
+        }
+    }
+    return true;
+}
+
+export function importDatabase(db: Database.Database, backup: DatabaseBackup, options?: { mode?: "replace" | "merge" }): void {
     validateBackup(backup);
+    const currentVersion = getCurrentSchemaVersion(db);
+
+    if (backup.schema_version === undefined) {
+        throw new Error("Invalid database backup: unknown schema version");
+    }
+    if (backup.schema_version !== currentVersion) {
+        throw new Error(`Invalid database backup: mismatched schema version. Backup is ${backup.schema_version}, current is ${currentVersion}`);
+    }
 
     const transaction = db.transaction((payload: DatabaseBackup) => {
-        for (const table of CLEAR_TABLES) {
-            db.prepare(`DELETE FROM ${table}`).run();
+        if (options?.mode !== "merge") {
+            for (const table of CLEAR_TABLES) {
+                db.prepare(`DELETE FROM ${table}`).run();
+            }
         }
 
         for (const table of EXPORT_TABLES) {
@@ -119,8 +152,9 @@ export function importDatabase(db: Database.Database, backup: DatabaseBackup): v
 
             const columns = TABLE_COLUMNS[table];
             const placeholders = columns.map((column) => `@${column}`).join(", ");
+            const insertCommand = options?.mode === "merge" ? "INSERT OR IGNORE" : "INSERT";
             const insert = db.prepare(
-                `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`
+                `${insertCommand} INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`
             );
 
             for (const row of rows) {

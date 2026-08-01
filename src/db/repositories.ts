@@ -46,6 +46,12 @@ export interface AlertConfig {
     channel_target: string;
     threshold_ledgers: number;
     webhook_secret: string | null;
+    /** HH:MM (24-hour) start of the quiet / maintenance window, or null if not configured. */
+    quiet_hours_start: string | null;
+    /** HH:MM (24-hour) end of the quiet / maintenance window, or null if not configured. */
+    quiet_hours_end: string | null;
+    /** IANA timezone name used to interpret quiet_hours_start / quiet_hours_end, or null. */
+    quiet_hours_timezone: string | null;
     created_at: Date;
 }
 
@@ -93,6 +99,18 @@ export interface StateChange {
     diff_json: string;
     detected_at_ledger: number;
     created_at: string;
+}
+
+export interface ContractGroup {
+    id: number;
+    name: string;
+    created_at: string;
+}
+
+export interface ContractGroupMember {
+    id: number;
+    group_id: number;
+    contract_id: string;
 }
 
 export { upsertBudget, getBudget, addBudgetSpent } from "./budget.js";
@@ -273,13 +291,19 @@ export function insertAlertConfig(db: Database.Database, config: {
   channel_target: string;
   threshold_ledgers: number;
   webhook_secret?: string;
+  quiet_hours_start?: string | null;
+  quiet_hours_end?: string | null;
+  quiet_hours_timezone?: string | null;
 }): void {
   db.prepare(`
-    INSERT INTO alert_configs (contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret)
-    VALUES (@contract_id, @channel_type, @channel_target, @threshold_ledgers, @webhook_secret)
+    INSERT INTO alert_configs (contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, quiet_hours_start, quiet_hours_end, quiet_hours_timezone)
+    VALUES (@contract_id, @channel_type, @channel_target, @threshold_ledgers, @webhook_secret, @quiet_hours_start, @quiet_hours_end, @quiet_hours_timezone)
   `).run({
     ...config,
     webhook_secret: config.webhook_secret ?? null,
+    quiet_hours_start: config.quiet_hours_start ?? null,
+    quiet_hours_end: config.quiet_hours_end ?? null,
+    quiet_hours_timezone: config.quiet_hours_timezone ?? null,
   });
 }
 
@@ -646,6 +670,12 @@ export interface UndeliveredAlert {
     firedAtLedger: number;
     firedAt: string;
     retryCount: number;
+    /** HH:MM (24-hour) start of the quiet window, or null if not configured. */
+    quietHoursStart: string | null;
+    /** HH:MM (24-hour) end of the quiet window, or null if not configured. */
+    quietHoursEnd: string | null;
+    /** IANA timezone for the quiet window, or null if not configured. */
+    quietHoursTimezone: string | null;
 }
 
 /** Maximum number of delivery attempts before giving up on an alert. */
@@ -678,7 +708,10 @@ export function getUndeliveredAlerts(
             af.ttl_at_fire   AS remainingTTL,
             af.fired_at_ledger AS firedAtLedger,
             af.fired_at      AS firedAt,
-            af.retry_count   AS retryCount
+            af.retry_count   AS retryCount,
+            ac.quiet_hours_start    AS quietHoursStart,
+            ac.quiet_hours_end      AS quietHoursEnd,
+            ac.quiet_hours_timezone AS quietHoursTimezone
         FROM alerts_fired af
         JOIN alert_configs ac  ON ac.id  = af.alert_config_id
         JOIN contract_entries ce ON ce.id = af.contract_entry_id
@@ -1327,5 +1360,85 @@ export function getLatestResourceUsageLog(
         ORDER BY recorded_at DESC, id DESC
         LIMIT 1
     `).get(contractId) as ResourceUsageLog | undefined;
+}
+
+// ─── Contract Groups (issue #394) ────────────────────────────────────────────
+
+/**
+ * Create a new named group.
+ *
+ * @returns The auto-assigned row id of the new group.
+ */
+export function createGroup(
+    db: Database.Database,
+    group: { name: string },
+): number {
+    const result = db.prepare(`
+        INSERT INTO contract_groups (name)
+        VALUES (@name)
+    `).run({ name: group.name });
+    return result.lastInsertRowid as number;
+}
+
+/**
+ * Add a contract to a group.
+ * Idempotent — safe to call more than once (UNIQUE constraint).
+ */
+export function addContractToGroup(
+    db: Database.Database,
+    membership: { group_id: number; contract_id: string },
+): void {
+    db.prepare(`
+        INSERT OR IGNORE INTO contract_group_members (group_id, contract_id)
+        VALUES (@group_id, @contract_id)
+    `).run(membership);
+}
+
+/**
+ * Remove a contract from a group.
+ * No-op if the membership does not exist.
+ */
+export function removeContractFromGroup(
+    db: Database.Database,
+    membership: { group_id: number; contract_id: string },
+): void {
+    db.prepare(`
+        DELETE FROM contract_group_members
+        WHERE group_id = @group_id AND contract_id = @contract_id
+    `).run(membership);
+}
+
+/**
+ * Return all contracts that belong to the given group.
+ * Joins contract_group_members → contracts so the result includes full
+ * contract rows.
+ */
+export function getContractsInGroup(
+    db: Database.Database,
+    groupId: number,
+): Contract[] {
+    return db.prepare(`
+        SELECT c.*
+        FROM contracts c
+        JOIN contract_group_members cgm ON cgm.contract_id = c.id
+        WHERE cgm.group_id = ?
+        ORDER BY c.id ASC
+    `).all(groupId) as Contract[];
+}
+
+/**
+ * Return all groups that the given contract belongs to.
+ */
+export function getGroupsForContract(
+    db: Database.Database,
+    contractId: string,
+): ContractGroup[] {
+    return db.prepare(`
+        SELECT cg.*
+        FROM contract_groups cg
+        JOIN contract_group_members cgm ON cgm.group_id = cg.id
+        WHERE cgm.contract_id = ?
+        ORDER BY cg.name ASC
+    `).all(contractId) as ContractGroup[];
 }
 

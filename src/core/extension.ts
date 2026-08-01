@@ -302,20 +302,31 @@ export async function runAutoExtensions(
 
     result.contractsChecked = eligibleContracts.length;
 
-    await Promise.all(eligibleContracts.map(async contract => {
+    const extJitterStr = process.env.EXTENSION_JITTER_MS;
+    const extensionJitterMs = extJitterStr ? parseInt(extJitterStr, 10) : 0;
+    
+    const eligibleTasks = [];
+    for (const contract of eligibleContracts) {
         const policy = getExtensionPolicy(db, contract.id)!;
+        const entries = getEntriesForContract(db, contract.id);
+        const needsExtension = entries.filter(e => {
+            if (!e.live_until_ledger) return false;
+            const remaining = e.live_until_ledger - latestLedger;
+            return remaining >= 0 && remaining < policy.extend_when_below_ledgers;
+        });
+
+        if (needsExtension.length > 0) {
+            eligibleTasks.push({ contract, policy, needsExtension });
+        }
+    }
+
+    await Promise.all(eligibleTasks.map(async ({ contract, policy, needsExtension }) => {
+        if (extensionJitterMs > 0 && eligibleTasks.length > 1) {
+            const delay = Math.floor(Math.random() * extensionJitterMs);
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
 
         try {
-            const entries = getEntriesForContract(db, contract.id);
-
-            const needsExtension = entries.filter(e => {
-                if (!e.live_until_ledger) return false;
-                const remaining = e.live_until_ledger - latestLedger;
-                return remaining >= 0 && remaining < policy.extend_when_below_ledgers;
-            });
-
-            if (needsExtension.length === 0) return;
-
             // ── Rate limit check (issue #142) ────────────────────────────────
             if (isRateLimited(db, contract.id)) {
                 const count = countExtensionsInLastHour(db, contract.id);
