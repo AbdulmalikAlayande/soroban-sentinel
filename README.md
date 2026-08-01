@@ -1,6 +1,10 @@
 <p align="center">
   <h1 align="center">Sorokeep</h1>
   <p align="center">
+    <a href="README.md">English</a>
+    &middot;
+    <a href="README.es.md">Español</a>
+    &middot;
     <a href="README.pt.md">Português (Brasil)</a>
   </p>
   <p align="center">
