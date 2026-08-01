@@ -17,6 +17,10 @@ import { daemonCycleDuration, daemonCyclesSkipped } from "./metrics/daemon.js";
 register.registerMetric(daemonCycleDuration);
 register.registerMetric(daemonCyclesSkipped);
 
+import { contractsTrackedGauge, entriesTrackedGauge, collectFleetMetrics } from "./metrics/fleet.js";
+register.registerMetric(contractsTrackedGauge);
+register.registerMetric(entriesTrackedGauge);
+
 /**
  * Recompute every DB-backed metric from the live database. Called once per
  * `/metrics` scrape (see `observability/server.ts`) so gauges never emit
@@ -27,4 +31,5 @@ export function collectAllMetrics(db: Database.Database): void {
     collectBudgetRemaining(db);
     setEntryTtlGaugeSamples(db);
     collectExtensionCostMetrics(db);
+    collectFleetMetrics(db);
 }
