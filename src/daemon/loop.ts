@@ -6,6 +6,7 @@ import { aggregateDailyCostSnapshots, getAllContracts } from "../db/repositories
 import { getLogger } from "../logging/index.js";
 import type { Logger } from "../logging/types.js";
 import { createMetricsServer, stopMetricsServer } from "../observability/server.js";
+import { daemonCycleDuration, daemonCyclesSkipped } from "../observability/metrics/daemon.js";
 
 // Resolve the child logger lazily so that a runtime reconfiguration of the
 // global logger (e.g. the daemon command's `--log-format json`) is in effect
@@ -146,6 +147,10 @@ async function executeCycle(
             `extended: ${result.extensionsTriggered}, ` +
             `errors: ${result.errors.length}`,
         );
+        daemonCycleDuration.observe(
+            { network },
+            (result.cycleFinishedAt.getTime() - result.cycleStartedAt.getTime()) / 1000,
+        );
 
         // Step 2: deliver any pending alerts that accumulated during detection.
         // Errors here are isolated — they must NOT kill the cycle or surface to onCycle.
@@ -188,6 +193,7 @@ async function scheduledTick(
     onCycle: DaemonOptions["onCycle"],
 ): Promise<void> {
     if (cycleInFlight) {
+        daemonCyclesSkipped.inc({ network });
         logger().debug("Skipping tick — previous cycle still in flight");
         return;
     }

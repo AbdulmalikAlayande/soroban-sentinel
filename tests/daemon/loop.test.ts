@@ -52,6 +52,7 @@ vi.mock("../../src/logging/index.js", () => ({
 
 import { startDaemon, stopDaemon } from "../../src/daemon/loop.js";
 import { insertContract } from "../../src/db/repositories.js";
+import { daemonCycleDuration, daemonCyclesSkipped } from "../../src/observability/metrics/daemon.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,8 @@ describe("daemon loop", () => {
         db = getDatabaseForTesting();
         vi.clearAllMocks();
         vi.useFakeTimers();
+        daemonCycleDuration.reset();
+        daemonCyclesSkipped.reset();
         // Default: deliver succeeds silently so loop tests focus on cycle behaviour
         mockDeliverPendingAlerts.mockResolvedValue({
             attempted: 0,
@@ -471,6 +474,44 @@ describe("daemon loop", () => {
     // =========================================================================
     // 5. RE-ENTRANCE GUARD
     // =========================================================================
+    describe("Metrics instrumentation", () => {
+        it("records a cycle-duration observation after a completed cycle", async () => {
+            const startedAt = new Date("2026-01-01T00:00:00.000Z");
+            const finishedAt = new Date("2026-01-01T00:00:02.500Z");
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult({ cycleStartedAt: startedAt, cycleFinishedAt: finishedAt }));
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+
+            const { values } = await daemonCycleDuration.get();
+            const sumSample = values.find((v) => v.metricName?.endsWith("_sum") && v.labels.network === "testnet");
+            expect(sumSample?.value).toBeCloseTo(2.5, 3);
+        });
+
+        it("increments the skipped-cycles counter when a tick is skipped due to an in-flight cycle", async () => {
+            let resolveSlowCycle!: (value: MonitorCycleResult) => void;
+
+            mockRunMonitorCycle.mockResolvedValueOnce(makeCycleResult());
+            mockRunMonitorCycle.mockImplementationOnce(() => new Promise<MonitorCycleResult>((resolve) => { resolveSlowCycle = resolve; }));
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+            await vi.advanceTimersByTimeAsync(5000); // triggers the slow cycle
+
+            const findSkipped = async () =>
+                (await daemonCyclesSkipped.get()).values.find((v) => v.labels.network === "testnet")?.value ?? 0;
+
+            const before = await findSkipped();
+
+            // A tick fires while the slow cycle is still in flight — should be skipped.
+            await vi.advanceTimersByTimeAsync(5000);
+
+            const after = await findSkipped();
+            expect(after).toBe(before + 1);
+
+            resolveSlowCycle(makeCycleResult());
+            await vi.advanceTimersByTimeAsync(0);
+        });
+    });
+
     describe("Re-entrance guard", () => {
         it("does not run overlapping cycles if a cycle takes longer than the interval", async () => {
             let resolveSlowCycle!: (value: MonitorCycleResult) => void;
