@@ -5,7 +5,7 @@ import { createProgram } from "./cli/program.js";
 initLogger({ mode: "cli" });
 
 const program = createProgram();
-program.parse(process.argv);
+await program.parseAsync(process.argv);
 
 const opts = program.opts();
 if (opts.extensionJitterMs) {
