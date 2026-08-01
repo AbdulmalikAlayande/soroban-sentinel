@@ -9,6 +9,7 @@ import {
     getAlertConfigsForContract,
     insertAlertConfig,
     getResourceAlertConfigsForContract,
+    getAlertConfigTargets,
 } from "../../src/db/repositories";
 
 let mockDb: Database.Database;
@@ -90,6 +91,52 @@ describe("alerts command", () => {
             expect(consoleLogSpy).toHaveBeenCalledWith(
                 expect.stringContaining("Successfully added alert config")
             );
+        });
+
+        it("persists repeatable --target flags as additional fan-out targets", () => {
+            parse([
+                "alerts", "add",
+                "--contract", contractID,
+                "--type", "webhook",
+                "--url", "https://example.com/webhook",
+                "--threshold", "1000",
+                "--target", "slack:#ops-alerts",
+                "--target", "pagerduty:pd-routing-key",
+            ]);
+
+            const configs = getAlertConfigsForContract(mockDb, contractID);
+            expect(configs).toHaveLength(1);
+
+            const targets = getAlertConfigTargets(mockDb, configs[0]!.id);
+            expect(targets).toHaveLength(2);
+            expect(targets.map((t) => `${t.channel_type}:${t.channel_target}`).sort()).toEqual([
+                "pagerduty:pd-routing-key",
+                "slack:#ops-alerts",
+            ]);
+        });
+
+        it("uses the first --target as the primary channel when --type is omitted", () => {
+            parse([
+                "alerts", "add",
+                "--contract", contractID,
+                "--threshold", "1000",
+                "--target", "slack:#ops-alerts",
+                "--target", "webhook:https://example.com/hook",
+            ]);
+
+            const configs = getAlertConfigsForContract(mockDb, contractID);
+            expect(configs).toHaveLength(1);
+            expect(configs[0]).toMatchObject({
+                channel_type: "slack",
+                channel_target: "#ops-alerts",
+            });
+
+            const targets = getAlertConfigTargets(mockDb, configs[0]!.id);
+            expect(targets).toHaveLength(1);
+            expect(targets[0]).toMatchObject({
+                channel_type: "webhook",
+                channel_target: "https://example.com/hook",
+            });
         });
 
         it("writes a slack alert to SQLite", () => {
