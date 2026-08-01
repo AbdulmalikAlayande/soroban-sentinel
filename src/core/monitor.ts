@@ -210,6 +210,8 @@ async function processContract(
         const remainingTTL = rpcEntry.remainingTTL;
 
         for (const alertConfig of alertConfigs) {
+            if (!alertConfig.enabled) continue; // disabled configs never fire
+
             const isBelowThreshold = remainingTTL < alertConfig.threshold_ledgers;
 
             if (isBelowThreshold) {

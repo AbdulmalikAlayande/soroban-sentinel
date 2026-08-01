@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS alert_configs (
     quiet_hours_start    TEXT,
     quiet_hours_end      TEXT,
     quiet_hours_timezone TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
