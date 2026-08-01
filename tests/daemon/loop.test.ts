@@ -52,6 +52,7 @@ vi.mock("../../src/logging/index.js", () => ({
 
 import { startDaemon, stopDaemon } from "../../src/daemon/loop.js";
 import { insertContract } from "../../src/db/repositories.js";
+import { daemonCycleDuration, daemonCyclesSkipped } from "../../src/observability/metrics/daemon.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,8 @@ describe("daemon loop", () => {
         db = getDatabaseForTesting();
         vi.clearAllMocks();
         vi.useFakeTimers();
+        daemonCycleDuration.reset();
+        daemonCyclesSkipped.reset();
         // Default: deliver succeeds silently so loop tests focus on cycle behaviour
         mockDeliverPendingAlerts.mockResolvedValue({
             attempted: 0,
@@ -129,6 +132,93 @@ describe("daemon loop", () => {
 
             await vi.advanceTimersByTimeAsync(5000);
             expect(mockVacuumDatabase).toHaveBeenCalledTimes(1);
+        });
+
+        it("does not update lastVacuumAt when vacuum is skipped due to an active transaction, so the next tick retries immediately", async () => {
+            // Use a vacuum interval much larger than the tick interval so we can
+            // observe whether lastVacuumAt was updated or not by checking if
+            // vacuum fires on the very next tick after the transaction ends.
+            const vacuumIntervalMs = 20000;
+            const tickMs = 5000;
+
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+            mockVacuumDatabase.mockReturnValue(true);
+
+            await startDaemon(db, "testnet", { intervalMs: tickMs, vacuumIntervalMs });
+
+            // Advance until the first vacuum fires (at Date.now() === vacuumIntervalMs).
+            // Ticks at 5s, 10s, 15s — none fire vacuum (not enough elapsed).
+            // Tick at 20s — fires the first vacuum.
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(1);
+            expect(mockDaemonLogger.info).toHaveBeenCalledWith(
+                "Scheduled maintenance: database vacuum completed",
+            );
+
+            // Now open an explicit transaction to force a skip.
+            db.exec("BEGIN IMMEDIATE");
+            expect(db.inTransaction).toBe(true);
+
+            // Advance another full vacuum interval — the vacuum check should run
+            // but be skipped because of the active transaction, WITHOUT updating
+            // lastVacuumAt.
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(1); // still 1 — skipped
+            expect(mockDaemonLogger.info).toHaveBeenCalledWith(
+                "Skipping scheduled vacuum — database has an active transaction",
+            );
+
+            // Close the transaction.
+            db.exec("ROLLBACK");
+            expect(db.inTransaction).toBe(false);
+
+            // Advance just ONE tick (5000ms). If lastVacuumAt had been updated
+            // during the skip (to ~40000), then 45000 - 40000 = 5000 < 20000
+            // and vacuum would NOT fire. But since lastVacuumAt is still at
+            // the old value (~20000), 45000 - 20000 = 25000 >= 20000, so
+            // vacuum fires immediately on this tick.
+            await vi.advanceTimersByTimeAsync(tickMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(2);
+            expect(mockDaemonLogger.info).toHaveBeenCalledWith(
+                "Scheduled maintenance: database vacuum completed",
+            );
+
+            // Confirm that after the successful vacuum, lastVacuumAt WAS
+            // updated — advancing by less than a full vacuum interval should
+            // NOT trigger another vacuum.
+            mockVacuumDatabase.mockClear();
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs - tickMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(0);
+        });
+
+        it("updates lastVacuumAt after a successful vacuum, preventing premature re-vacuum", async () => {
+            const vacuumIntervalMs = 20000;
+            const tickMs = 5000;
+
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+            mockVacuumDatabase.mockReturnValue(true);
+
+            await startDaemon(db, "testnet", { intervalMs: tickMs, vacuumIntervalMs });
+
+            // Let the first vacuum fire at the 20s mark.
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(1);
+            expect(mockDaemonLogger.info).toHaveBeenCalledWith(
+                "Scheduled maintenance: database vacuum completed",
+            );
+
+            // Advance by less than a full vacuum interval — vacuum should NOT
+            // fire, proving lastVacuumAt was updated and the interval is being
+            // respected.
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs - tickMs); // 15s more
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(1);
+
+            // One more tick completes the full interval — vacuum fires again.
+            await vi.advanceTimersByTimeAsync(tickMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(2);
+            expect(mockDaemonLogger.info).toHaveBeenCalledWith(
+                "Scheduled maintenance: database vacuum completed",
+            );
         });
     });
 
@@ -384,6 +474,44 @@ describe("daemon loop", () => {
     // =========================================================================
     // 5. RE-ENTRANCE GUARD
     // =========================================================================
+    describe("Metrics instrumentation", () => {
+        it("records a cycle-duration observation after a completed cycle", async () => {
+            const startedAt = new Date("2026-01-01T00:00:00.000Z");
+            const finishedAt = new Date("2026-01-01T00:00:02.500Z");
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult({ cycleStartedAt: startedAt, cycleFinishedAt: finishedAt }));
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+
+            const { values } = await daemonCycleDuration.get();
+            const sumSample = values.find((v) => v.metricName?.endsWith("_sum") && v.labels.network === "testnet");
+            expect(sumSample?.value).toBeCloseTo(2.5, 3);
+        });
+
+        it("increments the skipped-cycles counter when a tick is skipped due to an in-flight cycle", async () => {
+            let resolveSlowCycle!: (value: MonitorCycleResult) => void;
+
+            mockRunMonitorCycle.mockResolvedValueOnce(makeCycleResult());
+            mockRunMonitorCycle.mockImplementationOnce(() => new Promise<MonitorCycleResult>((resolve) => { resolveSlowCycle = resolve; }));
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+            await vi.advanceTimersByTimeAsync(5000); // triggers the slow cycle
+
+            const findSkipped = async () =>
+                (await daemonCyclesSkipped.get()).values.find((v) => v.labels.network === "testnet")?.value ?? 0;
+
+            const before = await findSkipped();
+
+            // A tick fires while the slow cycle is still in flight — should be skipped.
+            await vi.advanceTimersByTimeAsync(5000);
+
+            const after = await findSkipped();
+            expect(after).toBe(before + 1);
+
+            resolveSlowCycle(makeCycleResult());
+            await vi.advanceTimersByTimeAsync(0);
+        });
+    });
+
     describe("Re-entrance guard", () => {
         it("does not run overlapping cycles if a cycle takes longer than the interval", async () => {
             let resolveSlowCycle!: (value: MonitorCycleResult) => void;
