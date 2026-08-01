@@ -13,6 +13,10 @@ import { extensionCostXlmTotal, extensionsTotal, collectExtensionCostMetrics } f
 register.registerMetric(extensionCostXlmTotal);
 register.registerMetric(extensionsTotal);
 
+import { daemonCycleDuration, daemonCyclesSkipped } from "./metrics/daemon.js";
+register.registerMetric(daemonCycleDuration);
+register.registerMetric(daemonCyclesSkipped);
+
 /**
  * Recompute every DB-backed metric from the live database. Called once per
  * `/metrics` scrape (see `observability/server.ts`) so gauges never emit
