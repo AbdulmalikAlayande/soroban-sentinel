@@ -7,6 +7,7 @@ import {
     getAlertConfigsForContract,
     getAlertConfigById,
     deleteAlertConfig,
+    setAlertConfigEnabled,
     insertResourceAlertConfig,
     getContract,
     getAlertHistory,
@@ -329,6 +330,52 @@ export function registerAlertsCommand(program: Command): void {
             const db = getDatabase();
             deleteAlertConfig(db, id);
             console.log(chalk.green(`Successfully removed alert config ID ${id}.`));
+        });
+
+    // ── alerts enable ──────────────────────────────────────────────────
+    alerts
+        .command("enable")
+        .description("Re-enable a previously disabled alert configuration")
+        .requiredOption("--id <id>", "The alert configuration ID to enable")
+        .action((options) => {
+            const id = parseInt(options.id, 10);
+            if (isNaN(id)) {
+                console.error(chalk.red("Error: --id must be a number."));
+                process.exit(1);
+            }
+
+            const db = getDatabase();
+            const config = getAlertConfigById(db, id);
+            if (!config) {
+                console.error(chalk.red(`Error: Alert config ID ${id} not found.`));
+                process.exit(1);
+            }
+
+            setAlertConfigEnabled(db, id, true);
+            console.log(chalk.green(`Alert config ID ${id} enabled.`));
+        });
+
+    // ── alerts disable ─────────────────────────────────────────────────
+    alerts
+        .command("disable")
+        .description("Disable an alert configuration without deleting it")
+        .requiredOption("--id <id>", "The alert configuration ID to disable")
+        .action((options) => {
+            const id = parseInt(options.id, 10);
+            if (isNaN(id)) {
+                console.error(chalk.red("Error: --id must be a number."));
+                process.exit(1);
+            }
+
+            const db = getDatabase();
+            const config = getAlertConfigById(db, id);
+            if (!config) {
+                console.error(chalk.red(`Error: Alert config ID ${id} not found.`));
+                process.exit(1);
+            }
+
+            setAlertConfigEnabled(db, id, false);
+            console.log(chalk.green(`Alert config ID ${id} disabled.`));
         });
 
     // ── alerts test ────────────────────────────────────────────────────
