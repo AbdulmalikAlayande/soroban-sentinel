@@ -15,6 +15,16 @@ function fileExists(p: string): boolean {
     return fs.existsSync(p);
 }
 
+function changelogSection(changelog: string, version: string): string {
+    const heading = `## [${version}]`;
+    const start = changelog.indexOf(heading);
+    if (start === -1) {
+        return "";
+    }
+    const next = changelog.indexOf("\n## [", start + heading.length);
+    return changelog.slice(start, next === -1 ? undefined : next);
+}
+
 describe("CHANGELOG.md exists", () => {
     it("CHANGELOG.md exists at repository root", () => {
         expect(fileExists(path.join(PROJECT_ROOT, "CHANGELOG.md"))).toBe(true);
@@ -25,19 +35,27 @@ describe("CHANGELOG.md has entries for every published version", () => {
     const changelog = readFile(path.join(PROJECT_ROOT, "CHANGELOG.md"));
 
     it("contains an entry for v0.1.0", () => {
-        expect(changelog).toContain("0.1.0");
+        const section = changelogSection(changelog, "0.1.0");
+        expect(section).toContain("0.1.0");
+        expect(section).toContain("### Added");
     });
 
     it("contains an entry for v0.1.1", () => {
-        expect(changelog).toContain("0.1.1");
+        const section = changelogSection(changelog, "0.1.1");
+        expect(section).toContain("0.1.1");
+        expect(section).toContain("### Fixed");
     });
 
     it("contains an entry for v0.1.2", () => {
-        expect(changelog).toContain("0.1.2");
+        const section = changelogSection(changelog, "0.1.2");
+        expect(section).toContain("0.1.2");
+        expect(section).toContain("### Added");
     });
 
     it("contains an entry for v1.0.0", () => {
-        expect(changelog).toContain("1.0.0");
+        const section = changelogSection(changelog, "1.0.0");
+        expect(section).toContain("1.0.0");
+        expect(section).toContain("### Added");
     });
 });
 
@@ -74,11 +92,13 @@ describe("CHANGELOG.md versions are consistent with git history", () => {
     const changelog = readFile(path.join(PROJECT_ROOT, "CHANGELOG.md"));
 
     it("v0.1.0 entry references the initial commit", () => {
-        expect(changelog).toContain("initial"),
-        expect(changelog).toContain("database schema");
+        const section = changelogSection(changelog, "0.1.0");
+        expect(section).toContain("Initial project scaffold");
+        expect(section).toContain("SQLite database schema");
     });
 
     it("v1.0.0 entry references stellar-sdk v16 upgrade", () => {
-        expect(changelog).toContain("stellar-sdk");
+        const section = changelogSection(changelog, "1.0.0");
+        expect(section).toContain("@stellar/stellar-sdk from v15 to v16");
     });
 });
