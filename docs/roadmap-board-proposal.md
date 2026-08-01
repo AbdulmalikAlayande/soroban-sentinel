@@ -18,15 +18,15 @@ maintainers an at-a-glance picture of progress across 15 phases.
 
 ## Step 1 — Create the Project Board
 
-1. Go to https://github.com/AbdulmalikAlayande/sorokeep
-2. Click the **Projects** tab (top nav bar).
-3. Click **Link a project** → **Create new project**.
-4. Select the **Board** template (or start from scratch).
-5. **Project name:** `Sorokeep Roadmap`
-6. **Project description:**
+1. Go to your GitHub **Profile** or **Organization** page → click the **Projects** tab.
+2. Click **New project**.
+3. Select the **Board** template (or start from scratch).
+4. **Project name:** `Sorokeep Roadmap`
+5. **Project description:**
    > Progress tracking across all 15 implementation phases. Issues are
-   > auto-added when labelled with `phase-*`.
-7. Click **Create**.
+   > auto-added when labeled with `phase-*`.
+6. Click **Create**.
+7. Return to https://github.com/AbdulmalikAlayande/sorokeep, click the **Projects** tab, then **Link a project**, search for `Sorokeep Roadmap`, and link it.
 
 ---
 
@@ -76,8 +76,9 @@ with GitHub Actions).
    - **Action:** Add the issue to this project.
 4. Click **Save** and enable the workflow.
 
-> This workflow ensures any issue — new or existing — that gets a `phase-*`
-> label will automatically appear on the board.
+> This workflow ensures any new or newly-labeled issue with a `phase-*`
+> label will automatically appear on the board. Pre-existing matching items
+> require a separate backfill (Step 4).
 
 ---
 
@@ -109,6 +110,8 @@ gh issue list --repo AbdulmalikAlayande/sorokeep \
   --json id --jq '.[].id' \
   --limit 500
 ```
+
+Loop over each returned ID and call the GraphQL mutation above (e.g. with `gh api graphql` or a script) to add every issue to the project.
 
 > **Tip:** The workflow in Step 3 will *not* retroactively add existing issues;
 > only newly-labelled ones. Use Option A or B for the initial backfill.

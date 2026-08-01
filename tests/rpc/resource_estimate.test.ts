@@ -16,10 +16,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import {
-    parseResourceEstimate,
-    type ResourceEstimate,
-} from "../../src/rpc/client.js";
+import { parseResourceEstimate } from "../../src/rpc/client.js";
 
 // ─── Mock simulation response shapes ─────────────────────────────────────────
 
