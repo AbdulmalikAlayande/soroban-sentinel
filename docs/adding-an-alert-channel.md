@@ -81,6 +81,46 @@ If you added it to `builtins.ts`, that's it — `registerBuiltinChannels()` is c
 
 ## 4. Tests
 
+### Contract test suite (recommended first test)
+
+Sorokeep ships a reusable contract test in `tests/alerts/channel-contract.ts`. It verifies that your channel satisfies the `AlertChannel` interface mechanically:
+
+- `send()` returns a `Promise`.
+- A network failure causes `send()` to reject (not resolve silently).
+- The channel does not throw for any of the four `AlertEvent` variants (`threshold_crossed`, `alert_resolved`, `resource_alert`, `state_changed`).
+
+Call it once per channel, passing a factory for your `AlertChannel` implementation and a callback that stubs your network layer to fail:
+
+```ts
+import { runChannelContractTests } from "./channel-contract.js";
+
+describe("Matrix (contract)", () => {
+    const mockFetch = vi.fn();
+
+    beforeEach(() => {
+        const okResponse = new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+        });
+        vi.stubGlobal("fetch", mockFetch.mockResolvedValue(okResponse));
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    runChannelContractTests(
+        "matrix",
+        () => ({ send: (target, event) => sendMatrixAlert(target, event) }),
+        () => { mockFetch.mockRejectedValue(new Error("ECONNREFUSED")); },
+    );
+});
+```
+
+Running the contract suite against a broken channel (e.g. one that swallows network errors) will fail, giving you confidence your implementation is correct before writing any channel-specific tests.
+
+### Channel-specific tests
+
 Follow the pattern in `tests/alerts/builtins.test.ts`: mock the underlying module (e.g. `vi.mock("../../src/alerts/matrix.js", ...)`), then assert the registered `channel.send` delegates to it with the right arguments. Add a contract-shaped test the way `tests/db/repositories.test.ts`'s `"accepts discord as a valid channel_type"` tests do, if your channel needs any DB-level exercise beyond what's already generic.
 
 Per [CONTRIBUTING.md](../CONTRIBUTING.md#test-driven-development), write the test first.
