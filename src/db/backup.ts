@@ -248,6 +248,15 @@ export function getCurrentSchemaVersion(db: Database.Database): number {
     }
 }
 
+function getCurrentSchemaVersion(db: Database.Database): number {
+    try {
+        const row = db.prepare("SELECT MAX(version) as max_version FROM schema_migrations").get() as { max_version: number | null } | undefined;
+        return row?.max_version ?? 0;
+    } catch {
+        return 0;
+    }
+}
+
 export function exportDatabase(db: Database.Database): DatabaseBackup {
     return {
         schema_version: getCurrentSchemaVersion(db),
@@ -269,8 +278,28 @@ export function exportDatabase(db: Database.Database): DatabaseBackup {
     };
 }
 
-export function importDatabase(db: Database.Database, backup: DatabaseBackup): void {
+export function isDatabaseEmpty(db: Database.Database): boolean {
+    for (const table of EXPORT_TABLES) {
+        try {
+            const row = db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get();
+            if (row) return false;
+        } catch {
+            // Table doesn't exist yet
+        }
+    }
+    return true;
+}
+
+export function importDatabase(db: Database.Database, backup: DatabaseBackup, options?: { mode?: "replace" | "merge" }): void {
     validateBackup(backup);
+    const currentVersion = getCurrentSchemaVersion(db);
+
+    if (backup.schema_version === undefined) {
+        throw new Error("Invalid database backup: unknown schema version");
+    }
+    if (backup.schema_version !== currentVersion) {
+        throw new Error(`Invalid database backup: mismatched schema version. Backup is ${backup.schema_version}, current is ${currentVersion}`);
+    }
 
     const currentVersion = getCurrentSchemaVersion(db);
 
@@ -287,8 +316,10 @@ export function importDatabase(db: Database.Database, backup: DatabaseBackup): v
     }
 
     const transaction = db.transaction((payload: DatabaseBackup) => {
-        for (const table of CLEAR_TABLES) {
-            db.prepare(`DELETE FROM ${table}`).run();
+        if (options?.mode !== "merge") {
+            for (const table of CLEAR_TABLES) {
+                db.prepare(`DELETE FROM ${table}`).run();
+            }
         }
 
         for (const table of EXPORT_TABLES) {
