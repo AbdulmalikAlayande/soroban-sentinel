@@ -9,6 +9,10 @@ register.registerMetric(budgetRemainingGauge);
 import { entryTtlRemainingGauge, setEntryTtlGaugeSamples } from "./metrics/ttl.js";
 register.registerMetric(entryTtlRemainingGauge);
 
+import { extensionCostXlmTotal, extensionsTotal, collectExtensionCostMetrics } from "./metrics/cost.js";
+register.registerMetric(extensionCostXlmTotal);
+register.registerMetric(extensionsTotal);
+
 /**
  * Recompute every DB-backed metric from the live database. Called once per
  * `/metrics` scrape (see `observability/server.ts`) so gauges never emit
@@ -18,4 +22,5 @@ register.registerMetric(entryTtlRemainingGauge);
 export function collectAllMetrics(db: Database.Database): void {
     collectBudgetRemaining(db);
     setEntryTtlGaugeSamples(db);
+    collectExtensionCostMetrics(db);
 }
