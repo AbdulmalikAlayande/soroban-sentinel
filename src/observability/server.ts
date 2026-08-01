@@ -12,6 +12,23 @@ let activeDb: Database.Database | null = null;
 
 const app = new Hono();
 
+// ─── Optional bearer-token auth ─────────────────────────────────────────────
+//
+// When SOROKEEP_METRICS_TOKEN is set, every observability route requires a
+// matching `Authorization: Bearer <token>` header. Unset (the default)
+// leaves these routes open — they're intended for localhost/private-network
+// use unless a token is explicitly configured. A mismatch or missing header
+// gets a bare 401 with no body, so nothing about the expected token leaks.
+app.use("*", async (c, next) => {
+    const requiredToken = process.env["SOROKEEP_METRICS_TOKEN"];
+    if (requiredToken && requiredToken.trim() !== "") {
+        if (c.req.header("authorization") !== `Bearer ${requiredToken}`) {
+            return c.body(null, 401);
+        }
+    }
+    return next();
+});
+
 app.get("/metrics", async (c) => {
     // Recompute every DB-backed metric from the live database on every
     // scrape — no caching layer, so readings always reflect the most
