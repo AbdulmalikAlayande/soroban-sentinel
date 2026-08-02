@@ -512,6 +512,66 @@ describe("daemon loop", () => {
         });
     });
 
+    describe("OpenTelemetry tracing", () => {
+        beforeEach(async () => {
+            // getTracer() lazily creates an uninstrumented provider on first
+            // call from anywhere in the process (e.g. an earlier test's
+            // daemon cycle) and that provider is cached — reset it so each
+            // test here starts from a clean, uninitialized state.
+            const { shutdownTracing } = await import("../../src/observability/tracing.js");
+            await shutdownTracing();
+            process.env["SOROKEEP_OTLP_IN_MEMORY"] = "true";
+        });
+
+        afterEach(async () => {
+            delete process.env["SOROKEEP_OTLP_IN_MEMORY"];
+            const { shutdownTracing } = await import("../../src/observability/tracing.js");
+            await shutdownTracing();
+        });
+
+        it("produces a parent span with Monitor/Deliver/CostAggregation child spans after a completed cycle", async () => {
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+            const { initTracing, getInMemoryExporter } = await import("../../src/observability/tracing.js");
+            await initTracing();
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+
+            const spans = getInMemoryExporter()!.getFinishedSpans();
+            const spanNames = spans.map((s) => s.name);
+
+            expect(spanNames).toContain("DaemonCycle");
+            expect(spanNames).toContain("Monitor");
+            expect(spanNames).toContain("Deliver");
+            expect(spanNames).toContain("CostAggregation");
+
+            const parentSpan = spans.find((s) => s.name === "DaemonCycle")!;
+            for (const childName of ["Monitor", "Deliver", "CostAggregation"]) {
+                const childSpan = spans.find((s) => s.name === childName)!;
+                expect(childSpan.parentSpanId).toBe(parentSpan.spanId);
+            }
+        });
+
+        it("records error status on the Monitor span when runMonitorCycle throws", async () => {
+            mockRunMonitorCycle.mockRejectedValueOnce(new Error("RPC failure"));
+            const { initTracing, getInMemoryExporter } = await import("../../src/observability/tracing.js");
+            await initTracing();
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+
+            const spans = getInMemoryExporter()!.getFinishedSpans();
+            const monitorSpan = spans.find((s) => s.name === "Monitor")!;
+            expect(monitorSpan.status.code).toBe(2); // SpanStatusCode.ERROR
+        });
+
+        it("adds no measurable behavior change to the cycle when tracing is off (default)", async () => {
+            delete process.env["SOROKEEP_OTLP_IN_MEMORY"];
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+
+            await expect(startDaemon(db, "testnet", { intervalMs: 5000 })).resolves.not.toThrow();
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
+        });
+    });
+
     describe("Re-entrance guard", () => {
         it("does not run overlapping cycles if a cycle takes longer than the interval", async () => {
             let resolveSlowCycle!: (value: MonitorCycleResult) => void;

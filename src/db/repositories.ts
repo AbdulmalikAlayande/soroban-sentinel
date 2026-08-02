@@ -463,6 +463,47 @@ export interface ContractCostSummary {
     };
 }
 
+export interface AuditLogRecord {
+    tx_hash: string;
+    contract_id: string;
+    entry_key_xdr: string;
+    entry_type: string;
+    entry_label: string | null;
+    old_ttl_ledgers: number;
+    new_ttl_ledgers: number;
+    cost_xlm: number | null;
+    executed_at: string;
+}
+
+/**
+ * Read-only export of extension_history joined with its entry, for the
+ * `sorokeep audit-log` command's JSONL output — an append-only, compliance-
+ * facing record of every TTL-extension transaction sorokeep has submitted.
+ */
+export function getAuditLogExtensions(db: Database.Database, since?: string): AuditLogRecord[] {
+    let query = `
+        SELECT
+            eh.tx_hash AS tx_hash,
+            eh.contract_id AS contract_id,
+            ce.entry_key_xdr AS entry_key_xdr,
+            ce.entry_type AS entry_type,
+            ce.label AS entry_label,
+            eh.old_ttl_ledgers AS old_ttl_ledgers,
+            eh.new_ttl_ledgers AS new_ttl_ledgers,
+            eh.cost_xlm AS cost_xlm,
+            eh.executed_at AS executed_at
+        FROM extension_history eh
+        JOIN contract_entries ce ON eh.contract_entry_id = ce.id
+    `;
+    const params: string[] = [];
+    if (since) {
+        query += ` WHERE eh.executed_at >= ?`;
+        params.push(since);
+    }
+    query += ` ORDER BY eh.executed_at ASC`;
+    return db.prepare(query).all(...params) as AuditLogRecord[];
+}
+
 export function aggregateDailyCostSnapshots(db: Database.Database): void {
     const rows = db.prepare(`
         SELECT
