@@ -7,6 +7,7 @@ import { getLogger } from "../logging/index.js";
 import type { Logger } from "../logging/types.js";
 import { createMetricsServer, stopMetricsServer } from "../observability/server.js";
 import { daemonCycleDuration, daemonCyclesSkipped } from "../observability/metrics/daemon.js";
+import { StellarRpcClient } from "../rpc/client.js";
 
 // Resolve the child logger lazily so that a runtime reconfiguration of the
 // global logger (e.g. the daemon command's `--log-format json`) is in effect
@@ -78,7 +79,8 @@ export async function startDaemon(
     // Start the metrics server if a port was configured.
     if (options?.metricsPort !== undefined) {
         try {
-            createMetricsServer(options.metricsPort, db);
+            const readyzRpcClient = new StellarRpcClient(network, rpcUrl);
+            createMetricsServer(options.metricsPort, db, readyzRpcClient);
             logger().info(`Metrics server listening on http://127.0.0.1:${options.metricsPort}/metrics`);
         } catch (err: unknown) {
             logger().error("Failed to start metrics server", err);

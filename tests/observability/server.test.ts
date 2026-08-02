@@ -1,9 +1,10 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import http from "node:http";
 import { createMetricsServer, stopMetricsServer } from "../../src/observability/server.js";
 import { getDatabaseForTesting } from "../../src/db/database.js";
 import { insertContract, updateLastCheckedLedger, upsertEntry } from "../../src/db/repositories.js";
 import { TTL_GAUGE_NAME } from "../../src/observability/metrics/ttl.js";
+import type { StellarRpcClient } from "../../src/rpc/client.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -233,6 +234,77 @@ describe("Observability metrics server", () => {
             // stopMetricsServer is a no-op when nothing is running;
             // this just proves the guarded path works.
             await expect(stopMetricsServer()).resolves.not.toThrow();
+        });
+    });
+
+    describe("/readyz endpoint", () => {
+        function fetchJson(port: number): Promise<{ status: number; body: unknown }> {
+            const url = `http://127.0.0.1:${port}/readyz`;
+            return new Promise((resolve, reject) => {
+                http.get(url, (res) => {
+                    let body = "";
+                    res.on("data", (chunk: string) => { body += chunk; });
+                    res.on("end", () => {
+                        resolve({ status: res.statusCode ?? 0, body: body ? JSON.parse(body) : undefined });
+                    });
+                }).on("error", reject);
+            });
+        }
+
+        function mockRpcClient(getCurrentLedger: () => Promise<number>): StellarRpcClient {
+            return { getCurrentLedger } as unknown as StellarRpcClient;
+        }
+
+        it("returns 200 when both the DB and RPC checks succeed", async () => {
+            const db = getDatabaseForTesting();
+            const port = nextPort();
+            createMetricsServer(port, db, mockRpcClient(() => Promise.resolve(500_000)));
+
+            const res = await fetchJson(port);
+            expect(res.status).toBe(200);
+            expect(res.body).toMatchObject({ status: "ok", checks: { db: "ok", rpc: "ok" } });
+
+            db.close();
+        });
+
+        it("returns 503 and identifies the RPC check as failing when the RPC call rejects", async () => {
+            const db = getDatabaseForTesting();
+            const port = nextPort();
+            createMetricsServer(port, db, mockRpcClient(() => Promise.reject(new Error("RPC timeout"))));
+
+            const res = await fetchJson(port);
+            expect(res.status).toBe(503);
+            expect(res.body).toMatchObject({ status: "not ready" });
+            expect((res.body as { checks: { rpc: string } }).checks.rpc).toContain("RPC timeout");
+            expect((res.body as { checks: { db: string } }).checks.db).toBe("ok");
+
+            db.close();
+        });
+
+        it("returns 503 when no RPC client is configured", async () => {
+            const db = getDatabaseForTesting();
+            const port = nextPort();
+            createMetricsServer(port, db); // no rpcClient argument
+
+            const res = await fetchJson(port);
+            expect(res.status).toBe(503);
+
+            db.close();
+        });
+
+        it("caches a successful RPC check so rapid repeated polling doesn't re-call the RPC client", async () => {
+            const db = getDatabaseForTesting();
+            const port = nextPort();
+            const getCurrentLedger = vi.fn().mockResolvedValue(500_000);
+            createMetricsServer(port, db, mockRpcClient(getCurrentLedger));
+
+            await fetchJson(port);
+            await fetchJson(port);
+            await fetchJson(port);
+
+            expect(getCurrentLedger).toHaveBeenCalledTimes(1);
+
+            db.close();
         });
     });
 });
