@@ -1,6 +1,6 @@
 # Observability Setup: Prometheus + Grafana
 
-This guide walks through connecting sorokeep's built-in metrics endpoint to a Prometheus + Grafana observability stack. After completing it you'll have a working dashboard showing contract TTL health, alert activity, and extension costs — all updating automatically from the daemon's metrics.
+This guide walks through connecting sorokeep's built-in metrics endpoint to a Prometheus + Grafana observability stack, alerting on it via Alertmanager, and running the whole thing via Docker Compose.
 
 ## Prerequisites
 
@@ -17,9 +17,7 @@ Start the daemon with the `--metrics-port` flag to expose a Prometheus-format `/
 sorokeep daemon --network testnet --metrics-port 9464
 ```
 
-The metrics server also exposes:
-- `/healthz` — liveness probe (always 200 while the process is running)
-- `/readyz` — readiness probe (200 when DB and RPC are reachable, 503 otherwise)
+The metrics server also exposes `/readyz` — a readiness probe returning 200 when the database and configured Stellar RPC endpoint are both reachable, 503 (with a JSON body naming the failing dependency) otherwise.
 
 You can verify the endpoint is working:
 
@@ -27,32 +25,32 @@ You can verify the endpoint is working:
 curl http://localhost:9464/metrics
 ```
 
-Sample output:
+Sample output (trimmed — the exact set of `# HELP`/`# TYPE` blocks grows as new metrics land; run the command above against your own instance for the full, current list):
 
 ```
-# HELP sorokeep_contracts_total Total number of watched contracts
-# TYPE sorokeep_contracts_total gauge
-sorokeep_contracts_total{network="testnet"} 3
+# HELP sorokeep_contracts_tracked Number of contracts currently being watched
+# TYPE sorokeep_contracts_tracked gauge
+sorokeep_contracts_tracked{network="testnet"} 3
 
-# HELP sorokeep_contract_entries_total Total number of contract entries across all contracts
-# TYPE sorokeep_contract_entries_total gauge
-sorokeep_contract_entries_total 10
+# HELP sorokeep_entries_tracked Number of contract entries currently being tracked
+# TYPE sorokeep_entries_tracked gauge
+sorokeep_entries_tracked{network="testnet"} 10
 
-# HELP sorokeep_extensions_total Total number of TTL extensions performed
+# HELP sorokeep_extensions_total Cumulative count of TTL-extension transactions, partitioned by contract and entry type.
 # TYPE sorokeep_extensions_total counter
-sorokeep_extensions_total 42
+sorokeep_extensions_total{contract_id="C...",entry_type="instance"} 42
 
-# HELP sorokeep_alerts_fired_total Total number of alerts fired
-# TYPE sorokeep_alerts_fired_total counter
-sorokeep_alerts_fired_total 7
+# HELP sorokeep_extension_cost_xlm_total Cumulative XLM cost of all TTL-extension transactions, partitioned by contract and entry type.
+# TYPE sorokeep_extension_cost_xlm_total counter
+sorokeep_extension_cost_xlm_total{contract_id="C...",entry_type="instance"} 1.5
 ```
 
 ### Metrics Port Reference
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--metrics-port` | Disabled | Port for the Prometheus metrics HTTP server |
-| `--metrics-host` | `0.0.0.0` | Bind address for the metrics server |
+| `--metrics-port` | Disabled | Port for the Prometheus metrics HTTP server. Binds to `127.0.0.1` only — put a reverse proxy in front if Prometheus runs on a different host. |
+| `SOROKEEP_METRICS_TOKEN` (env var) | Unset | When set, `/metrics` and `/readyz` require a matching `Authorization: Bearer <token>` header. Unset by default — intended for localhost/private-network use. |
 
 ## 2. Configure Prometheus to Scrape sorokeep
 
@@ -86,51 +84,40 @@ Verify targets are up at `http://localhost:9090/targets` — the `sorokeep` job 
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `sorokeep_contracts_total` | Gauge | Watched contracts, labelled by network |
-| `sorokeep_contract_entries_total` | Gauge | Total tracked ledger entries |
-| `sorokeep_extensions_total` | Counter | TTL extensions performed |
-| `sorokeep_extension_cost_xlm_total` | Counter | Total XLM spent on extensions |
-| `sorokeep_alerts_fired_total` | Counter | Alerts fired across all contracts |
-| `sorokeep_alerts_unresolved_total` | Gauge | Currently unresolved alerts |
-| `sorokeep_channel_accounts_total` | Gauge | Configured channel accounts, labelled by network |
+| `sorokeep_contracts_tracked` | Gauge | Contracts currently being watched, labelled by `network` |
+| `sorokeep_entries_tracked` | Gauge | Contract entries currently being tracked, labelled by `network` |
+| `sorokeep_entry_ttl_remaining_ledgers` | Gauge | Remaining TTL per tracked entry, labelled by `contract_id`, `contract_name`, `entry_type`, `network` |
+| `sorokeep_extensions_total` | Counter | Cumulative count of TTL-extension transactions, labelled by `contract_id`, `entry_type` |
+| `sorokeep_extension_cost_xlm_total` | Counter | Cumulative XLM cost of TTL-extension transactions, labelled by `contract_id`, `entry_type` |
+| `sorokeep_budget_remaining_xlm` | Gauge | Remaining XLM budget headroom, labelled by `contract_id`, `network` |
+| `sorokeep_daemon_cycle_duration_seconds` | Histogram | Duration of each completed daemon monitor cycle, labelled by `network` |
+| `sorokeep_daemon_cycles_skipped_total` | Counter | Scheduled ticks skipped because the previous cycle was still in flight, labelled by `network` |
 
-## 3. Import the Grafana Dashboard
+Run `sorokeep metrics` (see below) or `curl` the endpoint directly to see the exact, current set for your build — this table will drift as new metrics land, but the CLI/HTTP output is always authoritative.
 
-A pre-built Grafana dashboard for sorokeep is available at `resources/grafana/dashboard.json`.
-
-### Via the Grafana UI
-
-1. Open Grafana (`http://localhost:3000`, default login `admin`/`admin`)
-2. Navigate to **Dashboards → New → Import**
-3. Upload `resources/grafana/dashboard.json` or paste its contents
-4. Select the Prometheus data source that's scraping sorokeep
-5. Click **Import**
-
-### Via the API
+You can also print this same snapshot without running a server at all:
 
 ```bash
-curl -X POST http://admin:admin@localhost:3000/api/dashboards/db \
-  -H "Content-Type: application/json" \
-  -d @- <<EOF
-{
-  "dashboard": $(cat resources/grafana/dashboard.json),
-  "overwrite": true,
-  "message": "Imported sorokeep dashboard"
-}
-EOF
+sorokeep metrics            # Prometheus exposition text
+sorokeep metrics --json     # structured JSON
 ```
 
-### Dashboard Panels
+## 3. Build a Grafana Dashboard
 
-| Panel | Description |
+A pre-built, importable dashboard JSON is planned but not yet bundled with sorokeep. In the meantime, build panels manually in Grafana against the metric names from the table above — each is a standard Prometheus gauge/counter/histogram, so any panel type (stat, time series, heatmap for the histogram) works with a plain PromQL query against them. A few starting points:
+
+| Panel idea | Example PromQL |
 |-------|-------------|
-| **Watched Contracts** | Total contracts per network (stat + sparkline) |
-| **Entries Tracked** | Total tracked entries across all contracts |
-| **Extensions (24h)** | Extension count and XLM cost over the last 24 hours |
-| **Alerts Fired (24h)** | Alert count by severity over time |
-| **Unresolved Alerts** | Current unresolved alert count |
-| **Top Contracts by Cost** | Contracts with the highest extension costs |
-| **TTL Distribution** | Remaining TTL distribution across entries |
+| Watched contracts | `sorokeep_contracts_tracked` |
+| Entries tracked | `sorokeep_entries_tracked` |
+| Extension cost rate (1h) | `rate(sorokeep_extension_cost_xlm_total[1h])` |
+| Extensions performed (1h) | `rate(sorokeep_extensions_total[1h])` |
+| Daemon cycle duration (p95) | `histogram_quantile(0.95, rate(sorokeep_daemon_cycle_duration_seconds_bucket[5m]))` |
+| Skipped daemon cycles | `sorokeep_daemon_cycles_skipped_total` |
+| Remaining TTL per entry | `sorokeep_entry_ttl_remaining_ledgers` |
+| Remaining budget | `sorokeep_budget_remaining_xlm` |
+
+Once a bundled dashboard ships, this section will be updated with the import steps.
 
 ## 4. Alerting with Alertmanager
 
@@ -149,12 +136,12 @@ groups:
           summary: "sorokeep instance {{ $labels.instance }} is down"
           description: "Prometheus target {{ $labels.job }}/{{ $labels.instance }} has been unreachable for over 1 minute."
 
-      - alert: SorokeepHighUnresolvedAlerts
-        expr: sorokeep_alerts_unresolved_total > 0
-        for: 5m
+      - alert: SorokeepDaemonCyclesSkipped
+        expr: increase(sorokeep_daemon_cycles_skipped_total[10m]) > 0
+        for: 0m
         annotations:
-          summary: "Contract alerts are not being resolved"
-          description: "{{ $value }} alerts have been unresolved for more than 5 minutes."
+          summary: "sorokeep daemon cycles are falling behind on {{ $labels.network }}"
+          description: "The daemon has skipped {{ $value }} scheduled cycle(s) in the last 10 minutes because the previous cycle was still running — the fleet may have grown too large for the configured poll interval."
 
       - alert: SorokeepExtensionCostSpike
         expr: rate(sorokeep_extension_cost_xlm_total[1h]) > 1
@@ -226,7 +213,6 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./resources/grafana:/etc/grafana/provisioning/dashboards:ro
     restart: unless-stopped
 
   alertmanager:
@@ -279,8 +265,6 @@ scrape_configs:
     scrape_timeout: 15s
 ```
 
-### Grafana Dashboard Not Found
+### No Bundled Grafana Dashboard Yet
 
-**Symptom:** The import screen says "Dashboard not found."
-
-Ensure you're importing the correct file from `resources/grafana/dashboard.json`. If the file doesn't exist, generate it by running `sorokeep metrics --grafana-dashboard` (requires implementation of the dashboard export feature), or manually create a dashboard in the Grafana UI using the metric names listed above.
+There's no pre-built dashboard JSON to import yet (see [§3](#3-build-a-grafana-dashboard)) — build panels manually against the metric names and example PromQL queries above in the meantime.
