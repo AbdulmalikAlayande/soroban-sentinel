@@ -18,6 +18,7 @@ import { registerBudgetCommand } from "../commands/budget.js";
 import { registerDbCommand } from "../commands/db.js";
 import { registerPauseCommand } from "../commands/pause.js";
 import { registerResumeCommand } from "../commands/resume.js";
+import { registerMetricsCommand } from "../commands/metrics.js";
 
 /**
  * Convention a `--channel-plugin` package must follow: default-export a
@@ -96,6 +97,7 @@ export function createProgram() {
   registerDbCommand(program);
   registerPauseCommand(program);
   registerResumeCommand(program);
+  registerMetricsCommand(program);
 
   return program;
 }
