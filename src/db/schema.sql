@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS alert_configs (
     quiet_hours_start    TEXT,
     quiet_hours_end      TEXT,
     quiet_hours_timezone TEXT,
+
+    enabled INTEGER NOT NULL DEFAULT 1,
+
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -73,6 +76,11 @@ CREATE TABLE IF NOT EXISTS alerts_fired (
 
 CREATE INDEX IF NOT EXISTS idx_alerts_fired_undelivered
     ON alerts_fired(delivered, retry_count);
+
+
+CREATE INDEX IF NOT EXISTS idx_alerts_fired_resolved_fired_at
+    ON alerts_fired(resolved, fired_at DESC);
+
 
 CREATE TABLE IF NOT EXISTS channel_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

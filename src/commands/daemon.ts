@@ -12,11 +12,17 @@ export function registerDaemonCommand(program: Command): void {
         .option("--network <network>", "Stellar network to monitor")
         .option("--interval <ms>", "Polling interval in milliseconds")
         .option("-r, --rpc-url <url>", "Custom RPC endpoint URL")
+
+
+        .option("--metrics-port <port>", "Port for the Prometheus /metrics HTTP server (off by default)")
+
         .option("--log-format <format>", "Log output format: 'pretty' (human-readable) or 'json' (structured)", "pretty")
         .action(async (options: {
             network?: string;
             interval?: string;
             rpcUrl?: string;
+            metricsPort?: string;
+
             logFormat: string;
         }) => {
             const config = loadConfig();
@@ -29,6 +35,17 @@ export function registerDaemonCommand(program: Command): void {
                 console.log(chalk.red("Error: --interval must be a number >= 10000 (10 seconds)"));
                 process.exit(1);
             }
+
+
+            const metricsPort = options.metricsPort !== undefined
+                ? parseInt(options.metricsPort, 10)
+                : undefined;
+
+            if (metricsPort !== undefined && (isNaN(metricsPort) || metricsPort < 1 || metricsPort > 65535)) {
+                console.log(chalk.red("Error: --metrics-port must be a valid port number (1-65535)"));
+                process.exit(1);
+            }
+
 
             if (options.logFormat !== "pretty" && options.logFormat !== "json") {
                 console.log(chalk.red("Error: --log-format must be either 'pretty' or 'json'"));
@@ -57,6 +74,9 @@ export function registerDaemonCommand(program: Command): void {
             if (options.rpcUrl) {
                 console.log(`  RPC:       ${chalk.cyan(options.rpcUrl)}`);
             }
+            if (metricsPort !== undefined) {
+                console.log(`  Metrics:   ${chalk.cyan(`http://127.0.0.1:${metricsPort}/metrics`)}`);
+            }
             console.log();
             console.log(chalk.dim("  Press Ctrl+C to stop.\n"));
 
@@ -78,6 +98,9 @@ export function registerDaemonCommand(program: Command): void {
             await startDaemon(db, network, {
                 intervalMs,
                 rpcUrl: options.rpcUrl,
+
+                metricsPort,
+
                 feeSponsorSecret: config.feeSponsorSecret,
                 onCycle: (result, error) => {
                     const timestamp = new Date().toLocaleTimeString();

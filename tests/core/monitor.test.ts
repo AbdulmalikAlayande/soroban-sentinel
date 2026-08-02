@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import {
     insertContract,
@@ -8,6 +8,9 @@ import {
     getAlertConfigsForContract,
     hasUnresolvedAlert,
     upsertExtensionPolicy,
+
+    setAlertConfigEnabled,
+
 } from "../../src/db/repositories.js";
 import {getDatabaseForTesting} from "../../src/db/database";
 import {MonitorCycleResult, runMonitorCycle} from "../../src/core/monitor";
@@ -365,6 +368,57 @@ describe("runMonitorCycle", () => {
 
             const result = await runMonitorCycle(db, "testnet");
             expect(result.thresholdsCrossed).toBe(1);
+        });
+
+        it("does NOT fire a disabled alert_config even when its threshold is crossed", async () => {
+            seedContract(db, "CONTRACT_DISABLED", "testnet", [
+                { keyXdr: "disabled-key", type: "instance", liveUntil: LEDGER + 20000 },
+            ]);
+            addWebhookAlert(db, "CONTRACT_DISABLED", 15000);
+
+            const configs = getAlertConfigsForContract(db, "CONTRACT_DISABLED");
+            setAlertConfigEnabled(db, configs[0]!.id, false);
+
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: LEDGER,
+                entries: [
+                    { entryKeyXdr: "disabled-key", liveUntilLedgerSeq: LEDGER + 8000, lastModifiedLedgerSeq: LEDGER - 10, remainingTTL: 8000 },
+                ],
+            });
+
+            const result = await runMonitorCycle(db, "testnet");
+
+            expect(result.thresholdsCrossed).toBe(0);
+            const entries = getEntriesForContract(db, "CONTRACT_DISABLED");
+            expect(hasUnresolvedAlert(db, configs[0]!.id, entries[0]!.id)).toBe(false);
+        });
+
+        it("resumes normal threshold detection after a disabled alert_config is re-enabled", async () => {
+            seedContract(db, "CONTRACT_REENABLED", "testnet", [
+                { keyXdr: "reenabled-key", type: "instance", liveUntil: LEDGER + 20000 },
+            ]);
+            addWebhookAlert(db, "CONTRACT_REENABLED", 15000);
+
+            const configs = getAlertConfigsForContract(db, "CONTRACT_REENABLED");
+            setAlertConfigEnabled(db, configs[0]!.id, false);
+
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: LEDGER,
+                entries: [
+                    { entryKeyXdr: "reenabled-key", liveUntilLedgerSeq: LEDGER + 8000, lastModifiedLedgerSeq: LEDGER - 10, remainingTTL: 8000 },
+                ],
+            });
+
+            let result = await runMonitorCycle(db, "testnet");
+            expect(result.thresholdsCrossed).toBe(0);
+
+            setAlertConfigEnabled(db, configs[0]!.id, true);
+
+            result = await runMonitorCycle(db, "testnet");
+            expect(result.thresholdsCrossed).toBe(1);
+
+            const entries = getEntriesForContract(db, "CONTRACT_REENABLED");
+            expect(hasUnresolvedAlert(db, configs[0]!.id, entries[0]!.id)).toBe(true);
         });
 
         it("fires for each *distinct* alert config that is crossed for the same entry", async () => {
@@ -1093,4 +1147,40 @@ describe("runMonitorCycle", () => {
             expect(callOrder).toEqual(["rpc", "extension"]);
         });
     });
+
+
+    describe("OpenTelemetry tracing", () => {
+        beforeEach(async () => {
+            const { shutdownTracing } = await import("../../src/observability/tracing.js");
+            await shutdownTracing();
+            process.env["SOROKEEP_OTLP_IN_MEMORY"] = "true";
+        });
+
+        afterEach(async () => {
+            delete process.env["SOROKEEP_OTLP_IN_MEMORY"];
+            const { shutdownTracing } = await import("../../src/observability/tracing.js");
+            await shutdownTracing();
+        });
+
+        it("emits one process-contract span per contract, tagged with the contract id", async () => {
+            const { initTracing, getInMemoryExporter } = await import("../../src/observability/tracing.js");
+            await initTracing();
+
+            seedContract(db, "CA", "testnet", [
+                { keyXdr: "ca-key", type: "instance", liveUntil: LEDGER + 10000 },
+            ]);
+            seedContract(db, "CB", "testnet", [
+                { keyXdr: "cb-key", type: "instance", liveUntil: LEDGER + 10000 },
+            ]);
+            mockGetEntryTTLs.mockResolvedValue({ latestLedger: LEDGER, entries: [] });
+
+            await runMonitorCycle(db, "testnet");
+
+            const spans = getInMemoryExporter()!.getFinishedSpans()
+                .filter((s) => s.name === "process-contract");
+            expect(spans).toHaveLength(2);
+            expect(spans.map((s) => s.attributes["contract.id"]).sort()).toEqual(["CA", "CB"]);
+        });
+    });
+
 });

@@ -84,4 +84,9 @@ Everything sorokeep knows lives in one SQLite file (`~/.sorokeep/sorokeep.db`, s
 | Change to threshold/extension logic | `src/core/monitor.ts` or `src/core/extension.ts` — read the fault-isolation notes above before touching these |
 | New RPC-derived data | `src/rpc/client.ts` first, then whatever core module consumes it |
 
+
+
+For production deployments, see [Observability Setup](observability.md) — Prometheus scraping, Grafana dashboards, and Alertmanager rules.
+
+
 If a change doesn't fit cleanly into one of these rows, that's usually a sign to open an issue and discuss the approach before writing code — see [CONTRIBUTING.md](../CONTRIBUTING.md#larger-contributions).

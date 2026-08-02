@@ -359,7 +359,29 @@ Gere scripts de autocompletar para shell bash/zsh para habilitar completar por t
 
 ## Alertas
 
+
 O Sorokeep entrega alertas através de múltiplos canais: **webhooks**, **Slack**, **Discord**, **Telegram** e **PagerDuty**. Cada alerta inclui um nível de gravidade e contexto rico sobre a entrada afetada. O Sorokeep utiliza uma arquitetura robusta e desacoplada de detecção e despacho com fila baseada em banco de dados.
+
+O Sorokeep entrega alertas através de múltiplos canais: **webhooks**, **Slack**, **Discord**, **Telegram**, **PagerDuty**, **Opsgenie**, **Microsoft Teams**, **Matrix**, **e-mail**, **Google Chat**, e um segundo canal de **Webhook v2** configurável. Cada alerta inclui um nível de gravidade e contexto rico sobre a entrada afetada. O Sorokeep utiliza uma arquitetura robusta e desacoplada de detecção e despacho com fila baseada em banco de dados.
+
+### Comparação dos Canais Suportados
+
+| Canal | Método de Autenticação | Limite de Taxa Típico | Formato do Payload | Complexidade de Configuração |
+|---------|-------------|--------------------|----------------|------------------|
+| **Webhook** | HMAC-SHA256 (`X-Sorokeep-Signature`) / Secret | Ilimitado (depende do destino) | JSON genérico | Baixa |
+| **Webhook v2** | HMAC-SHA256 (`X-Sorokeep-Signature`) / Secret, cabeçalhos customizados | Ilimitado (depende do destino) | JSON genérico | Baixa |
+| **Slack** | Token OAuth do Bot (`xoxb-...`) / URL do Webhook | 1 req/seg | JSON Slack Block Kit | Baixa |
+| **PagerDuty** | Chave de Roteamento da Events API v2 | 120 req/min | JSON PagerDuty Event v2 | Baixa |
+| **Opsgenie** | Chave de API | Depende do plano | JSON da Opsgenie Alert API | Baixa |
+| **Discord** | URL do Webhook | 30 req/min por webhook | JSON Discord Embed | Baixa |
+| **Telegram** | Token do Bot (`SOROKEEP_TELEGRAM_BOT_TOKEN`) | 30 msg/seg no geral (1 msg/seg por chat) | Texto formatado em HTML / Markdown | Média |
+| **Microsoft Teams** | URL do Webhook (escopo de tenant) | Depende do conector | JSON MessageCard do Teams | Baixa |
+| **Matrix** | ID da Sala | Depende do homeserver | Evento `m.room.message` do Matrix | Média |
+| **E-mail** | Credenciais SMTP (host/porta/usuário/senha) | Depende do provedor SMTP | Texto simples + HTML | Média |
+| **Google Chat** | URL do Webhook | Depende do espaço | JSON de cartão do Google Chat | Baixa |
+
+> Precisa de um canal que não está listado aqui? Veja [Adicionando um Canal de Alerta](docs/adding-an-alert-channel.md) para implementar um plugin de canal customizado.
+
 
 ### Ciclo de Vida do Alerta
 
