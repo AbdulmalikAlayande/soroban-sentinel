@@ -16,6 +16,8 @@ import { deliverSingleAlert } from "../alerts/dispatcher.js";
 import { buildAlertEvent } from "../alerts/types.js";
 import { runAutoExtensions } from "./extension.js";
 import { getLogger } from "../logging/index.js";
+import { getTracer, endSpan } from "../observability/tracing.js";
+import type { Span } from "@opentelemetry/api";
 
 const logger = getLogger().child({ component: "MonitorCycle" });
 
@@ -91,17 +93,24 @@ export async function runMonitorCycle(
 
     logger.debug(`Monitor cycle started — ${contracts.length} contract(s) on ${network}`);
 
+    const tracer = getTracer();
+
     for (const contract of contracts) {
+        const contractSpan: Span = tracer.startSpan("process-contract", {
+            attributes: { "contract.id": contract.id },
+        });
         result.contractsChecked++;
 
         try {
             await processContract(db, client, contract.id, network, result);
+            endSpan(contractSpan);
         } catch (error: unknown) {
             // Fault isolation: record the failure, move to next contract.
             const message = error instanceof Error ? error.message : String(error);
             const errorEntry = `Error processing contract ${contract.id}: ${message}`;
             result.errors.push(errorEntry);
             logger.error(errorEntry, error);
+            endSpan(contractSpan, error);
         }
     }
 

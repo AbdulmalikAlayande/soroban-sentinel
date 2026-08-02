@@ -8,6 +8,8 @@ import type { Logger } from "../logging/types.js";
 import { createMetricsServer, stopMetricsServer } from "../observability/server.js";
 import { daemonCycleDuration, daemonCyclesSkipped } from "../observability/metrics/daemon.js";
 import { StellarRpcClient } from "../rpc/client.js";
+import { initTracing, getTracer, endSpan } from "../observability/tracing.js";
+import { context, trace, type Span } from "@opentelemetry/api";
 
 // Resolve the child logger lazily so that a runtime reconfiguration of the
 // global logger (e.g. the daemon command's `--log-format json`) is in effect
@@ -138,8 +140,26 @@ async function executeCycle(
 ): Promise<void> {
     cycleInFlight = true;
 
+    // Tracing spans are purely observational — every span call is wrapped
+    // (via endSpan's own defensive try/catch, see observability/tracing.ts)
+    // so an exporter failure can never affect cycle correctness. initTracing
+    // is a no-op after the first call, so this is cheap on every cycle.
+    await initTracing();
+    const tracer = getTracer();
+    const cycleSpan: Span = tracer.startSpan("DaemonCycle");
+    const cycleCtx = trace.setSpan(context.active(), cycleSpan);
+    const startChildSpan = (name: string): Span => tracer.startSpan(name, undefined, cycleCtx);
+
     try {
-        const result = await runMonitorCycle(db, network, rpcUrl, feeSponsorSecret);
+        const monitorSpan = startChildSpan("Monitor");
+        let result: MonitorCycleResult;
+        try {
+            result = await runMonitorCycle(db, network, rpcUrl, feeSponsorSecret);
+        } catch (monitorErr) {
+            endSpan(monitorSpan, monitorErr);
+            throw monitorErr;
+        }
+        endSpan(monitorSpan);
 
         logger().debug(
             `Cycle complete — checked: ${result.contractsChecked}, ` +
@@ -156,6 +176,7 @@ async function executeCycle(
 
         // Step 2: deliver any pending alerts that accumulated during detection.
         // Errors here are isolated — they must NOT kill the cycle or surface to onCycle.
+        const deliverSpan = startChildSpan("Deliver");
         try {
             const delivery = await deliverPendingAlerts(db, network);
             if (delivery.attempted > 0) {
@@ -169,13 +190,16 @@ async function executeCycle(
             // but guard defensively.
             logger().error("deliverPendingAlerts threw unexpectedly", deliveryErr);
         }
+        endSpan(deliverSpan);
 
         // Step 3: aggregate daily cost snapshots for past extension history.
+        const costAggregationSpan = startChildSpan("CostAggregation");
         try {
             aggregateDailyCostSnapshots(db);
         } catch (snapshotErr: unknown) {
             logger().error("aggregateDailyCostSnapshots threw unexpectedly", snapshotErr);
         }
+        endSpan(costAggregationSpan);
 
         safeOnCycle(onCycle, result, undefined);
     } catch (err: unknown) {
@@ -183,6 +207,7 @@ async function executeCycle(
         logger().error(`Cycle failed: ${error.message}`, err);
         safeOnCycle(onCycle, null, error);
     } finally {
+        endSpan(cycleSpan);
         cycleInFlight = false;
     }
 }

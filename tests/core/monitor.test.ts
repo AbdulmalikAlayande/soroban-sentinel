@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import {
     insertContract,
@@ -1143,6 +1143,40 @@ describe("runMonitorCycle", () => {
             await runMonitorCycle(db, "testnet");
 
             expect(callOrder).toEqual(["rpc", "extension"]);
+        });
+    });
+
+    describe("OpenTelemetry tracing", () => {
+        beforeEach(async () => {
+            const { shutdownTracing } = await import("../../src/observability/tracing.js");
+            await shutdownTracing();
+            process.env["SOROKEEP_OTLP_IN_MEMORY"] = "true";
+        });
+
+        afterEach(async () => {
+            delete process.env["SOROKEEP_OTLP_IN_MEMORY"];
+            const { shutdownTracing } = await import("../../src/observability/tracing.js");
+            await shutdownTracing();
+        });
+
+        it("emits one process-contract span per contract, tagged with the contract id", async () => {
+            const { initTracing, getInMemoryExporter } = await import("../../src/observability/tracing.js");
+            await initTracing();
+
+            seedContract(db, "CA", "testnet", [
+                { keyXdr: "ca-key", type: "instance", liveUntil: LEDGER + 10000 },
+            ]);
+            seedContract(db, "CB", "testnet", [
+                { keyXdr: "cb-key", type: "instance", liveUntil: LEDGER + 10000 },
+            ]);
+            mockGetEntryTTLs.mockResolvedValue({ latestLedger: LEDGER, entries: [] });
+
+            await runMonitorCycle(db, "testnet");
+
+            const spans = getInMemoryExporter()!.getFinishedSpans()
+                .filter((s) => s.name === "process-contract");
+            expect(spans).toHaveLength(2);
+            expect(spans.map((s) => s.attributes["contract.id"]).sort()).toEqual(["CA", "CB"]);
         });
     });
 });
