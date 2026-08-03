@@ -820,6 +820,74 @@ describe("Core Extension Logic", () => {
             const anomaly = history.find(h => h.tx_hash === "anomaly-tx");
             expect(anomaly!.is_anomaly).toBe(1);
         });
+        it("with jitter disabled (default), submission timing is unchanged from current behavior", async () => {
+            const id1 = seedContract(db, { id: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYS1" });
+            const id2 = seedContract(db, { id: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYS2" });
+
+            for (const id of [id1, id2]) {
+                upsertEntry(db, {
+                    contract_id: id, entry_key_xdr: `instance-${id}`, entry_type: "instance", live_until_ledger: 2410000,
+                });
+                upsertExtensionPolicy(db, {
+                    contract_id: id, enabled: true, target_ttl_ledgers: 100000, extend_when_below_ledgers: 20000, keypair_source: "env:TEST_SECRET_KEY",
+                });
+            }
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+            mockSubmitExtension.mockResolvedValue({ success: true, txHash: "tx", ledger: 2400100 });
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2400100,
+                entries: [
+                    { entryKeyXdr: `instance-${id1}`, latestLedger: 2400100, liveUntilLedgerSeq: 2500100, remainingTTL: 100000 },
+                    { entryKeyXdr: `instance-${id2}`, latestLedger: 2400100, liveUntilLedgerSeq: 2500100, remainingTTL: 100000 },
+                ],
+            });
+
+            const startTime = Date.now();
+            await runAutoExtensions(db, "testnet");
+            const duration = Date.now() - startTime;
+            
+            // Should execute instantly without jitter
+            expect(duration).toBeLessThan(100); 
+        });
+
+        it("with jitter enabled, multiple queued extensions are not submitted synchronously back-to-back", async () => {
+            const id1 = seedContract(db, { id: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYS1" });
+            const id2 = seedContract(db, { id: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYS2" });
+
+            for (const id of [id1, id2]) {
+                upsertEntry(db, {
+                    contract_id: id, entry_key_xdr: `instance-${id}`, entry_type: "instance", live_until_ledger: 2410000,
+                });
+                upsertExtensionPolicy(db, {
+                    contract_id: id, enabled: true, target_ttl_ledgers: 100000, extend_when_below_ledgers: 20000, keypair_source: "env:TEST_SECRET_KEY",
+                });
+            }
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            setEnv("EXTENSION_JITTER_MS", "300"); // 300ms jitter
+
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+            mockSubmitExtension.mockResolvedValue({ success: true, txHash: "tx", ledger: 2400100 });
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2400100,
+                entries: [
+                    { entryKeyXdr: `instance-${id1}`, latestLedger: 2400100, liveUntilLedgerSeq: 2500100, remainingTTL: 100000 },
+                    { entryKeyXdr: `instance-${id2}`, latestLedger: 2400100, liveUntilLedgerSeq: 2500100, remainingTTL: 100000 },
+                ],
+            });
+
+            // Mock Math.random to always return 0.9 to ensure ~270ms delay per task
+            const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.9);
+
+            const startTime = Date.now();
+            await runAutoExtensions(db, "testnet");
+            const duration = Date.now() - startTime;
+            
+            // Expected delay is at least 270ms (0.9 * 300) since there are multiple queued extensions
+            expect(duration).toBeGreaterThanOrEqual(270);
+
+            randomSpy.mockRestore();
+        });
 
         // ── Issue #504: minimum-balance safety check ───────────────────────
 
