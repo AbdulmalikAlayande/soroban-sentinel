@@ -27,6 +27,8 @@ export interface DaemonOptions {
     vacuumIntervalMs?: number;
     /** Called after every cycle with the result (or null + error on failure). */
     onCycle?: (result: MonitorCycleResult | null, error?: Error) => void;
+    /** If set, start a Prometheus /metrics HTTP server on this port. Off by default. */
+    metricsPort?: number;
 }
 
 // ─── Module-level state ───────────────────────────────────────────────────────
@@ -118,6 +120,16 @@ async function executeCycle(
 ): Promise<void> {
     cycleInFlight = true;
 
+    // Tracing spans are purely observational — every span call is wrapped
+    // (via endSpan's own defensive try/catch, see observability/tracing.ts)
+    // so an exporter failure can never affect cycle correctness. initTracing
+    // is a no-op after the first call, so this is cheap on every cycle.
+    await initTracing();
+    const tracer = getTracer();
+    const cycleSpan: Span = tracer.startSpan("DaemonCycle");
+    const cycleCtx = trace.setSpan(context.active(), cycleSpan);
+    const startChildSpan = (name: string): Span => tracer.startSpan(name, undefined, cycleCtx);
+
     try {
         const result = await runMonitorCycle(db, network, rpcUrl, feeSponsorSecret);
 
@@ -129,9 +141,14 @@ async function executeCycle(
             `extended: ${result.extensionsTriggered}, ` +
             `errors: ${result.errors.length}`,
         );
+        daemonCycleDuration.observe(
+            { network },
+            (result.cycleFinishedAt.getTime() - result.cycleStartedAt.getTime()) / 1000,
+        );
 
         // Step 2: deliver any pending alerts that accumulated during detection.
         // Errors here are isolated — they must NOT kill the cycle or surface to onCycle.
+        const deliverSpan = startChildSpan("Deliver");
         try {
             const delivery = await deliverPendingAlerts(db, network);
             if (delivery.attempted > 0) {
@@ -152,6 +169,16 @@ async function executeCycle(
         } catch (snapshotErr: unknown) {
             logger().error("aggregateDailyCostSnapshots threw unexpectedly", snapshotErr);
         }
+        endSpan(deliverSpan);
+
+        // Step 3: aggregate daily cost snapshots for past extension history.
+        const costAggregationSpan = startChildSpan("CostAggregation");
+        try {
+            aggregateDailyCostSnapshots(db);
+        } catch (snapshotErr: unknown) {
+            logger().error("aggregateDailyCostSnapshots threw unexpectedly", snapshotErr);
+        }
+        endSpan(costAggregationSpan);
 
         safeOnCycle(onCycle, result, undefined);
     } catch (err: unknown) {
@@ -159,6 +186,7 @@ async function executeCycle(
         logger().error(`Cycle failed: ${error.message}`, err);
         safeOnCycle(onCycle, null, error);
     } finally {
+        endSpan(cycleSpan);
         cycleInFlight = false;
     }
 }
@@ -213,6 +241,19 @@ function safeOnCycle(
     } catch (cbErr) {
         logger().error("onCycle callback threw — ignoring", cbErr);
     }
+}
+
+function resolvePollIntervalMs(db: Database.Database, network: string, fallbackIntervalMs: number): number {
+    const contracts = getAllContracts(db).filter((contract) => contract.network === network);
+    const overrides = contracts
+        .map((contract) => contract.poll_interval_seconds)
+        .filter((value): value is number => typeof value === "number" && value > 0);
+
+    if (overrides.length === 0) {
+        return fallbackIntervalMs;
+    }
+
+    return Math.min(...overrides) * 1000;
 }
 
 function resolvePollIntervalMs(db: Database.Database, network: string, fallbackIntervalMs: number): number {

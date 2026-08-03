@@ -16,6 +16,8 @@ import { deliverSingleAlert } from "../alerts/dispatcher.js";
 import { buildAlertEvent } from "../alerts/types.js";
 import { runAutoExtensions } from "./extension.js";
 import { getLogger } from "../logging/index.js";
+import { getTracer, endSpan } from "../observability/tracing.js";
+import type { Span } from "@opentelemetry/api";
 
 const logger = getLogger().child({ component: "MonitorCycle" });
 
@@ -91,7 +93,12 @@ export async function runMonitorCycle(
 
     logger.debug(`Monitor cycle started — ${contracts.length} contract(s) on ${network}`);
 
+    const tracer = getTracer();
+
     for (const contract of contracts) {
+        const contractSpan: Span = tracer.startSpan("process-contract", {
+            attributes: { "contract.id": contract.id },
+        });
         result.contractsChecked++;
 
         try {
@@ -102,7 +109,31 @@ export async function runMonitorCycle(
             const errorEntry = `Error processing contract ${contract.id}: ${message}`;
             result.errors.push(errorEntry);
             logger.error(errorEntry, error);
+            endSpan(contractSpan, error);
         }
+    }
+
+    // Auto-extension phase: check extension_policies and submit transactions for
+    // entries whose TTL fell below the configured threshold.
+    try {
+        const ext = await runAutoExtensions(db, network, rpcUrl, feeSponsorSecret);
+        result.extensionsTriggered = ext.entriesExtended;
+        result.extensionErrors = ext.errors;
+        if (ext.entriesExtended > 0) {
+            logger.info(
+                `Auto-extensions — contracts: ${ext.contractsExtended}, ` +
+                `entries: ${ext.entriesExtended}`,
+            );
+        }
+        for (const e of ext.extensions) {
+            if (e.isAnomaly) {
+                logger.warn(`Cost anomaly — contract: ${e.contractId}: ${e.anomalyDetails}`);
+            }
+        }
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        result.extensionErrors = [msg];
+        logger.error("runAutoExtensions threw unexpectedly", err);
     }
 
     // Auto-extension phase: check extension_policies and submit transactions for
