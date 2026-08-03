@@ -9,9 +9,10 @@ import {
   classifyTTL,
   formatContractID,
   formatTimeToCloseLedger,
+  printOutput,
   statusIndicator,
 } from "../utils/formatting.js";
-import { watchContract } from "../core/watch.js";
+import { watchContract, type WatchResult } from "../core/watch.js";
 import { loadWatchContractsFile } from "../utils/watch-config.js";
 
 const logger = getLogger().child({ component: "WatchCommand" });
@@ -39,19 +40,21 @@ export const registerWatchCommand = (program: Command): void => {
       "--from-file <path>",
       "Load multiple contract registrations from a YAML or JSON file",
     )
+    .option("--json", "Output machine-readable JSON")
     .action(async (contractId, options) => {
       try {
         const db = getDatabase();
 
         if (options.fromFile) {
           const configs = loadWatchContractsFile(options.fromFile);
-          const results = [] as Array<{
-            contractId: string;
-            name?: string;
-            network: string;
-            status: "SUCCESS" | "FAILED";
-            message: string;
-          }>;
+          const results = [] as Array<
+            WatchResult & {
+              name?: string;
+              network: string;
+              status: "SUCCESS" | "FAILED";
+              message: string;
+            }
+          >;
 
           for (const config of configs) {
             const watchResult = await watchContract(db, {
@@ -64,6 +67,7 @@ export const registerWatchCommand = (program: Command): void => {
             });
 
             results.push({
+              ...watchResult,
               contractId: config.contractId,
               name: config.name,
               network: config.network,
@@ -72,6 +76,29 @@ export const registerWatchCommand = (program: Command): void => {
                 ? `Registered ${config.name ?? formatContractID(config.contractId)}`
                 : watchResult.error,
             });
+          }
+
+          if (results.length === 0) {
+            const errorMessage = "No contracts found in the watch config file.";
+            if (options.json) {
+              printOutput({ success: false, error: errorMessage }, true);
+              process.exitCode = 1;
+              return;
+            }
+            console.error(chalk.red(errorMessage));
+            process.exit(1);
+            return;
+          }
+
+          if (options.json) {
+            printOutput({
+              success: results.every((result) => result.status === "SUCCESS"),
+              results,
+            }, true);
+            if (results.some((result) => result.status === "FAILED")) {
+              process.exitCode = 1;
+            }
+            return;
           }
 
           printBatchSummary(results);
@@ -83,6 +110,16 @@ export const registerWatchCommand = (program: Command): void => {
         }
 
         if (!contractId) {
+          if (options.json) {
+            printOutput({
+              success: false,
+              error: "contract_id_required",
+              message: "A contract ID is required unless --from-file is provided.",
+            }, true);
+            process.exitCode = 1;
+            return;
+          }
+
           console.log(
             chalk.red(
               "A contract ID is required unless --from-file is provided.",
@@ -93,9 +130,11 @@ export const registerWatchCommand = (program: Command): void => {
         }
 
         const displayId = formatContractID(contractId);
-        const spinner = ora(
-          `Registering contract ${formatContractID(contractId)} and discovering entries...`,
-        ).start();
+        const spinner = !options.json
+          ? ora(
+              `Registering contract ${formatContractID(contractId)} and discovering entries...`,
+            ).start()
+          : undefined;
         const watchResult = await watchContract(db, {
           contractId,
           network: options.network,
@@ -105,11 +144,26 @@ export const registerWatchCommand = (program: Command): void => {
           noIntrospection: options.noIntrospection,
         });
         if (!watchResult.success) {
-          spinner.fail(chalk.red(watchResult.error));
+          if (options.json) {
+            printOutput({ success: false, error: watchResult.error, contractId, network: options.network }, true);
+            process.exitCode = 1;
+            return;
+          }
+
+          spinner?.fail(chalk.red(watchResult.error));
           process.exit(1);
           return;
         }
-        spinner.succeed(
+        if (options.json) {
+          printOutput({
+            ...watchResult,
+            contractId,
+            network: options.network,
+            name: options.name,
+          }, true);
+          return;
+        }
+        spinner?.succeed(
           chalk.green(
             `Contract ${options.name || displayId} registered successfully.`,
           ),
@@ -160,6 +214,11 @@ export const registerWatchCommand = (program: Command): void => {
       } catch (error: any) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
+        if (options.json) {
+          printOutput({ success: false, error: errorMessage, message: "Failed to watch contract" }, true);
+          process.exitCode = 1;
+          return;
+        }
         logger.error("Watch command failed", { error: errorMessage });
         console.log(chalk.red(`Failed to watch contract: ${errorMessage}`));
         process.exit(1);
