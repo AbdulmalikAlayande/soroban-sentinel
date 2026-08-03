@@ -377,7 +377,10 @@ export async function runAutoExtensions(
             const lastExtendedAt = new Map<number, Date>();
             for (const record of recentHistory) {
                 const entryId = record.contract_entry_id;
-                const executedAt = new Date(record.executed_at);
+                // executed_at is stored as UTC (SQLite CURRENT_TIMESTAMP); append
+                // "Z" so the timestamp is parsed as UTC regardless of the host
+                // machine's timezone.
+                const executedAt = new Date(record.executed_at + "Z");
                 const existing = lastExtendedAt.get(entryId);
                 if (!existing || executedAt > existing) {
                     lastExtendedAt.set(entryId, executedAt);
