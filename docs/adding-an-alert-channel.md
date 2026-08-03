@@ -46,7 +46,11 @@ Look at `alerts/webhook.ts` or `alerts/pagerduty.ts` for the timeout/AbortContro
 
 ## 2. Register a `ChannelDefinition`
 
+
 Add your channel to `src/alerts/builtins.ts` if it's shipping in sorokeep itself, or register it from your own application's startup code if you're embedding sorokeep as a library (`import { registerAlertChannel } from "sorokeep"` — see `src/lib.ts`).
+
+Add your channel to `src/alerts/builtins.ts` if it's shipping in sorokeep itself, register it from your own application's startup code if you're embedding sorokeep as a library (`import { registerAlertChannel } from "sorokeep"` — see `src/lib.ts`), or publish it as an external npm package and load it with `--channel-plugin`.
+
 
 ```ts
 import { registerAlertChannel } from "./registry.js";
@@ -73,13 +77,62 @@ Field-by-field:
 
 If you added it to `builtins.ts`, that's it — `registerBuiltinChannels()` is called once (idempotently) from both `dispatcher.ts` and `commands/alerts.ts`, so your channel is live everywhere.
 
+
 ## 3. What you did *not* need to touch
+
+## 3. External plugin package convention
+
+If you want a channel to be installable without changing sorokeep's source, publish a package whose default export is a registration function. The CLI loads it with `--channel-plugin <package>` and passes in sorokeep's public `registerAlertChannel` function.
+
+```ts
+// package entrypoint, e.g. src/index.ts in your npm package
+export default function registerMatrixChannel(
+    registerAlertChannel: typeof import("sorokeep").registerAlertChannel,
+): void {
+    registerAlertChannel({
+        name: "matrix",
+        channel: { send: (target, event) => sendMatrixAlert(target, event) },
+        targetOption: "url",
+        missingTargetError: "Error: --url is required when --type is matrix.",
+        supportsSigning: false,
+    });
+}
+```
+
+Minimal package metadata:
+
+```json
+{
+  "name": "sorokeep-alert-channel-matrix",
+  "type": "module",
+  "exports": "./dist/index.js"
+}
+```
+
+Example CLI usage after `npm install` or a local link:
+
+```bash
+sorokeep --channel-plugin sorokeep-alert-channel-matrix alerts add \
+  --contract <contractId> \
+  --type matrix \
+  --url '!room:example.org' \
+  --threshold 1000
+```
+
+`--channel-plugin` is repeatable and applies before any command runs, so it also works with long-running processes such as `sorokeep daemon`. An invalid or missing plugin package prints a clear error and exits non-zero rather than silently no-op'ing.
+
+## 4. What you did *not* need to touch
+
 
 - `alerts/dispatcher.ts` — its default channel map is built from the registry (`listAlertChannels()`), not a hardcoded object.
 - `commands/alerts.ts` — `alerts add --type matrix ...` resolves your `ChannelDefinition` from the registry; the target flag, error message, and signing behavior all come from what you registered.
 - `db/schema.sql` — `channel_type` is a plain `TEXT` column with a non-empty check, not a fixed SQL enum. No migration needed.
 
+
 ## 4. Tests
+
+## 5. Tests
+
 
 ### Contract test suite (recommended first test)
 
@@ -125,6 +178,9 @@ Follow the pattern in `tests/alerts/builtins.test.ts`: mock the underlying modul
 
 Per [CONTRIBUTING.md](../CONTRIBUTING.md#test-driven-development), write the test first.
 
+
 ## 5. Docs
+
+## 6. Docs
 
 Add your channel to the table in `README.md`'s Alerting section, and to `sorokeep alerts add`'s `--type` help text in the same file.

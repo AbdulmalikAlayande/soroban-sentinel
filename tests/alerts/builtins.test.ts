@@ -3,6 +3,9 @@ import { _resetRegistryForTesting, getAlertChannel, listAlertChannels } from "..
 import type { AlertEvent } from "../../src/alerts/types";
 
 const mockSendWebhookAlert = vi.fn().mockResolvedValue(undefined);
+
+const mockSendWebhook2Alert = vi.fn().mockResolvedValue(undefined);
+
 const mockSlackSend = vi.fn().mockResolvedValue(undefined);
 const mockSendPagerDutyAlert = vi.fn().mockResolvedValue(undefined);
 const mockSendDiscordAlert = vi.fn().mockResolvedValue(undefined);
@@ -14,6 +17,11 @@ const mockSendTeamsAlert = vi.fn().mockResolvedValue(undefined);
 vi.mock("../../src/alerts/webhook.js", () => ({
     sendWebhookAlert: (...args: unknown[]) => mockSendWebhookAlert(...args),
 }));
+
+vi.mock("../../src/alerts/webhook2.js", () => ({
+    sendWebhook2Alert: (...args: unknown[]) => mockSendWebhook2Alert(...args),
+}));
+
 vi.mock("../../src/alerts/slack.js", () => ({
     SlackChannel: class {
         constructor(public webhookUrl: string) {}
@@ -62,25 +70,44 @@ describe("registerBuiltinChannels", () => {
         registerBuiltinChannels();
     });
 
+
     it("registers exactly the ten built-in channel names", () => {
         const names = listAlertChannels().map((d) => d.name).sort();
         expect(names).toEqual(["discord", "email", "googlechat", "matrix", "opsgenie", "pagerduty", "slack", "teams", "telegram", "webhook"]);
+
+    it("registers exactly the eleven built-in channel names", () => {
+        const names = listAlertChannels().map((d) => d.name).sort();
+        expect(names).toEqual(["discord", "email", "googlechat", "matrix", "opsgenie", "pagerduty", "slack", "teams", "telegram", "webhook", "webhook2"]);
+
     });
 
     it("is idempotent — calling it again does not throw", async () => {
         const { registerBuiltinChannels } = await import("../../src/alerts/builtins");
         expect(() => registerBuiltinChannels()).not.toThrow();
+
         expect(listAlertChannels()).toHaveLength(10);
     });
 
     it("only webhook supports HMAC signing", () => {
         for (const def of listAlertChannels()) {
             expect(def.supportsSigning).toBe(def.name === "webhook");
+
+        expect(listAlertChannels()).toHaveLength(11);
+    });
+
+    it("only webhook and webhook2 support HMAC signing", () => {
+        const signingChannels = new Set(["webhook", "webhook2"]);
+        for (const def of listAlertChannels()) {
+            expect(def.supportsSigning).toBe(signingChannels.has(def.name));
+
         }
     });
 
     it.each([
         ["webhook", "url"],
+
+        ["webhook2", "url"],
+
         ["slack", "channel"],
         ["pagerduty", "routingKey"],
         ["discord", "url"],
@@ -98,6 +125,14 @@ describe("registerBuiltinChannels", () => {
         await getAlertChannel("webhook")!.channel.send("https://example.com/hook", event, "secret");
         expect(mockSendWebhookAlert).toHaveBeenCalledWith("https://example.com/hook", event, "secret");
     });
+
+
+    it("webhook2 definition delegates to sendWebhook2Alert", async () => {
+        const target = JSON.stringify({ url: "https://example.com/hook2" });
+        await getAlertChannel("webhook2")!.channel.send(target, event, "secret");
+        expect(mockSendWebhook2Alert).toHaveBeenCalledWith(target, event, "secret");
+    });
+
 
     it("slack definition constructs a SlackChannel with the target and sends", async () => {
         await getAlertChannel("slack")!.channel.send("#ops", event);
@@ -148,6 +183,11 @@ describe("registerBuiltinChannels", () => {
         expect(getAlertChannel("webhook")?.missingTargetError).toBe(
             "Error: --url is required when --type is webhook.",
         );
+
+        expect(getAlertChannel("webhook2")?.missingTargetError).toBe(
+            "Error: --url is required when --type is webhook2. The value must be a JSON string: {\"url\":\"https://...\",\"headers\":{},\"timeoutMs\":10000}",
+        );
+
         expect(getAlertChannel("slack")?.missingTargetError).toBe(
             "Error: --channel is required when --type is slack.",
         );

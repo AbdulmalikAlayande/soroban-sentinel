@@ -7,10 +7,16 @@ import {
     getAlertConfigsForContract,
     getAlertConfigById,
     deleteAlertConfig,
+
+    setAlertConfigEnabled,
+
     insertResourceAlertConfig,
     getContract,
     getAlertHistory,
     getChannelDeliveryStats,
+
+    addTargetToAlertConfig,
+
 } from "../db/repositories.js";
 import { formatContractID, formatTimeToCloseLedger } from "../utils/formatting.js";
 import { deliverSingleAlert } from "../alerts/dispatcher.js";
@@ -46,10 +52,18 @@ export function registerAlertsCommand(program: Command): void {
         .command("add")
         .description("Add a new alert configuration (TTL-based or resource-based)")
         .requiredOption("--contract <id>", "The contract ID to alert on")
+
         .requiredOption("--type <type>", "The notification channel type ('webhook', 'slack', 'discord', 'telegram', or 'pagerduty')")
         .option("--url <url>", "Webhook URL (required if --type is webhook or discord)")
         .option("--channel <channel>", "Slack channel (required if --type is slack)")
         .option("--routing-key <key>", "PagerDuty integration key (required if --type is pagerduty)")
+
+        .option("--type <type>", "The notification channel type ('webhook', 'slack', 'discord', 'telegram', or 'pagerduty')")
+        .option("--url <url>", "Webhook URL (required if --type is webhook or discord)")
+        .option("--channel <channel>", "Slack channel (required if --type is slack)")
+        .option("--routing-key <key>", "PagerDuty integration key (required if --type is pagerduty)")
+        .option("--target <type:target>", "Additional targets (repeatable)", (val, prev: string[]) => prev.concat([val]), [])
+
         .option("--secret <secret>", "HMAC secret for webhook signing (auto-generated if omitted for webhooks)")
         .option("--threshold <ledgers>", "Threshold in number of ledgers (for TTL-based alerts)", (val) => parseInt(val, 10))
         .option("--cpu-limit <instructions>", "CPU instruction limit for resource alerts (default: 100,000,000)", (val) => parseInt(val, 10))
@@ -87,6 +101,7 @@ export function registerAlertsCommand(program: Command): void {
                 process.exit(1);
             }
 
+
             let target = "";
             let webhookSecret: string | undefined;
 
@@ -105,6 +120,62 @@ export function registerAlertsCommand(program: Command): void {
 
                 if (channelDef.supportsSigning) {
                     webhookSecret = options.secret ?? randomBytes(32).toString("hex");
+
+            let primaryType = options.type;
+            let primaryTarget = "";
+            let webhookSecret: string | undefined;
+
+            const additionalTargets: { type: string; target: string }[] = [];
+            if (options.target) {
+                for (const t of options.target as string[]) {
+                    const parts = t.split(":");
+                    if (parts.length < 2) {
+                        console.error(chalk.red(`Error: --target must be formatted as <type>:<target> (e.g. webhook:https://...). Got: ${t}`));
+                        process.exit(1);
+                    }
+                    const ctype = parts[0]!;
+                    const ctarget = parts.slice(1).join(":");
+
+                    const cdef = getAlertChannel(ctype);
+                    if (!cdef) {
+                        console.error(chalk.red(`Error: Unknown channel type '${ctype}' in --target ${t}`));
+                        process.exit(1);
+                    }
+                    additionalTargets.push({ type: ctype, target: ctarget });
+                }
+            }
+
+            if (!primaryType) {
+                if (additionalTargets.length === 0) {
+                    console.error(chalk.red("Error: You must specify either --type and a target flag (e.g., --url) or provide at least one --target <type>:<target> pair."));
+                    process.exit(1);
+                }
+                const first = additionalTargets.shift()!;
+                primaryType = first.type;
+                primaryTarget = first.target;
+
+                const channelDef = getAlertChannel(primaryType);
+                if (channelDef?.supportsSigning) {
+                    webhookSecret = options.secret ?? randomBytes(32).toString("hex");
+                }
+            } else {
+                const channelDef = getAlertChannel(primaryType);
+                if (!channelDef) {
+                    const known = listAlertChannels().map((d) => d.name).join(", ");
+                    console.error(chalk.red(`Error: --type must be one of: ${known}.`));
+                    process.exit(1);
+                } else {
+                    const targetValue = (options as Record<string, string | undefined>)[channelDef.targetOption];
+                    if (!targetValue) {
+                        console.error(chalk.red(channelDef.missingTargetError));
+                        process.exit(1);
+                    }
+                    primaryTarget = targetValue as string;
+
+                    if (channelDef.supportsSigning) {
+                        webhookSecret = options.secret ?? randomBytes(32).toString("hex");
+                    }
+
                 }
             }
 
@@ -148,10 +219,17 @@ export function registerAlertsCommand(program: Command): void {
                     quietHoursTimezone = options.timezone as string;
                 }
 
+
                 insertAlertConfig(db, {
                     contract_id: contractId,
                     channel_type: options.type,
                     channel_target: target,
+
+                const alertConfigId = insertAlertConfig(db, {
+                    contract_id: contractId,
+                    channel_type: primaryType,
+                    channel_target: primaryTarget,
+
                     threshold_ledgers: threshold,
                     webhook_secret: webhookSecret,
                     quiet_hours_start: quietHoursStart,
@@ -159,7 +237,18 @@ export function registerAlertsCommand(program: Command): void {
                     quiet_hours_timezone: quietHoursTimezone,
                 });
 
+
                 let successMsg = `Successfully added alert config: type=${options.type}, target=${target}, threshold=${threshold} ledgers`;
+
+                for (const extra of additionalTargets) {
+                    addTargetToAlertConfig(db, alertConfigId, extra.type, extra.target);
+                }
+
+                let successMsg = `Successfully added alert config: type=${primaryType}, target=${primaryTarget}, threshold=${threshold} ledgers`;
+                if (additionalTargets.length > 0) {
+                    successMsg += `, +${additionalTargets.length} additional target(s)`;
+                }
+
                 if (quietHoursStart) {
                     successMsg += `, quiet hours=${quietHoursStart}-${quietHoursEnd} (${quietHoursTimezone})`;
                 }
@@ -181,16 +270,33 @@ export function registerAlertsCommand(program: Command): void {
 
                 insertResourceAlertConfig(db, {
                     contract_id: contractId,
+
                     channel_type: options.type,
                     channel_target: target,
+
+                    channel_type: primaryType,
+                    channel_target: primaryTarget,
+
                     cpu_limit: cpuLimit,
                     mem_limit: memLimit,
                     webhook_secret: webhookSecret,
                 });
 
+
                 console.log(
                     chalk.green(
                         `Successfully added alert config: type=${options.type}, target=${target}, CPU=${cpuLimit.toLocaleString()} instr, MEM=${memLimit.toLocaleString()} bytes`
+
+                // Resource alerts don't currently support multiple targets in schema, but we can log that we aren't supporting it if there are additional targets, 
+                // or just leave them since the issue only requested it for standard alert_configs.
+                if (additionalTargets.length > 0) {
+                    console.log(chalk.yellow("Warning: Additional targets are currently only supported for TTL alerts, not resource alerts."));
+                }
+
+                console.log(
+                    chalk.green(
+                        `Successfully added alert config: type=${primaryType}, target=${primaryTarget}, CPU=${cpuLimit.toLocaleString()} instr, MEM=${memLimit.toLocaleString()} bytes`
+
                     )
                 );
 
@@ -279,6 +385,54 @@ export function registerAlertsCommand(program: Command): void {
             deleteAlertConfig(db, id);
             console.log(chalk.green(`Successfully removed alert config ID ${id}.`));
         });
+
+
+    // ── alerts enable ──────────────────────────────────────────────────
+    alerts
+        .command("enable")
+        .description("Re-enable a previously disabled alert configuration")
+        .requiredOption("--id <id>", "The alert configuration ID to enable")
+        .action((options) => {
+            const id = parseInt(options.id, 10);
+            if (isNaN(id)) {
+                console.error(chalk.red("Error: --id must be a number."));
+                process.exit(1);
+            }
+
+            const db = getDatabase();
+            const config = getAlertConfigById(db, id);
+            if (!config) {
+                console.error(chalk.red(`Error: Alert config ID ${id} not found.`));
+                process.exit(1);
+            }
+
+            setAlertConfigEnabled(db, id, true);
+            console.log(chalk.green(`Alert config ID ${id} enabled.`));
+        });
+
+    // ── alerts disable ─────────────────────────────────────────────────
+    alerts
+        .command("disable")
+        .description("Disable an alert configuration without deleting it")
+        .requiredOption("--id <id>", "The alert configuration ID to disable")
+        .action((options) => {
+            const id = parseInt(options.id, 10);
+            if (isNaN(id)) {
+                console.error(chalk.red("Error: --id must be a number."));
+                process.exit(1);
+            }
+
+            const db = getDatabase();
+            const config = getAlertConfigById(db, id);
+            if (!config) {
+                console.error(chalk.red(`Error: Alert config ID ${id} not found.`));
+                process.exit(1);
+            }
+
+            setAlertConfigEnabled(db, id, false);
+            console.log(chalk.green(`Alert config ID ${id} disabled.`));
+        });
+
 
     // ── alerts test ────────────────────────────────────────────────────
     alerts

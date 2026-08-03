@@ -19,3 +19,8 @@ export { inspectContract, parseSacBalance, buildSacBalanceKeyXdr, formatTokenBal
 export type { InspectOptions, InspectResult, InspectEntryInfo } from "./core/inspect.js";
 export { AWSSecretsResolver } from "./core/aws_secrets.js";
 export type { AWSSecretsResolverConfig } from "./core/aws_secrets.js";
+
+
+export { registerAlertChannel } from "./alerts/registry.js";
+export type { ChannelDefinition } from "./alerts/registry.js";
+
