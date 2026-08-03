@@ -1,8 +1,9 @@
 import type Database from "better-sqlite3";
 import { runMonitorCycle, type MonitorCycleResult } from "../core/monitor.js";
-import { deliverPendingAlerts } from "../alerts/dispatcher.js";
+import { deliverPendingAlerts, deliverSingleAlert } from "../alerts/dispatcher.js";
 import { vacuumDatabase } from "../db/database.js";
-import { aggregateDailyCostSnapshots, getAllContracts } from "../db/repositories.js";
+import { aggregateDailyCostSnapshots, getAllContracts, getDigestConfigs } from "../db/repositories.js";
+import { buildFleetDigest } from "../core/digest.js";
 import { getLogger } from "../logging/index.js";
 import type { Logger } from "../logging/types.js";
 import { createMetricsServer, stopMetricsServer } from "../observability/server.js";
@@ -30,6 +31,12 @@ export interface DaemonOptions {
     feeSponsorSecret?: string;
     /** How frequently to run vacuum maintenance. Defaults to 24 hours. */
     vacuumIntervalMs?: number;
+    /**
+     * How frequently (in milliseconds) to fire the fleet health digest.
+     * Defaults to 24 hours.  The digest only fires if at least one
+     * `digest_configs` row exists for the target network.
+     */
+    digestIntervalMs?: number;
     /** Called after every cycle with the result (or null + error on failure). */
     onCycle?: (result: MonitorCycleResult | null, error?: Error) => void;
     /** If set, start a Prometheus /metrics HTTP server on this port. Off by default. */
@@ -40,11 +47,14 @@ export interface DaemonOptions {
 
 const DEFAULT_INTERVAL_MS = 300_000; // 5 minutes
 const DEFAULT_VACUUM_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const DEFAULT_DIGEST_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let cycleInFlight = false;
 let vacuumIntervalMs = DEFAULT_VACUUM_INTERVAL_MS;
 let lastVacuumAt = 0;
+let digestIntervalMs = DEFAULT_DIGEST_INTERVAL_MS;
+let lastDigestAt = 0;
 
 // ─── Core API ─────────────────────────────────────────────────────────────────
 
@@ -71,11 +81,13 @@ export async function startDaemon(
 
     const intervalMs = options?.intervalMs ?? DEFAULT_INTERVAL_MS;
     vacuumIntervalMs = options?.vacuumIntervalMs ?? DEFAULT_VACUUM_INTERVAL_MS;
+    digestIntervalMs = options?.digestIntervalMs ?? DEFAULT_DIGEST_INTERVAL_MS;
     const rpcUrl = options?.rpcUrl;
     const onCycle = options?.onCycle;
     const effectiveIntervalMs = resolvePollIntervalMs(db, network, intervalMs);
 
     lastVacuumAt = Date.now();
+    lastDigestAt = Date.now();
     logger().info(`Daemon starting — network: ${network}, interval: ${intervalMs}ms`);
 
     // Start the metrics server if a port was configured.
@@ -226,6 +238,7 @@ async function scheduledTick(
     }
 
     await runScheduledVacuum(db);
+    await runScheduledDigest(db, network);
     await executeCycle(db, network, rpcUrl, feeSponsorSecret, onCycle);
 }
 
@@ -247,6 +260,77 @@ async function runScheduledVacuum(db: Database.Database): Promise<void> {
     } else {
         logger().info("Scheduled maintenance: database vacuum skipped due to busy database");
     }
+}
+
+/**
+ * Fire a fleet-wide health digest to every enabled digest_configs channel
+ * when the configured interval has elapsed.  Follows the same timestamp-gate
+ * pattern as runScheduledVacuum.
+ *
+ * Errors from individual channel deliveries are caught and logged so that a
+ * single bad channel cannot abort the digest run or kill the daemon.
+ */
+async function runScheduledDigest(db: Database.Database, network: string): Promise<void> {
+    if (Date.now() - lastDigestAt < digestIntervalMs) {
+        return;
+    }
+
+    const configs = getDigestConfigs(db, network);
+    if (configs.length === 0) {
+        // No digest configs registered for this network — nothing to do.
+        // Still update lastDigestAt so we don't burn CPU re-querying on every tick.
+        lastDigestAt = Date.now();
+        return;
+    }
+
+    logger().info(`Scheduled digest: building fleet health digest for ${network} (${configs.length} config(s))`);
+
+    // Resolve the current ledger from the most recently checked contract.
+    // Falls back to 0 if no contracts have been checked yet.
+    const currentLedgerRow = db
+        .prepare(
+            "SELECT MAX(last_checked_ledger) AS ledger FROM contracts WHERE network = ?",
+        )
+        .get(network) as { ledger: number | null };
+    const currentLedger = currentLedgerRow?.ledger ?? 0;
+
+    let payload: ReturnType<typeof buildFleetDigest>;
+    try {
+        payload = buildFleetDigest(db, network, currentLedger);
+    } catch (err: unknown) {
+        logger().error("runScheduledDigest: buildFleetDigest threw unexpectedly", err);
+        return;
+    }
+
+    for (const config of configs) {
+        try {
+            await deliverSingleAlert(
+                config.channel_type,
+                config.channel_target,
+                // deliverSingleAlert accepts any AlertEvent — DigestPayload is a
+                // compatible shape (has the same call interface) even though it is
+                // deliberately NOT part of the AlertEvent discriminated union.
+                // The cast here is intentional: channel implementations receive the
+                // raw payload object and the typed union is only relevant for
+                // type-safe building inside the core alert pipeline.
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                payload as any,
+                config.webhook_secret ?? null,
+            );
+            logger().info(
+                `Scheduled digest delivered — channel: ${config.channel_type}, target: ${config.channel_target}`,
+            );
+        } catch (err: unknown) {
+            logger().error(
+                `Scheduled digest delivery failed — channel: ${config.channel_type}, target: ${config.channel_target}`,
+                err,
+            );
+            // Continue delivering to other configured channels.
+        }
+    }
+
+    lastDigestAt = Date.now();
+    logger().info("Scheduled digest: fleet health digest delivery complete");
 }
 
 /**

@@ -233,3 +233,21 @@ CREATE INDEX IF NOT EXISTS idx_resource_usage_logs_contract_id
 CREATE INDEX IF NOT EXISTS idx_resource_usage_logs_recorded_at
     ON resource_usage_logs(recorded_at DESC);
 
+
+-- digest_configs: one row per "daily/periodic fleet health digest" delivery endpoint.
+-- Deliberately separate from alert_configs because a digest has no threshold_ledgers,
+-- no alert_config_id FK, and carries an interval_ms instead — semantically it is a
+-- different concept from per-entry threshold alerts (issue #399).
+CREATE TABLE IF NOT EXISTS digest_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    network TEXT NOT NULL DEFAULT 'testnet',
+    -- channel_type is validated at the application layer against the alert channel
+    -- registry (same approach as alert_configs / resource_alert_configs).
+    channel_type TEXT NOT NULL CHECK(channel_type <> ''),
+    channel_target TEXT NOT NULL,
+    -- How often (in milliseconds) the digest should be delivered.
+    interval_ms INTEGER NOT NULL DEFAULT 86400000,
+    webhook_secret TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
