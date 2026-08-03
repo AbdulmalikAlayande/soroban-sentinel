@@ -6,6 +6,7 @@ import {
     getEntriesForContract,
     getExtensionPolicy,
     getChannelAccounts,
+    getAlertConfigsForContract,
     recordExtension,
     upsertEntry,
     updateLastCheckedLedger,
@@ -21,6 +22,8 @@ import { getLogger } from "../logging/index.js";
 import { formatSecretKey } from "../utils/formatting.js";
 import { VaultResolver } from "./vault.js";
 import { loadConfig } from "../utils/config.js";
+import { deliverSingleAlert } from "../alerts/dispatcher.js";
+import { buildAlertEvent } from "../alerts/types.js";
 
 const logger = getLogger().child({ component: "Extension" });
 
@@ -43,6 +46,14 @@ export const HOURLY_RATE_LIMIT = 5;
  * does not interfere with normal operation.
  */
 export const EXTENSION_COOLDOWN_MS = 5 * 60 * 1000;
+
+/**
+ * Minimum XLM balance a channel account must hold before Sorokeep will submit
+ * an extension transaction through it.  Covers the base reserve (1 XLM) plus
+ * a safety margin for transaction fees.  Accounts below this threshold are
+ * skipped and an alert is fired rather than attempting a failing transaction.
+ */
+export const MINIMUM_BALANCE_XLM = 5;
 
 /**
  * Check whether the given contract has reached its hourly auto-extension rate limit.
@@ -430,6 +441,64 @@ export async function runAutoExtensions(
                     `Contract ${contract.id}: Cannot resolve keypair from source "${pool ? "channel pool" : formatSecretKey(policy.keypair_source)}"`,
                 );
                 return;
+            }
+
+            // ── Minimum-balance check (issue #504) ──────────────────────────
+            // If using a channel account, verify it has enough XLM to cover the
+            // transaction fee and base reserve before attempting submission.
+            if (slot) {
+                const accounts = getChannelAccounts(db, network);
+                const channelAccount = accounts.find(a => a.public_key === slot!.publicKey);
+                const balance = channelAccount?.balance_xlm;
+
+                if (balance === null || balance === undefined) {
+                    const msg = `Contract ${contract.id}: Channel account ${slot.publicKey} balance is unknown — skipping extension. Run 'sorokeep channels list' to refresh balances.`;
+                    logger.warn(msg);
+                    result.errors.push(msg);
+                    pool!.release(slot.publicKey);
+                    return;
+                }
+
+                if (balance < MINIMUM_BALANCE_XLM) {
+                    const msg = `Contract ${contract.id}: Channel account ${slot.publicKey} balance ${balance} XLM is below minimum ${MINIMUM_BALANCE_XLM} XLM — skipping extension.`;
+                    logger.warn(msg);
+                    result.errors.push(msg);
+
+                    // Fire alert through the contract's configured alert channels
+                    // using the first entry that needed extension as context
+                    const sampleEntry = needsExtension[0]!;
+                    const contractRecord = getContract(db, contract.id);
+                    const alertConfigs = getAlertConfigsForContract(db, contract.id);
+                    for (const config of alertConfigs) {
+                        const event = buildAlertEvent({
+                            type: "threshold_crossed",
+                            contractId: contract.id,
+                            contractName: contractRecord?.name ?? null,
+                            network,
+                            entryKeyXdr: sampleEntry.entry_key_xdr,
+                            entryType: sampleEntry.entry_type,
+                            entryLabel: sampleEntry.label,
+                            configuredLedgers: MINIMUM_BALANCE_XLM,
+                            remainingTTL: sampleEntry.live_until_ledger
+                                ? Math.max(0, sampleEntry.live_until_ledger - latestLedger)
+                                : 0,
+                            firedAtLedger: latestLedger,
+                        });
+                        deliverSingleAlert(
+                            config.channel_type,
+                            config.channel_target,
+                            event,
+                            config.webhook_secret,
+                        ).catch((err: unknown) => {
+                            logger.warn(
+                                `Low-balance alert delivery failed for channel ${config.channel_type}: ${err instanceof Error ? err.message : String(err)}`,
+                            );
+                        });
+                    }
+
+                    pool!.release(slot.publicKey);
+                    return;
+                }
             }
 
             const entryKeys = cooldownEligible.map(e => e.entry_key_xdr);
