@@ -1,4 +1,4 @@
-.TH SOROKEEP 1 "2026-07-31" "sorokeep" "User Commands"
+.TH SOROKEEP 1 "2026-08-03" "sorokeep" "User Commands"
 .SH NAME
 sorokeep - Sorokeep — The missing operations layer for deployed Soroban smart contracts
 .SH SYNOPSIS
@@ -44,5 +44,13 @@ Backup, restore, and maintain database state
 Temporarily pause daemon polling and alerting for a contract
 .SH RESUME
 Resume daemon polling and alerting for a paused contract
+.SH METRICS
+Print a metrics snapshot without starting the HTTP server
+.SH AUDIT-LOG
+Export extension transactions as a machine-parseable JSONL audit trail
+.SH INIT
+Interactively configure a first contract, alert channel, and guard policy
+.SH DOCTOR
+Run diagnostics for the local Sorokeep installation
 .SH SEE ALSO
 sorokeep(1)
