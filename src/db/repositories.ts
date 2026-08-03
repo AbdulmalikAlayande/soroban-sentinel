@@ -55,6 +55,13 @@ export interface AlertConfig {
     created_at: Date;
 }
 
+export interface AlertConfigTarget {
+    id: number;
+    alert_config_id: number;
+    channel_type: string;
+    channel_target: string;
+}
+
 export interface AlertFired {
     id: number;
     alert_config_id: number;
@@ -319,17 +326,27 @@ export function deleteAlertConfig(db: Database.Database, id: number): void {
   db.prepare("DELETE FROM alert_configs WHERE id = ?").run(id);
 }
 
+export function setAlertConfigEnabled(db: Database.Database, id: number, enabled: boolean): void {
+  db.prepare("UPDATE alert_configs SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, id);
+}
+
 // ---------------------------- Database Access Functions For Other Schema: AlertFired----------------------------
 export function recordAlertFired(db: Database.Database, alert: {
   alert_config_id: number;
   contract_entry_id: number;
   fired_at_ledger: number;
   ttl_at_fire: number;
+  channel_type?: string;
+  channel_target?: string;
 }): void {
   db.prepare(`
-    INSERT INTO alerts_fired (alert_config_id, contract_entry_id, fired_at_ledger, ttl_at_fire)
-    VALUES (@alert_config_id, @contract_entry_id, @fired_at_ledger, @ttl_at_fire)
-  `).run(alert);
+    INSERT INTO alerts_fired (alert_config_id, contract_entry_id, fired_at_ledger, ttl_at_fire, channel_type, channel_target)
+    VALUES (@alert_config_id, @contract_entry_id, @fired_at_ledger, @ttl_at_fire, @channel_type, @channel_target)
+  `).run({
+    ...alert,
+    channel_type: alert.channel_type ?? null,
+    channel_target: alert.channel_target ?? null
+  });
 }
 
 export function hasUnresolvedAlert(db: Database.Database, alertConfigId: number, entryId: number): boolean {
@@ -699,8 +716,8 @@ export function getUndeliveredAlerts(
             ce.entry_key_xdr AS entryKeyXdr,
             ce.entry_type    AS entryType,
             ce.label         AS entryLabel,
-            ac.channel_type  AS channelType,
-            ac.channel_target AS channelTarget,
+            COALESCE(af.channel_type, ac.channel_type)  AS channelType,
+            COALESCE(af.channel_target, ac.channel_target) AS channelTarget,
             ac.threshold_ledgers AS thresholdLedgers,
             ac.webhook_secret AS webhookSecret,
             af.ttl_at_fire   AS remainingTTL,

@@ -127,6 +127,10 @@ sorokeep watch <contract-id> [options]
 
 **Example output:**
 
+Register a contract for monitoring. Connects to the Stellar RPC, discovers the contract's instance and WASM code entries, reads their TTLs, and stores everything locally.
+
+```bash
+sorokeep watch <contract-id> [options]
 ```
 $ sorokeep watch CDLZFC3S...CYSC --network testnet --name "XLM Native Token"
 

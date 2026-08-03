@@ -57,6 +57,9 @@ export function registerDaemonCommand(program: Command): void {
             if (options.rpcUrl) {
                 console.log(`  RPC:       ${chalk.cyan(options.rpcUrl)}`);
             }
+            if (metricsPort !== undefined) {
+                console.log(`  Metrics:   ${chalk.cyan(`http://127.0.0.1:${metricsPort}/metrics`)}`);
+            }
             console.log();
             console.log(chalk.dim("  Press Ctrl+C to stop.\n"));
 

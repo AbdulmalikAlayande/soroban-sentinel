@@ -79,6 +79,8 @@ describe("daemon loop", () => {
         db = getDatabaseForTesting();
         vi.clearAllMocks();
         vi.useFakeTimers();
+        daemonCycleDuration.reset();
+        daemonCyclesSkipped.reset();
         // Default: deliver succeeds silently so loop tests focus on cycle behaviour
         mockDeliverPendingAlerts.mockResolvedValue({
             attempted: 0,
@@ -471,6 +473,104 @@ describe("daemon loop", () => {
     // =========================================================================
     // 5. RE-ENTRANCE GUARD
     // =========================================================================
+    describe("Metrics instrumentation", () => {
+        it("records a cycle-duration observation after a completed cycle", async () => {
+            const startedAt = new Date("2026-01-01T00:00:00.000Z");
+            const finishedAt = new Date("2026-01-01T00:00:02.500Z");
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult({ cycleStartedAt: startedAt, cycleFinishedAt: finishedAt }));
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+
+            const { values } = await daemonCycleDuration.get();
+            const sumSample = values.find((v) => v.metricName?.endsWith("_sum") && v.labels.network === "testnet");
+            expect(sumSample?.value).toBeCloseTo(2.5, 3);
+        });
+
+        it("increments the skipped-cycles counter when a tick is skipped due to an in-flight cycle", async () => {
+            let resolveSlowCycle!: (value: MonitorCycleResult) => void;
+
+            mockRunMonitorCycle.mockResolvedValueOnce(makeCycleResult());
+            mockRunMonitorCycle.mockImplementationOnce(() => new Promise<MonitorCycleResult>((resolve) => { resolveSlowCycle = resolve; }));
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+            await vi.advanceTimersByTimeAsync(5000); // triggers the slow cycle
+
+            const findSkipped = async () =>
+                (await daemonCyclesSkipped.get()).values.find((v) => v.labels.network === "testnet")?.value ?? 0;
+
+            const before = await findSkipped();
+
+            // A tick fires while the slow cycle is still in flight — should be skipped.
+            await vi.advanceTimersByTimeAsync(5000);
+
+            const after = await findSkipped();
+            expect(after).toBe(before + 1);
+
+            resolveSlowCycle(makeCycleResult());
+            await vi.advanceTimersByTimeAsync(0);
+        });
+    });
+
+    describe("OpenTelemetry tracing", () => {
+        beforeEach(async () => {
+            // getTracer() lazily creates an uninstrumented provider on first
+            // call from anywhere in the process (e.g. an earlier test's
+            // daemon cycle) and that provider is cached — reset it so each
+            // test here starts from a clean, uninitialized state.
+            const { shutdownTracing } = await import("../../src/observability/tracing.js");
+            await shutdownTracing();
+            process.env["SOROKEEP_OTLP_IN_MEMORY"] = "true";
+        });
+
+        afterEach(async () => {
+            delete process.env["SOROKEEP_OTLP_IN_MEMORY"];
+            const { shutdownTracing } = await import("../../src/observability/tracing.js");
+            await shutdownTracing();
+        });
+
+        it("produces a parent span with Monitor/Deliver/CostAggregation child spans after a completed cycle", async () => {
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+            const { initTracing, getInMemoryExporter } = await import("../../src/observability/tracing.js");
+            await initTracing();
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+
+            const spans = getInMemoryExporter()!.getFinishedSpans();
+            const spanNames = spans.map((s) => s.name);
+
+            expect(spanNames).toContain("DaemonCycle");
+            expect(spanNames).toContain("Monitor");
+            expect(spanNames).toContain("Deliver");
+            expect(spanNames).toContain("CostAggregation");
+
+            const parentSpan = spans.find((s) => s.name === "DaemonCycle")!;
+            for (const childName of ["Monitor", "Deliver", "CostAggregation"]) {
+                const childSpan = spans.find((s) => s.name === childName)!;
+                expect(childSpan.parentSpanId).toBe(parentSpan.spanId);
+            }
+        });
+
+        it("records error status on the Monitor span when runMonitorCycle throws", async () => {
+            mockRunMonitorCycle.mockRejectedValueOnce(new Error("RPC failure"));
+            const { initTracing, getInMemoryExporter } = await import("../../src/observability/tracing.js");
+            await initTracing();
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+
+            const spans = getInMemoryExporter()!.getFinishedSpans();
+            const monitorSpan = spans.find((s) => s.name === "Monitor")!;
+            expect(monitorSpan.status.code).toBe(2); // SpanStatusCode.ERROR
+        });
+
+        it("adds no measurable behavior change to the cycle when tracing is off (default)", async () => {
+            delete process.env["SOROKEEP_OTLP_IN_MEMORY"];
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+
+            await expect(startDaemon(db, "testnet", { intervalMs: 5000 })).resolves.not.toThrow();
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
+        });
+    });
+
     describe("Re-entrance guard", () => {
         it("does not run overlapping cycles if a cycle takes longer than the interval", async () => {
             let resolveSlowCycle!: (value: MonitorCycleResult) => void;
