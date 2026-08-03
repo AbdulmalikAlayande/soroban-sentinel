@@ -3,6 +3,7 @@ import { getDatabase } from "../db/database.js";
 import { getAlertConfigsForContract, getAllContracts } from "../db/repositories.js";
 import { StellarRpcClient } from "../rpc/client.js";
 import { listAlertChannels } from "../alerts/registry.js";
+import { registerBuiltinChannels } from "../alerts/builtins.js";
 import { getSorokeepDir } from "../utils/config.js";
 
 export interface DiagnosticResult {
@@ -24,6 +25,7 @@ function getRequiredCredentialEnvVar(channelType: string): string | undefined {
 
 export async function runDiagnostics(): Promise<DiagnosticResult[]> {
     const results: DiagnosticResult[] = [];
+    registerBuiltinChannels();
 
     const nodeVersion = process.versions.node;
     results.push({

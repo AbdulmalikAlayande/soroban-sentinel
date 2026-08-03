@@ -32,7 +32,7 @@ export function registerInspectCommand(program: Command): void {
                         process.exitCode = 1;
                         return;
                     }
-                    spinner.fail(chalk.red("Inspection failed"));
+                    spinner?.fail(chalk.red("Inspection failed"));
                     console.error(chalk.red(result.error));
                     process.exit(1);
                     return;
@@ -48,7 +48,7 @@ export function registerInspectCommand(program: Command): void {
                     }, true);
                     return;
                 }
-                spinner.succeed(chalk.green(`Inspected ${displayName}`));
+                spinner?.succeed(chalk.green(`Inspected ${displayName}`));
 
                 console.log();
                 console.log(`  Contract: ${chalk.bold.cyan(displayName)} (${chalk.dim(formatContractID(contractId))})`);
@@ -98,7 +98,7 @@ export function registerInspectCommand(program: Command): void {
                     process.exitCode = 1;
                     return;
                 }
-                spinner.fail(chalk.red("Error"));
+                spinner?.fail(chalk.red("Error"));
                 console.error(chalk.red(`Error: ${msg}`));
                 logger.error("Inspect command failed", { error: msg });
                 process.exit(1);

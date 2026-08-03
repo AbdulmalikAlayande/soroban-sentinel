@@ -52,7 +52,7 @@ describe("doctor command", () => {
         const program = new Command();
         registerDoctorCommand(program);
 
-        await expect(program.parseAsync(["node", "sorokeep", "doctor"])).resolves.toBeUndefined();
+        await expect(program.parseAsync(["node", "sorokeep", "doctor"])).resolves.toBe(program);
         expect(exitSpy).not.toHaveBeenCalled();
     });
 });

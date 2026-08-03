@@ -41,7 +41,7 @@ export const registerWatchCommand = (program: Command): void => {
       "Load multiple contract registrations from a YAML or JSON file",
     )
     .option("--json", "Output machine-readable JSON")
-    .action(async (contractId, options: { json?: boolean; fromFile?: string; network?: string; name?: string; rpcUrl?: string; storageKeys?: string; noIntrospection?: boolean } = {}) => {
+    .action(async (contractId, options) => {
       try {
         const db = getDatabase();
 
