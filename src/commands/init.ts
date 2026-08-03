@@ -34,7 +34,7 @@ export function registerInitCommand(program: Command): void {
       try {
         registerBuiltinChannels();
         const existingConfig = loadConfig();
-        const network = options.network ?? existingConfig.network;
+        const defaultNetwork = existingConfig.network ?? "testnet";
 
         const nonInteractive = Boolean(options.yes);
         const contractId = options.contract;
@@ -72,11 +72,12 @@ export function registerInitCommand(program: Command): void {
             return;
           }
 
-          const resolvedNetwork = network ?? "testnet";
+          const resolvedNetwork = options.network ?? defaultNetwork;
+          const resolvedRpcUrl = options.rpcUrl ?? existingConfig.rpcUrl;
           const result = await runInitWizard({
             contractId,
             network: resolvedNetwork,
-            rpcUrl: options.rpcUrl,
+            rpcUrl: resolvedRpcUrl,
             name: options.name,
             channelType,
             channelTarget,
@@ -86,7 +87,7 @@ export function registerInitCommand(program: Command): void {
             alertThresholdLedgers,
           });
 
-          completeWizard(result, resolvedNetwork, options.rpcUrl, existingConfig);
+          completeWizard(result, resolvedNetwork, resolvedRpcUrl, existingConfig);
           return;
         }
 
@@ -97,8 +98,10 @@ export function registerInitCommand(program: Command): void {
           console.log(chalk.dim("Press Ctrl+C to cancel at any time."));
 
           const resolvedContractId = contractId || (await rl.question("Contract ID to watch: "));
-          const resolvedNetwork = network || (await rl.question("Network [testnet]: ")) || "testnet";
-          const resolvedRpcUrl = options.rpcUrl ?? ((await rl.question("RPC URL (optional): ")) || undefined);
+          const resolvedNetwork = options.network
+            ?? ((await rl.question(`Network [${defaultNetwork}]: `)) || defaultNetwork);
+          const resolvedRpcUrl = options.rpcUrl
+            ?? ((await rl.question(`RPC URL [${existingConfig.rpcUrl ?? "default"}]: `)) || existingConfig.rpcUrl);
           const resolvedName = options.name ?? ((await rl.question("Contract name (optional): ")) || undefined);
 
           const availableChannels = listAlertChannels().map((channel) => channel.name).join(", ");

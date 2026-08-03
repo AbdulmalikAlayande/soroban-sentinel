@@ -78,6 +78,18 @@ export const registerWatchCommand = (program: Command): void => {
             });
           }
 
+          if (results.length === 0) {
+            const errorMessage = "No contracts found in the watch config file.";
+            if (options.json) {
+              printOutput({ success: false, error: errorMessage }, true);
+              process.exitCode = 1;
+              return;
+            }
+            console.error(chalk.red(errorMessage));
+            process.exit(1);
+            return;
+          }
+
           if (options.json) {
             printOutput({
               success: results.every((result) => result.status === "SUCCESS"),
@@ -202,12 +214,12 @@ export const registerWatchCommand = (program: Command): void => {
       } catch (error: any) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        logger.error("Watch command failed", { error: errorMessage });
         if (options.json) {
           printOutput({ success: false, error: errorMessage, message: "Failed to watch contract" }, true);
           process.exitCode = 1;
           return;
         }
+        logger.error("Watch command failed", { error: errorMessage });
         console.log(chalk.red(`Failed to watch contract: ${errorMessage}`));
         process.exit(1);
       }
