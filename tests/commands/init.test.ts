@@ -107,8 +107,8 @@ describe("init command", () => {
 
   it("rejects --guard-enabled together with --guard-disabled", async () => {
     const program = new Command();
-    registerInitCommand(program);
     program.exitOverride();
+    registerInitCommand(program);
 
     await expect(program.parseAsync([
       "node",
