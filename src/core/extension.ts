@@ -430,7 +430,7 @@ export async function runAutoExtensions(
                             entryLabel: sampleEntry.label,
                             configuredLedgers: MINIMUM_BALANCE_XLM,
                             remainingTTL: sampleEntry.live_until_ledger
-                                ? sampleEntry.live_until_ledger - latestLedger
+                                ? Math.max(0, sampleEntry.live_until_ledger - latestLedger)
                                 : 0,
                             firedAtLedger: latestLedger,
                         });
