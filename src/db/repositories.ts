@@ -41,12 +41,26 @@ export interface ExtensionPolicy {
 export interface AlertConfig {
     id: number;
     contract_id: string;
-    /** Any registered alert channel name (see src/alerts/registry.ts) — not a fixed enum. */
     channel_type: string;
     channel_target: string;
     threshold_ledgers: number;
     webhook_secret: string | null;
+    /** HH:MM (24-hour) start of the quiet / maintenance window, or null if not configured. */
+    quiet_hours_start: string | null;
+    /** HH:MM (24-hour) end of the quiet / maintenance window, or null if not configured. */
+    quiet_hours_end: string | null;
+    /** IANA timezone name used to interpret quiet_hours_start / quiet_hours_end, or null. */
+    quiet_hours_timezone: string | null;
+    /** 1 = enabled, 0 = disabled (SQLite integer boolean). */
+    enabled: number;
     created_at: Date;
+}
+
+export interface AlertConfigTarget {
+    id: number;
+    alert_config_id: number;
+    channel_type: string;
+    channel_target: string;
 }
 
 export interface AlertFired {
@@ -93,6 +107,18 @@ export interface StateChange {
     diff_json: string;
     detected_at_ledger: number;
     created_at: string;
+}
+
+export interface ContractGroup {
+    id: number;
+    name: string;
+    created_at: string;
+}
+
+export interface ContractGroupMember {
+    id: number;
+    group_id: number;
+    contract_id: string;
 }
 
 export { upsertBudget, getBudget, addBudgetSpent } from "./budget.js";
@@ -272,15 +298,41 @@ export function insertAlertConfig(db: Database.Database, config: {
   channel_type: string;
   channel_target: string;
   threshold_ledgers: number;
-  webhook_secret?: string;
-}): void {
-  db.prepare(`
-    INSERT INTO alert_configs (contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret)
-    VALUES (@contract_id, @channel_type, @channel_target, @threshold_ledgers, @webhook_secret)
+  webhook_secret?: string | null;
+  quiet_hours_start?: string | null;
+  quiet_hours_end?: string | null;
+  quiet_hours_timezone?: string | null;
+}): number {
+  const info = db.prepare(`
+    INSERT INTO alert_configs (contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret, quiet_hours_start, quiet_hours_end, quiet_hours_timezone)
+    VALUES (@contract_id, @channel_type, @channel_target, @threshold_ledgers, @webhook_secret, @quiet_hours_start, @quiet_hours_end, @quiet_hours_timezone)
   `).run({
     ...config,
     webhook_secret: config.webhook_secret ?? null,
+    quiet_hours_start: config.quiet_hours_start ?? null,
+    quiet_hours_end: config.quiet_hours_end ?? null,
+    quiet_hours_timezone: config.quiet_hours_timezone ?? null,
   });
+  return info.lastInsertRowid as number;
+}
+
+export function getAlertConfigTargets(db: Database.Database, alertConfigId: number): AlertConfigTarget[] {
+  return db.prepare(`SELECT * FROM alert_config_targets WHERE alert_config_id = ?`).all(alertConfigId) as AlertConfigTarget[];
+}
+
+export function addTargetToAlertConfig(db: Database.Database, alertConfigId: number, channelType: string, channelTarget: string): void {
+  db.prepare(`
+    INSERT INTO alert_config_targets (alert_config_id, channel_type, channel_target)
+    VALUES (?, ?, ?)
+    ON CONFLICT DO NOTHING
+  `).run(alertConfigId, channelType, channelTarget);
+}
+
+export function removeTargetFromAlertConfig(db: Database.Database, alertConfigId: number, channelType: string, channelTarget: string): void {
+  db.prepare(`
+    DELETE FROM alert_config_targets
+    WHERE alert_config_id = ? AND channel_type = ? AND channel_target = ?
+  `).run(alertConfigId, channelType, channelTarget);
 }
 
 export function getAlertConfigById(db: Database.Database, id: number): AlertConfig | undefined {
@@ -295,17 +347,27 @@ export function deleteAlertConfig(db: Database.Database, id: number): void {
   db.prepare("DELETE FROM alert_configs WHERE id = ?").run(id);
 }
 
+export function setAlertConfigEnabled(db: Database.Database, id: number, enabled: boolean): void {
+  db.prepare("UPDATE alert_configs SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, id);
+}
+
 // ---------------------------- Database Access Functions For Other Schema: AlertFired----------------------------
 export function recordAlertFired(db: Database.Database, alert: {
   alert_config_id: number;
   contract_entry_id: number;
   fired_at_ledger: number;
   ttl_at_fire: number;
+  channel_type?: string;
+  channel_target?: string;
 }): void {
   db.prepare(`
-    INSERT INTO alerts_fired (alert_config_id, contract_entry_id, fired_at_ledger, ttl_at_fire)
-    VALUES (@alert_config_id, @contract_entry_id, @fired_at_ledger, @ttl_at_fire)
-  `).run(alert);
+    INSERT INTO alerts_fired (alert_config_id, contract_entry_id, fired_at_ledger, ttl_at_fire, channel_type, channel_target)
+    VALUES (@alert_config_id, @contract_entry_id, @fired_at_ledger, @ttl_at_fire, @channel_type, @channel_target)
+  `).run({
+    ...alert,
+    channel_type: alert.channel_type ?? null,
+    channel_target: alert.channel_target ?? null
+  });
 }
 
 export function hasUnresolvedAlert(db: Database.Database, alertConfigId: number, entryId: number): boolean {
@@ -399,6 +461,47 @@ export interface ContractCostSummary {
         persistent: { count: number; cost_xlm: number };
         temporary: { count: number; cost_xlm: number };
     };
+}
+
+export interface AuditLogRecord {
+    tx_hash: string;
+    contract_id: string;
+    entry_key_xdr: string;
+    entry_type: string;
+    entry_label: string | null;
+    old_ttl_ledgers: number;
+    new_ttl_ledgers: number;
+    cost_xlm: number | null;
+    executed_at: string;
+}
+
+/**
+ * Read-only export of extension_history joined with its entry, for the
+ * `sorokeep audit-log` command's JSONL output — an append-only, compliance-
+ * facing record of every TTL-extension transaction sorokeep has submitted.
+ */
+export function getAuditLogExtensions(db: Database.Database, since?: string): AuditLogRecord[] {
+    let query = `
+        SELECT
+            eh.tx_hash AS tx_hash,
+            eh.contract_id AS contract_id,
+            ce.entry_key_xdr AS entry_key_xdr,
+            ce.entry_type AS entry_type,
+            ce.label AS entry_label,
+            eh.old_ttl_ledgers AS old_ttl_ledgers,
+            eh.new_ttl_ledgers AS new_ttl_ledgers,
+            eh.cost_xlm AS cost_xlm,
+            eh.executed_at AS executed_at
+        FROM extension_history eh
+        JOIN contract_entries ce ON eh.contract_entry_id = ce.id
+    `;
+    const params: string[] = [];
+    if (since) {
+        query += ` WHERE eh.executed_at >= ?`;
+        params.push(since);
+    }
+    query += ` ORDER BY eh.executed_at ASC`;
+    return db.prepare(query).all(...params) as AuditLogRecord[];
 }
 
 export function aggregateDailyCostSnapshots(db: Database.Database): void {
@@ -644,6 +747,12 @@ export interface UndeliveredAlert {
     firedAtLedger: number;
     firedAt: string;
     retryCount: number;
+    /** HH:MM (24-hour) start of the quiet window, or null if not configured. */
+    quietHoursStart: string | null;
+    /** HH:MM (24-hour) end of the quiet window, or null if not configured. */
+    quietHoursEnd: string | null;
+    /** IANA timezone for the quiet window, or null if not configured. */
+    quietHoursTimezone: string | null;
 }
 
 /** Maximum number of delivery attempts before giving up on an alert. */
@@ -669,14 +778,17 @@ export function getUndeliveredAlerts(
             ce.entry_key_xdr AS entryKeyXdr,
             ce.entry_type    AS entryType,
             ce.label         AS entryLabel,
-            ac.channel_type  AS channelType,
-            ac.channel_target AS channelTarget,
+            COALESCE(af.channel_type, ac.channel_type)  AS channelType,
+            COALESCE(af.channel_target, ac.channel_target) AS channelTarget,
             ac.threshold_ledgers AS thresholdLedgers,
             ac.webhook_secret AS webhookSecret,
             af.ttl_at_fire   AS remainingTTL,
             af.fired_at_ledger AS firedAtLedger,
             af.fired_at      AS firedAt,
-            af.retry_count   AS retryCount
+            af.retry_count   AS retryCount,
+            ac.quiet_hours_start    AS quietHoursStart,
+            ac.quiet_hours_end      AS quietHoursEnd,
+            ac.quiet_hours_timezone AS quietHoursTimezone
         FROM alerts_fired af
         JOIN alert_configs ac  ON ac.id  = af.alert_config_id
         JOIN contract_entries ce ON ce.id = af.contract_entry_id
@@ -763,8 +875,8 @@ export function getAlertHistory(db: Database.Database, contractId: string, limit
     const sql = `
         SELECT
             af.id              AS alertFiredId,
-            ac.channel_type    AS channelType,
-            ac.channel_target  AS channelTarget,
+            COALESCE(af.channel_type, ac.channel_type)    AS channelType,
+            COALESCE(af.channel_target, ac.channel_target)  AS channelTarget,
             ce.entry_key_xdr   AS entryKeyXdr,
             ce.entry_type      AS entryType,
             ce.label           AS entryLabel,
@@ -788,6 +900,55 @@ export function getAlertHistory(db: Database.Database, contractId: string, limit
         ? db.prepare(sql).all(contractId, limit)
         : db.prepare(sql).all(contractId)
     ) as AlertHistoryRecord[];
+}
+
+export interface ChannelDeliveryStats {
+    totalAttempts: number;
+    deliveredCount: number;
+    failedCount: number;
+    abandonedCount: number;
+    successRate: number;
+}
+
+export function getChannelDeliveryStats(
+    db: Database.Database,
+    channelType: string,
+    days?: number
+): ChannelDeliveryStats {
+    let sql = `
+        SELECT
+            COUNT(af.id) as totalAttempts,
+            SUM(CASE WHEN af.delivered = 1 THEN 1 ELSE 0 END) as deliveredCount,
+            SUM(CASE WHEN af.delivered = 0 AND af.retry_count >= ? THEN 1 ELSE 0 END) as abandonedCount,
+            SUM(CASE WHEN af.delivered = 0 AND af.retry_count < ? THEN 1 ELSE 0 END) as failedCount
+        FROM alerts_fired af
+        JOIN alert_configs ac ON ac.id = af.alert_config_id
+        WHERE ac.channel_type = ?
+    `;
+    const params: Array<number | string> = [MAX_RETRY_COUNT, MAX_RETRY_COUNT, channelType];
+    
+    if (days !== undefined && days > 0) {
+        sql += ` AND af.fired_at >= datetime('now', ?)`;
+        params.push(`-${days} days`);
+    }
+
+    const row = db.prepare(sql).get(...params) as any;
+
+    if (!row) {
+        return { totalAttempts: 0, deliveredCount: 0, failedCount: 0, abandonedCount: 0, successRate: 0 };
+    }
+
+    const total = row.totalAttempts || 0;
+    const delivered = row.deliveredCount || 0;
+    const successRate = total > 0 ? (delivered / total) * 100 : 0;
+
+    return {
+        totalAttempts: total,
+        deliveredCount: delivered,
+        failedCount: row.failedCount || 0,
+        abandonedCount: row.abandonedCount || 0,
+        successRate: successRate,
+    };
 }
 
 // ---------------------------- Channel Accounts ----------------------------
@@ -1325,5 +1486,85 @@ export function getLatestResourceUsageLog(
         ORDER BY recorded_at DESC, id DESC
         LIMIT 1
     `).get(contractId) as ResourceUsageLog | undefined;
+}
+
+// ─── Contract Groups (issue #394) ────────────────────────────────────────────
+
+/**
+ * Create a new named group.
+ *
+ * @returns The auto-assigned row id of the new group.
+ */
+export function createGroup(
+    db: Database.Database,
+    group: { name: string },
+): number {
+    const result = db.prepare(`
+        INSERT INTO contract_groups (name)
+        VALUES (@name)
+    `).run({ name: group.name });
+    return result.lastInsertRowid as number;
+}
+
+/**
+ * Add a contract to a group.
+ * Idempotent — safe to call more than once (UNIQUE constraint).
+ */
+export function addContractToGroup(
+    db: Database.Database,
+    membership: { group_id: number; contract_id: string },
+): void {
+    db.prepare(`
+        INSERT OR IGNORE INTO contract_group_members (group_id, contract_id)
+        VALUES (@group_id, @contract_id)
+    `).run(membership);
+}
+
+/**
+ * Remove a contract from a group.
+ * No-op if the membership does not exist.
+ */
+export function removeContractFromGroup(
+    db: Database.Database,
+    membership: { group_id: number; contract_id: string },
+): void {
+    db.prepare(`
+        DELETE FROM contract_group_members
+        WHERE group_id = @group_id AND contract_id = @contract_id
+    `).run(membership);
+}
+
+/**
+ * Return all contracts that belong to the given group.
+ * Joins contract_group_members → contracts so the result includes full
+ * contract rows.
+ */
+export function getContractsInGroup(
+    db: Database.Database,
+    groupId: number,
+): Contract[] {
+    return db.prepare(`
+        SELECT c.*
+        FROM contracts c
+        JOIN contract_group_members cgm ON cgm.contract_id = c.id
+        WHERE cgm.group_id = ?
+        ORDER BY c.id ASC
+    `).all(groupId) as Contract[];
+}
+
+/**
+ * Return all groups that the given contract belongs to.
+ */
+export function getGroupsForContract(
+    db: Database.Database,
+    contractId: string,
+): ContractGroup[] {
+    return db.prepare(`
+        SELECT cg.*
+        FROM contract_groups cg
+        JOIN contract_group_members cgm ON cgm.group_id = cg.id
+        WHERE cgm.contract_id = ?
+        ORDER BY cg.name ASC
+    `).all(contractId) as ContractGroup[];
 }
 
