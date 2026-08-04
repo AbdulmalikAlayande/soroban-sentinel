@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createHmac } from "node:crypto";
+import { runChannelContractTests } from "./channel-contract.js";
 
 // ─── Mock fetch before importing the module under test ────────────────────────
 
@@ -261,7 +262,28 @@ describe("sendWebhookAlert", () => {
     });
 
     // =========================================================================
-    // 6. TIMEOUT HANDLING
+    // 6. CHANNEL CONTRACT
+    // =========================================================================
+    describe("Channel contract", () => {
+        beforeEach(() => {
+            vi.clearAllMocks();
+            mockFetch.mockResolvedValue(makeOkResponse());
+        });
+
+        afterEach(() => {
+            vi.unstubAllGlobals();
+            vi.stubGlobal("fetch", mockFetch);
+        });
+
+        runChannelContractTests(
+            "webhook",
+            () => ({ send: (target, event, secret?) => sendWebhookAlert(target, event, secret ?? null) }),
+            () => { mockFetch.mockRejectedValue(new Error("ECONNREFUSED")); },
+        );
+    });
+
+    // =========================================================================
+    // 7. TIMEOUT HANDLING
     // =========================================================================
     describe("Timeout handling", () => {
         it("throws when fetch is aborted (AbortError propagates as delivery failure)", async () => {

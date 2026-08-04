@@ -1,0 +1,52 @@
+.TH SOROKEEP 1 "2026-08-04" "sorokeep" "User Commands"
+.SH NAME
+sorokeep - Sorokeep — The missing operations layer for deployed Soroban smart contracts
+.SH SYNOPSIS
+.B sorokeep
+.SH DESCRIPTION
+Sorokeep — The missing operations layer for deployed Soroban smart contracts
+.SH COMMANDS
+.SH WATCH
+Register and start watching a contract
+.SH UNWATCH
+Remove a registered contract and clean up associated logs
+.SH STATUS
+Show TTL and storage health for a watched contract
+.SH CHECK
+Check TTL health for a watched contract (CI-friendly, can be forced)
+.SH DAEMON
+Start the monitoring daemon — polls contracts at a fixed interval
+.SH ALERTS
+Manage alert configurations
+.SH GUARD
+Configure auto-extension policy for a contract
+.SH COSTS
+Show rent costs and extension history for a contract
+.SH RESOURCES
+Show historical resource usage trends for a contract
+.SH RESTORE
+Restore archived entries for a contract
+.SH CHANNELS
+Manage channel accounts for fee bumping and transaction parallelism
+.SH MCP
+Start the Model Context Protocol (MCP) server on stdio transport
+.SH HISTORY
+Show state change history for a contract
+.SH COMPLETION
+Generate or query shell completion suggestions
+.SH INSPECT
+Inspect contract storage and token balances
+.SH BUDGET
+Manage monthly spending bounds for contracts
+.SH DB
+Backup, restore, and maintain database state
+.SH PAUSE
+Temporarily pause daemon polling and alerting for a contract
+.SH RESUME
+Resume daemon polling and alerting for a paused contract
+.SH METRICS
+Print a metrics snapshot without starting the HTTP server
+.SH AUDIT-LOG
+Export extension transactions as a machine-parseable JSONL audit trail
+.SH SEE ALSO
+sorokeep(1)

@@ -16,6 +16,10 @@ export interface ChannelDefinition {
     missingTargetError: string;
     /** Whether an HMAC `webhook_secret` should be generated/stored for this channel. */
     supportsSigning: boolean;
+    /** Per-channel retry cap override. Omit to fall back to the global `MAX_RETRY_COUNT`. */
+    maxRetries?: number;
+    /** Per-channel retry backoff override, in milliseconds. Omit to fall back to the global default. */
+    retryBackoffMs?: number;
 }
 
 const registry = new Map<string, ChannelDefinition>();
