@@ -71,7 +71,7 @@ describe("group command", () => {
     });
 
     it("prints an error when creating a group that already exists", () => {
-        createGroup(mockDb, "existing-group");
+        createGroup(mockDb, { name: "existing-group" });
 
         const program = new Command();
         registerGroupCommand(program);
@@ -89,7 +89,8 @@ describe("group command", () => {
     // ── group add ──────────────────────────────────────────────────────────
 
     it("adds a contract to an existing group", () => {
-        const group = createGroup(mockDb, "my-group");
+        createGroup(mockDb, { name: "my-group" });
+        const group = getGroupByName(mockDb, "my-group")!;
 
         const program = new Command();
         registerGroupCommand(program);
@@ -111,7 +112,7 @@ describe("group command", () => {
     });
 
     it("prints a clear error when adding a contract that isn't registered", () => {
-        createGroup(mockDb, "my-group");
+        createGroup(mockDb, { name: "my-group" });
 
         const program = new Command();
         registerGroupCommand(program);
@@ -157,7 +158,8 @@ describe("group command", () => {
     });
 
     it("adding the same contract twice is idempotent", () => {
-        const group = createGroup(mockDb, "my-group");
+        createGroup(mockDb, { name: "my-group" });
+        const group = getGroupByName(mockDb, "my-group")!;
 
         const program = new Command();
         registerGroupCommand(program);
@@ -194,8 +196,9 @@ describe("group command", () => {
     // ── group remove ───────────────────────────────────────────────────────
 
     it("removes a contract from a group", () => {
-        const group = createGroup(mockDb, "my-group");
-        addContractToGroup(mockDb, group.id, contractID);
+        createGroup(mockDb, { name: "my-group" });
+        const group = getGroupByName(mockDb, "my-group")!;
+        addContractToGroup(mockDb, { group_id: group.id, contract_id: contractID });
 
         const program = new Command();
         registerGroupCommand(program);
@@ -239,7 +242,7 @@ describe("group command", () => {
     });
 
     it("prints a clear error when removing a contract not in the group", () => {
-        createGroup(mockDb, "my-group");
+        createGroup(mockDb, { name: "my-group" });
 
         const program = new Command();
         registerGroupCommand(program);
@@ -265,8 +268,8 @@ describe("group command", () => {
     // ── group list ─────────────────────────────────────────────────────────
 
     it("lists all groups when no group name is provided", () => {
-        createGroup(mockDb, "alpha-group");
-        createGroup(mockDb, "beta-group");
+        createGroup(mockDb, { name: "alpha-group" });
+        createGroup(mockDb, { name: "beta-group" });
 
         const program = new Command();
         registerGroupCommand(program);
@@ -282,9 +285,10 @@ describe("group command", () => {
     });
 
     it("lists members of a specific group", () => {
-        const group = createGroup(mockDb, "my-group");
-        addContractToGroup(mockDb, group.id, contractID);
-        addContractToGroup(mockDb, group.id, contractID2);
+        createGroup(mockDb, { name: "my-group" });
+        const group = getGroupByName(mockDb, "my-group")!;
+        addContractToGroup(mockDb, { group_id: group.id, contract_id: contractID });
+        addContractToGroup(mockDb, { group_id: group.id, contract_id: contractID2 });
 
         const program = new Command();
         registerGroupCommand(program);
@@ -315,7 +319,7 @@ describe("group command", () => {
     });
 
     it("shows a message when a group has no members", () => {
-        createGroup(mockDb, "empty-group");
+        createGroup(mockDb, { name: "empty-group" });
 
         const program = new Command();
         registerGroupCommand(program);

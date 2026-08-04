@@ -7,6 +7,7 @@ import {
     getAllGroups,
     addContractToGroup,
     removeContractFromGroup,
+    isContractInGroup,
     getGroupMembers,
     getContract,
 } from "../db/repositories.js";
@@ -30,7 +31,7 @@ export function registerGroupCommand(program: Command): void {
                 process.exit(1);
             }
 
-            createGroup(db, name);
+            createGroup(db, { name });
             console.log(chalk.green(`Group '${name}' created successfully.`));
         });
 
@@ -60,7 +61,7 @@ export function registerGroupCommand(program: Command): void {
                 process.exit(1);
             }
 
-            addContractToGroup(db, grp.id, contractId);
+            addContractToGroup(db, { group_id: grp.id, contract_id: contractId });
             console.log(
                 chalk.green(
                     `Contract ${formatContractID(contractId)} added to group '${groupName}'.`
@@ -83,8 +84,7 @@ export function registerGroupCommand(program: Command): void {
                 process.exit(1);
             }
 
-            const removed = removeContractFromGroup(db, grp.id, contractId);
-            if (!removed) {
+            if (!isContractInGroup(db, grp.id, contractId)) {
                 console.error(
                     chalk.red(
                         `Error: Contract ${formatContractID(contractId)} is not in group '${groupName}'.`
@@ -93,6 +93,7 @@ export function registerGroupCommand(program: Command): void {
                 process.exit(1);
             }
 
+            removeContractFromGroup(db, { group_id: grp.id, contract_id: contractId });
             console.log(
                 chalk.green(
                     `Contract ${formatContractID(contractId)} removed from group '${groupName}'.`

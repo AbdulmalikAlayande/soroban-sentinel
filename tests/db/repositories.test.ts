@@ -237,6 +237,58 @@ describe("Database Repositories", () => {
             undelivered = repo.getUndeliveredAlerts(db, "testnet");
             expect(undelivered.length).toBe(0);
         });
+
+        it("computes channel delivery stats correctly", () => {
+            repo.insertContract(db, { id: "C2", network: "testnet" });
+            repo.upsertEntry(db, { contract_id: "C2", entry_key_xdr: "xdr2", entry_type: "wasm" });
+            const entryId = repo.getEntriesForContract(db, "C2")[0].id;
+
+            // Multiple configs for same channel type
+            repo.insertAlertConfig(db, { contract_id: "C2", channel_type: "slack", channel_target: "C_A", threshold_ledgers: 100 });
+            repo.insertAlertConfig(db, { contract_id: "C2", channel_type: "slack", channel_target: "C_B", threshold_ledgers: 100 });
+            
+            const configs = repo.getAlertConfigsForContract(db, "C2");
+            const configIdA = configs[0].id;
+            const configIdB = configs[1].id;
+
+            // We need 10 attempts total: 8 delivered, 2 abandoned (retry_count >= 5)
+            // 5 delivered for config A
+            for (let i = 0; i < 5; i++) {
+                repo.recordAlertFired(db, { alert_config_id: configIdA, contract_entry_id: entryId, fired_at_ledger: 1000, ttl_at_fire: 100 });
+            }
+            // 3 delivered for config B
+            for (let i = 0; i < 3; i++) {
+                repo.recordAlertFired(db, { alert_config_id: configIdB, contract_entry_id: entryId, fired_at_ledger: 1000, ttl_at_fire: 100 });
+            }
+            
+            // Mark the first 8 as delivered
+            const history = repo.getAlertHistory(db, "C2");
+            for (let i = 0; i < 8; i++) {
+                repo.markAlertDelivered(db, history[i].alertFiredId);
+            }
+
+            // 2 abandoned for config A
+            for (let i = 0; i < 2; i++) {
+                repo.recordAlertFired(db, { alert_config_id: configIdA, contract_entry_id: entryId, fired_at_ledger: 1000, ttl_at_fire: 100 });
+            }
+
+            // Increment retry_count to 5 for the abandoned ones
+            const historyAfterAbandoned = repo.getAlertHistory(db, "C2");
+            const undelivered = historyAfterAbandoned.filter(a => a.delivered === 0);
+            for (const alert of undelivered) {
+                for (let r = 0; r < 5; r++) {
+                    repo.incrementRetryCount(db, alert.alertFiredId);
+                }
+            }
+
+            const stats = repo.getChannelDeliveryStats(db, "slack");
+            expect(stats).toBeDefined();
+            expect(stats.totalAttempts).toBe(10);
+            expect(stats.deliveredCount).toBe(8);
+            expect(stats.abandonedCount).toBe(2);
+            expect(stats.failedCount).toBe(0);
+            expect(stats.successRate).toBe(80);
+        });
     });
 
     describe("Extension History & Cost Snapshots", () => {
@@ -497,6 +549,87 @@ describe("Database Repositories", () => {
             expect(configs.length).toBe(1);
             expect(configs[0].channel_type).toBe("matrix");
         });
+
+    describe("Contract Groups", () => {
+        it("creates a group and gets contracts in it", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.insertContract(db, { id: "C2", network: "testnet" });
+
+            const groupId = repo.createGroup(db, { name: "My Fleet" });
+            expect(groupId).toBeGreaterThan(0);
+
+            repo.addContractToGroup(db, { group_id: groupId, contract_id: "C1" });
+            repo.addContractToGroup(db, { group_id: groupId, contract_id: "C2" });
+
+            const contracts = repo.getContractsInGroup(db, groupId);
+            expect(contracts.length).toBe(2);
+            expect(contracts.map(c => c.id).sort()).toEqual(["C1", "C2"]);
+        });
+
+        it("removes a contract from a group", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.insertContract(db, { id: "C2", network: "testnet" });
+
+            const groupId = repo.createGroup(db, { name: "Fleet" });
+            repo.addContractToGroup(db, { group_id: groupId, contract_id: "C1" });
+            repo.addContractToGroup(db, { group_id: groupId, contract_id: "C2" });
+
+            repo.removeContractFromGroup(db, { group_id: groupId, contract_id: "C1" });
+
+            const contracts = repo.getContractsInGroup(db, groupId);
+            expect(contracts.length).toBe(1);
+            expect(contracts[0].id).toBe("C2");
+        });
+
+        it("gets groups for a contract", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+
+            const g1 = repo.createGroup(db, { name: "Group A" });
+            const g2 = repo.createGroup(db, { name: "Group B" });
+
+            repo.addContractToGroup(db, { group_id: g1, contract_id: "C1" });
+            repo.addContractToGroup(db, { group_id: g2, contract_id: "C1" });
+
+            const groups = repo.getGroupsForContract(db, "C1");
+            expect(groups.length).toBe(2);
+            expect(groups.map(g => g.name).sort()).toEqual(["Group A", "Group B"]);
+        });
+
+        it("deleting a contract removes its group memberships (cascade) without deleting the group", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.insertContract(db, { id: "C2", network: "testnet" });
+
+            const groupId = repo.createGroup(db, { name: "Fleet" });
+            repo.addContractToGroup(db, { group_id: groupId, contract_id: "C1" });
+            repo.addContractToGroup(db, { group_id: groupId, contract_id: "C2" });
+
+            repo.deleteContract(db, "C1");
+
+            const contracts = repo.getContractsInGroup(db, groupId);
+            expect(contracts.length).toBe(1);
+            expect(contracts[0].id).toBe("C2");
+        });
+
+        it("deleting a group removes memberships without deleting the underlying contracts", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            repo.insertContract(db, { id: "C2", network: "testnet" });
+
+            const groupId = repo.createGroup(db, { name: "Fleet" });
+            repo.addContractToGroup(db, { group_id: groupId, contract_id: "C1" });
+            repo.addContractToGroup(db, { group_id: groupId, contract_id: "C2" });
+
+            // Delete the group via raw SQL (cascade automatically removes memberships)
+            db.prepare("DELETE FROM contract_groups WHERE id = ?").run(groupId);
+
+            // Both contracts should still exist
+            expect(repo.getContract(db, "C1")).toBeDefined();
+            expect(repo.getContract(db, "C2")).toBeDefined();
+
+            // The group should be empty
+            const contracts = repo.getContractsInGroup(db, groupId);
+            expect(contracts.length).toBe(0);
+        });
+    });
 
         it("crud resource alert configs and records fired", () => {
             repo.insertContract(db, { id: "C1", network: "testnet" });
