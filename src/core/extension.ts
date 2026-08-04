@@ -251,12 +251,9 @@ export async function extendEntries(
     const entries = getEntriesForContract(db, contractId);
     const entryMap = new Map(entries.map(e => [e.entry_key_xdr, e]));
 
-    // Compute drift here so it can be persisted alongside the extension record.
+    // Track per-entry drift. The extension-level driftLedgers for the alert is
+    // the signed value with the largest absolute deviation from the target.
     let driftLedgers: number | undefined;
-    if (freshTTLs.entries.length > 0) {
-        const maxActualTTL = Math.max(...freshTTLs.entries.map(e => e.remainingTTL));
-        driftLedgers = maxActualTTL - extendToLedgers;
-    }
 
     const updateDb = db.transaction(() => {
         for (const freshEntry of freshTTLs.entries) {
@@ -266,6 +263,13 @@ export async function extendEntries(
             const oldTTL = dbEntry.live_until_ledger
                 ? dbEntry.live_until_ledger - freshTTLs.latestLedger
                 : 0;
+
+            const entryDrift = freshEntry.remainingTTL - extendToLedgers;
+
+            // Keep the signed drift with the largest absolute value for the alert.
+            if (driftLedgers === undefined || Math.abs(entryDrift) > Math.abs(driftLedgers)) {
+                driftLedgers = entryDrift;
+            }
 
             recordExtension(db, {
                 contract_id: contractId,
@@ -277,7 +281,7 @@ export async function extendEntries(
                 mem_bytes: txResult.memBytes,
                 is_anomaly: isAnomaly,
                 executed_at_ledger: freshTTLs.latestLedger,
-                drift_ledgers: driftLedgers ?? null,
+                drift_ledgers: entryDrift,
             });
 
             upsertEntry(db, {
