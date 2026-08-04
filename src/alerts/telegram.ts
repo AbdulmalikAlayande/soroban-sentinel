@@ -31,6 +31,18 @@ function resolveBotToken(): string {
     "Telegram bot token not configured. Set SOROKEEP_TELEGRAM_BOT_TOKEN environment variable " +
       "or add telegramBotToken to ~/.sorokeep/config.yaml.",
   );
+    const envToken = process.env["SOROKEEP_TELEGRAM_BOT_TOKEN"];
+    if (envToken) return envToken;
+
+    const config = loadConfig();
+    if ("telegramBotToken" in config && typeof config.telegramBotToken === "string" && config.telegramBotToken) {
+        return config.telegramBotToken as string;
+    }
+
+    throw new Error(
+        "Telegram bot token not configured. Set SOROKEEP_TELEGRAM_BOT_TOKEN environment variable " +
+        "or add telegramBotToken to ~/.sorokeep/config.yaml.",
+    );
 }
 
 // ─── Message builder ──────────────────────────────────────────────────────────
@@ -107,6 +119,66 @@ function buildMessage(event: AlertEvent): string {
     ``,
     `_Severity: ${escapeMarkdown(event.severity)} \\| Contract: ${escapeMarkdown(event.contractId)}_`,
   ].join("\n");
+    if (event.type === "alert_resolved") return "✅";
+    if (event.type === "state_changed") return "🔄";
+    if (event.severity === "critical") return "🔴";
+    return "⚠️";
+}
+
+function buildMessage(event: AlertEvent): string {
+    const icon = severityEmoji(event);
+    const contractDisplay = event.contractName ?? event.contractId;
+
+    if (event.type === "resource_alert") {
+        const level = event.severity === "critical" ? "CRITICAL" : "Warning";
+        const resourceLabel = event.resource.type === "cpu" ? "CPU" : "Memory";
+        
+        return [
+            `${icon} *Resource ${level}* — ${escapeMarkdown(contractDisplay)}`,
+            ``,
+            `*Resource:* ${resourceLabel}`,
+            `*Network:* ${escapeMarkdown(event.network)}`,
+            `*Usage:* ${event.resource.usagePercent}% \\(${event.resource.currentUsage.toLocaleString()} / ${event.resource.limit.toLocaleString()}\\)`,
+            ``,
+            `_Severity: ${escapeMarkdown(event.severity)} \\| Contract: ${escapeMarkdown(event.contractId)}_`,
+        ].join("\n");
+    }
+
+    if (event.type === "state_changed") {
+        const diffLabel = event.diff.diffType.charAt(0).toUpperCase() + event.diff.diffType.slice(1);
+        const entryLabel = event.entry.label ?? event.entry.type;
+        const oldValStr = event.diff.oldValueXdr ? `\`${escapeCode(event.diff.oldValueXdr)}\`` : "\\(none\\)";
+        const newValStr = event.diff.newValueXdr ? `\`${escapeCode(event.diff.newValueXdr)}\`` : "\\(none\\)";
+
+        return [
+            `${icon} *State ${diffLabel}* — ${escapeMarkdown(contractDisplay)}`,
+            ``,
+            `*Entry:* ${escapeMarkdown(entryLabel)}`,
+            `*Network:* ${escapeMarkdown(event.network)}`,
+            `*Change Type:* ${escapeMarkdown(event.diff.diffType)}`,
+            `*Old Value:* ${oldValStr}`,
+            `*New Value:* ${newValStr}`,
+            ``,
+            `_Contract: ${escapeMarkdown(event.contractId)}_`,
+        ].join("\n");
+    }
+
+    const status = event.type === "threshold_crossed"
+        ? `TTL ${event.severity === "critical" ? "CRITICAL" : "Warning"}`
+        : "Alert Resolved";
+
+    const entryLabel = event.entry.label ?? event.entry.type;
+
+    return [
+        `${icon} *${status}* — ${escapeMarkdown(contractDisplay)}`,
+        ``,
+        `*Entry:* ${escapeMarkdown(entryLabel)}`,
+        `*Network:* ${escapeMarkdown(event.network)}`,
+        `*Remaining TTL:* ${event.threshold.currentRemainingLedgers.toLocaleString()} ledgers \\(${escapeMarkdown(event.threshold.approximateTimeRemaining)}\\)`,
+        `*Threshold:* ${event.threshold.configuredLedgers.toLocaleString()} ledgers`,
+        ``,
+        `_Severity: ${escapeMarkdown(event.severity)} \\| Contract: ${escapeMarkdown(event.contractId)}_`,
+    ].join("\n");
 }
 
 /**
@@ -114,6 +186,7 @@ function buildMessage(event: AlertEvent): string {
  */
 function escapeMarkdown(text: string): string {
   return text.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, "\\$&");
+    return text.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, "\\$&");
 }
 
 /**
@@ -121,6 +194,7 @@ function escapeMarkdown(text: string): string {
  */
 function escapeCode(text: string): string {
   return text.replace(/[\\`]/g, "\\$&");
+    return text.replace(/[\\`]/g, "\\$&");
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -178,4 +252,47 @@ export async function sendTelegramAlert(
   }
 
   logger.debug(`Telegram alert delivered successfully to ${chatId}`);
+export async function sendTelegramAlert(chatId: string, event: AlertEvent): Promise<void> {
+    const token = resolveBotToken();
+
+    logger.debug(`Sending Telegram alert to ${chatId}`, { type: event.type, contractId: event.contractId });
+
+    const url = `${TELEGRAM_API_BASE}${token}/sendMessage`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+    const customMessage = renderAlertTemplate("telegram", event);
+    const text = customMessage !== null ? customMessage : buildMessage(event);
+
+    let response: Response;
+    try {
+        response = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                chat_id: chatId,
+                text: text,
+                parse_mode: "MarkdownV2",
+            }),
+            signal: controller.signal,
+        });
+    } finally {
+        clearTimeout(timeout);
+    }
+
+    if (!response.ok) {
+        throw new Error(
+            `Telegram API request failed: HTTP ${response.status}`,
+        );
+    }
+
+    const body = await response.json() as { ok: boolean; description?: string };
+    if (!body.ok) {
+        throw new Error(
+            `Telegram API error: ${body.description ?? "unknown error"}`,
+        );
+    }
+
+    logger.debug(`Telegram alert delivered successfully to ${chatId}`);
 }

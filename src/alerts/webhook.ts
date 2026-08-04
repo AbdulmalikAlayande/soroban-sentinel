@@ -33,6 +33,31 @@ export async function sendWebhookAlert(
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
+export async function sendWebhookAlert(url: string, event: AlertEvent, secret?: string | null): Promise<void> {
+    logger.debug(`Sending webhook alert to ${url}`, { type: event.type, contractId: event.contractId });
+
+    const customMessage = renderAlertTemplate("webhook", event);
+    let body: string;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+
+    if (customMessage !== null) {
+        body = customMessage;
+        try {
+            JSON.parse(customMessage);
+        } catch {
+            headers["Content-Type"] = "text/plain";
+        }
+    } else {
+        body = JSON.stringify(event);
+    }
+
+    if (secret) {
+        const signature = createHmac("sha256", secret).update(body).digest("hex");
+        headers["X-Sorokeep-Signature"] = `sha256=${signature}`;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   if (customMessage !== null) {
     body = customMessage;
@@ -40,6 +65,14 @@ export async function sendWebhookAlert(
       JSON.parse(customMessage);
     } catch {
       headers["Content-Type"] = "text/plain";
+        response = await fetch(url, {
+            method: "POST",
+            headers,
+            body,
+            signal: controller.signal,
+        });
+    } finally {
+        clearTimeout(timeout);
     }
   } else {
     body = JSON.stringify({

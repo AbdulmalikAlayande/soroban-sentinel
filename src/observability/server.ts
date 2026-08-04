@@ -2,11 +2,51 @@ import type Database from "better-sqlite3";
 import { Hono } from "hono";
 import http from "node:http";
 import { register, collectAllMetrics } from "./registry.js";
+import type { StellarRpcClient } from "../rpc/client.js";
 
 // ─── Module-level state ──────────────────────────────────────────────────────
 
 let activeServer: http.Server | null = null;
 let activeDb: Database.Database | null = null;
+let activeRpcClient: StellarRpcClient | null = null;
+
+// ─── /readyz support ─────────────────────────────────────────────────────────
+
+const RPC_CHECK_CACHE_TTL_MS = 5_000;
+let rpcCheckCache: { ok: boolean; error?: string; checkedAt: number } | null = null;
+
+function checkDb(db: Database.Database): { ok: boolean; error?: string } {
+    try {
+        db.prepare("SELECT 1").get();
+        return { ok: true };
+    } catch (e: unknown) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+}
+
+/**
+ * Check RPC connectivity via a lightweight getCurrentLedger() call, caching
+ * the result for RPC_CHECK_CACHE_TTL_MS so frequent /readyz polling (e.g.
+ * a Kubernetes readiness probe every few seconds) doesn't hammer the RPC
+ * endpoint.
+ */
+async function checkRpc(rpcClient: StellarRpcClient | null): Promise<{ ok: boolean; error?: string }> {
+    if (!rpcClient) {
+        return { ok: false, error: "no RPC client configured" };
+    }
+
+    if (rpcCheckCache && Date.now() - rpcCheckCache.checkedAt < RPC_CHECK_CACHE_TTL_MS) {
+        return rpcCheckCache;
+    }
+
+    try {
+        await rpcClient.getCurrentLedger();
+        rpcCheckCache = { ok: true, checkedAt: Date.now() };
+    } catch (e: unknown) {
+        rpcCheckCache = { ok: false, error: e instanceof Error ? e.message : String(e), checkedAt: Date.now() };
+    }
+    return rpcCheckCache;
+}
 
 // ─── Application ─────────────────────────────────────────────────────────────
 
@@ -41,6 +81,28 @@ app.get("/metrics", async (c) => {
     });
 });
 
+/**
+ * Readiness check — distinct from liveness: can this instance actually do
+ * useful work right now (reach the database and the configured Stellar RPC
+ * endpoint), not just "is the process running."
+ */
+app.get("/readyz", async (c) => {
+    const dbResult = activeDb ? checkDb(activeDb) : { ok: false, error: "no database configured" };
+    const rpcResult = await checkRpc(activeRpcClient);
+    const allOk = dbResult.ok && rpcResult.ok;
+
+    return c.json(
+        {
+            status: allOk ? "ok" : "not ready",
+            checks: {
+                db: dbResult.ok ? "ok" : dbResult.error,
+                rpc: rpcResult.ok ? "ok" : rpcResult.error,
+            },
+        },
+        allOk ? 200 : 503,
+    );
+});
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
@@ -55,12 +117,20 @@ app.get("/metrics", async (c) => {
  *   metric is recomputed from the live database on each scrape.
  */
 export function createMetricsServer(port: number, db?: Database.Database): void {
+ *   metric is recomputed from the live database on each scrape, and
+ *   /readyz's DB check uses it.
+ * @param rpcClient Optional Stellar RPC client. When provided, /readyz's
+ *   RPC check uses it (a lightweight, cached getCurrentLedger() call).
+ */
+export function createMetricsServer(port: number, db?: Database.Database, rpcClient?: StellarRpcClient): void {
     // Replace any existing server so the caller gets a clean restart.
     if (activeServer) {
         activeServer.close();
         activeServer = null;
     }
     activeDb = db ?? null;
+    activeRpcClient = rpcClient ?? null;
+    rpcCheckCache = null;
 
     const server = http.createServer((_req, res) => {
         // Bridge the Node.js IncomingMessage → Hono Request → Node.js ServerResponse
@@ -148,6 +218,8 @@ export async function stopMetricsServer(): Promise<void> {
         activeServer!.close(() => {
             activeServer = null;
             activeDb = null;
+            activeRpcClient = null;
+            rpcCheckCache = null;
             resolve();
         });
     });
