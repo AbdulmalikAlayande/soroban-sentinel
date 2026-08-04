@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { runChannelContractTests } from "./channel-contract.js";
 
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
@@ -112,4 +113,24 @@ describe("SlackChannel", () => {
             await expect(channel.send(makeAlertEvent())).rejects.toThrow("ECONNREFUSED");
         });
     });
+});
+
+// ─── Channel contract ──────────────────────────────────────────────────────
+
+describe("SlackChannel (contract)", () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        mockFetch.mockResolvedValue(makeSlackOkResponse());
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.stubGlobal("fetch", mockFetch);
+    });
+
+    runChannelContractTests(
+        "slack",
+        () => ({ send: (target, event) => new SlackChannel(target).send(event) }),
+        () => { mockFetch.mockRejectedValue(new Error("ECONNREFUSED")); },
+    );
 });
