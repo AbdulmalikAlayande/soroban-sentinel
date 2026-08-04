@@ -366,7 +366,25 @@ Generate shell autocomplete scripts for bash/zsh to enable tab completion for al
 
 ## Alerting
 
-Sorokeep delivers alerts through multiple channels: **webhooks**, **Slack**, **Discord**, **Telegram**, and **PagerDuty**. Each alert includes a severity level and rich context about the affected entry. Sorokeep uses a robust, decoupled detection and dispatch architecture with a database-backed queue.
+Sorokeep delivers alerts through multiple channels: **webhooks**, **Slack**, **Discord**, **Telegram**, **PagerDuty**, **Opsgenie**, **Microsoft Teams**, **Matrix**, **email**, **Google Chat**, and a second configurable **Webhook v2** channel. Each alert includes a severity level and rich context about the affected entry. Sorokeep uses a robust, decoupled detection and dispatch architecture with a database-backed queue.
+
+### Supported Channels Comparison
+
+| Channel | Auth Method | Typical Rate Limit | Payload Format | Setup Complexity |
+|---------|-------------|--------------------|----------------|------------------|
+| **Webhook** | HMAC-SHA256 (`X-Sorokeep-Signature`) / Secret | Unlimited (target dependent) | Generic JSON | Low |
+| **Webhook v2** | HMAC-SHA256 (`X-Sorokeep-Signature`) / Secret, custom headers | Unlimited (target dependent) | Generic JSON | Low |
+| **Slack** | Bot OAuth Token (`xoxb-...`) / Webhook URL | 1 req/sec | Slack Block Kit JSON | Low |
+| **PagerDuty** | Events API v2 Routing Key | 120 req/min | PagerDuty Event v2 JSON | Low |
+| **Opsgenie** | API Key | Plan-dependent | Opsgenie Alert API JSON | Low |
+| **Discord** | Webhook URL | 30 req/min per webhook | Discord Embed JSON | Low |
+| **Telegram** | Bot Token (`SOROKEEP_TELEGRAM_BOT_TOKEN`) | 30 msg/sec overall (1 msg/sec per chat) | HTML / Markdown Formatted Text | Medium |
+| **Microsoft Teams** | Webhook URL (tenant-scoped) | Connector-dependent | Teams MessageCard JSON | Low |
+| **Matrix** | Room ID | Homeserver-dependent | Matrix `m.room.message` event | Medium |
+| **Email** | SMTP credentials (host/port/user/pass) | SMTP-provider dependent | Plain text + HTML | Medium |
+| **Google Chat** | Webhook URL | Space-dependent | Google Chat card JSON | Low |
+
+> Need a channel not listed here? See [Adding an Alert Channel](docs/adding-an-alert-channel.md) to implement a custom channel plugin.
 
 ### Alert Lifecycle
 
@@ -677,7 +695,7 @@ Track overall progress on the [Sorokeep Roadmap board](https://github.com/Abdulm
 > If you're a maintainer, follow that doc to create and link the board.
 
 - Plugin interface for alert channels — so a new channel (Matrix, MS Teams, email) doesn't require touching core dispatch code or the DB schema
-- Prometheus `/metrics` endpoint for teams with existing observability stacks
+- Prometheus `/metrics` endpoint for teams with existing observability stacks — see [Observability Setup Guide](docs/observability.md)
 - Reusable GitHub Action wrapping `sorokeep check` for CI-integrated TTL checks
 - Web dashboard for visual TTL monitoring
 - Multi-contract batch operations

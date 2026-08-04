@@ -9,12 +9,15 @@ import {
     hasUnresolvedAlert,
     recordAlertFired,
     resolveAlerts,
+    getAlertConfigTargets,
 } from "../db/repositories.js";
 import { StellarRpcClient } from "../rpc/client.js";
 import { deliverSingleAlert } from "../alerts/dispatcher.js";
 import { buildAlertEvent } from "../alerts/types.js";
 import { runAutoExtensions } from "./extension.js";
 import { getLogger } from "../logging/index.js";
+import { getTracer, endSpan } from "../observability/tracing.js";
+import type { Span } from "@opentelemetry/api";
 
 const logger = getLogger().child({ component: "MonitorCycle" });
 
@@ -90,18 +93,48 @@ export async function runMonitorCycle(
 
     logger.debug(`Monitor cycle started — ${contracts.length} contract(s) on ${network}`);
 
+    const tracer = getTracer();
+
     for (const contract of contracts) {
+        const contractSpan: Span = tracer.startSpan("process-contract", {
+            attributes: { "contract.id": contract.id },
+        });
         result.contractsChecked++;
 
         try {
             await processContract(db, client, contract.id, network, result);
+            endSpan(contractSpan);
         } catch (error: unknown) {
             // Fault isolation: record the failure, move to next contract.
             const message = error instanceof Error ? error.message : String(error);
             const errorEntry = `Error processing contract ${contract.id}: ${message}`;
             result.errors.push(errorEntry);
             logger.error(errorEntry, error);
+            endSpan(contractSpan, error);
         }
+    }
+
+    // Auto-extension phase: check extension_policies and submit transactions for
+    // entries whose TTL fell below the configured threshold.
+    try {
+        const ext = await runAutoExtensions(db, network, rpcUrl, feeSponsorSecret);
+        result.extensionsTriggered = ext.entriesExtended;
+        result.extensionErrors = ext.errors;
+        if (ext.entriesExtended > 0) {
+            logger.info(
+                `Auto-extensions — contracts: ${ext.contractsExtended}, ` +
+                `entries: ${ext.entriesExtended}`,
+            );
+        }
+        for (const e of ext.extensions) {
+            if (e.isAnomaly) {
+                logger.warn(`Cost anomaly — contract: ${e.contractId}: ${e.anomalyDetails}`);
+            }
+        }
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        result.extensionErrors = [msg];
+        logger.error("runAutoExtensions threw unexpectedly", err);
     }
 
     // Auto-extension phase: check extension_policies and submit transactions for
@@ -209,17 +242,29 @@ async function processContract(
         const remainingTTL = rpcEntry.remainingTTL;
 
         for (const alertConfig of alertConfigs) {
+            if (!alertConfig.enabled) continue; // disabled configs never fire
+
             const isBelowThreshold = remainingTTL < alertConfig.threshold_ledgers;
 
             if (isBelowThreshold) {
                 // 4. TTL is below threshold — fire if not already unresolved.
                 if (!hasUnresolvedAlert(db, alertConfig.id, entry.id)) {
-                    recordAlertFired(db, {
-                        alert_config_id:   alertConfig.id,
-                        contract_entry_id: entry.id,
-                        fired_at_ledger:   rpcResult.latestLedger,
-                        ttl_at_fire:       remainingTTL,
-                    });
+                    const additionalTargets = getAlertConfigTargets(db, alertConfig.id);
+                    const allTargets = [
+                        { channel_type: alertConfig.channel_type, channel_target: alertConfig.channel_target },
+                        ...additionalTargets
+                    ];
+
+                    for (const target of allTargets) {
+                        recordAlertFired(db, {
+                            alert_config_id:   alertConfig.id,
+                            contract_entry_id: entry.id,
+                            fired_at_ledger:   rpcResult.latestLedger,
+                            ttl_at_fire:       remainingTTL,
+                            channel_type:      target.channel_type,
+                            channel_target:    target.channel_target,
+                        });
+                    }
                     result.thresholdsCrossed++;
 
                     logger.warn(
@@ -260,17 +305,25 @@ async function processContract(
                             firedAtLedger: rpcResult.latestLedger,
                         });
 
-                        // Best-effort — log failures so they're visible, but don't block.
-                        deliverSingleAlert(
-                            config.channel_type,
-                            config.channel_target,
-                            event,
-                            config.webhook_secret,
-                        ).catch((err: unknown) => {
-                            logger.warn(
-                                `Resolution notification failed for config ${configId}: ${err instanceof Error ? err.message : String(err)}`,
-                            );
-                        });
+                        const additionalTargets = getAlertConfigTargets(db, config.id);
+                        const allTargets = [
+                            { channel_type: config.channel_type, channel_target: config.channel_target },
+                            ...additionalTargets
+                        ];
+
+                        for (const target of allTargets) {
+                            // Best-effort — log failures so they're visible, but don't block.
+                            deliverSingleAlert(
+                                target.channel_type,
+                                target.channel_target,
+                                event,
+                                config.webhook_secret,
+                            ).catch((err: unknown) => {
+                                logger.warn(
+                                    `Resolution notification failed for config ${configId} target ${target.channel_type}:${target.channel_target}: ${err instanceof Error ? err.message : String(err)}`,
+                                );
+                            });
+                        }
                     }
                 }
             }
