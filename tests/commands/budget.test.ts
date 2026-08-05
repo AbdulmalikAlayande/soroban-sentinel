@@ -53,6 +53,7 @@ describe("Budget Command CLI", () => {
             expect(mockLog).toHaveBeenCalledWith(expect.stringMatching(/█/));
         });
     });
+
     describe("pool", () => {
         let db: Database.Database;
 

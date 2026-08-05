@@ -116,6 +116,7 @@ describe('Budget Enforcement', () => {
         // spent_xlm should increase by 1.5
         expect(budget?.spent_xlm).toBe(1.5);
     });
+
     it('blocks every contract in a pool once their combined spend reaches the cap', async () => {
         insertContract(db, { id: 'contract_2', network: 'testnet' });
         upsertExtensionPolicy(db, { contract_id: 'contract_2', enabled: true, target_ttl_ledgers: 50000, extend_when_below_ledgers: 20000, keypair_source: DUMMY_SECRET });

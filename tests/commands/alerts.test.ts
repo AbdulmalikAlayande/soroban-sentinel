@@ -3,11 +3,13 @@ import { Command } from "commander";
 import type Database from "better-sqlite3";
 import { getDatabaseForTesting } from "../../src/db/database";
 import { registerAlertsCommand } from "../../src/commands/alerts";
+import { registerAlertChannel } from "../../src/alerts/registry";
 import {
     insertContract,
     getAlertConfigsForContract,
     insertAlertConfig,
     getResourceAlertConfigsForContract,
+    getAlertConfigTargets,
 } from "../../src/db/repositories";
 
 let mockDb: Database.Database;
@@ -89,6 +91,52 @@ describe("alerts command", () => {
             expect(consoleLogSpy).toHaveBeenCalledWith(
                 expect.stringContaining("Successfully added alert config")
             );
+        });
+
+        it("persists repeatable --target flags as additional fan-out targets", () => {
+            parse([
+                "alerts", "add",
+                "--contract", contractID,
+                "--type", "webhook",
+                "--url", "https://example.com/webhook",
+                "--threshold", "1000",
+                "--target", "slack:#ops-alerts",
+                "--target", "pagerduty:pd-routing-key",
+            ]);
+
+            const configs = getAlertConfigsForContract(mockDb, contractID);
+            expect(configs).toHaveLength(1);
+
+            const targets = getAlertConfigTargets(mockDb, configs[0]!.id);
+            expect(targets).toHaveLength(2);
+            expect(targets.map((t) => `${t.channel_type}:${t.channel_target}`).sort()).toEqual([
+                "pagerduty:pd-routing-key",
+                "slack:#ops-alerts",
+            ]);
+        });
+
+        it("uses the first --target as the primary channel when --type is omitted", () => {
+            parse([
+                "alerts", "add",
+                "--contract", contractID,
+                "--threshold", "1000",
+                "--target", "slack:#ops-alerts",
+                "--target", "webhook:https://example.com/hook",
+            ]);
+
+            const configs = getAlertConfigsForContract(mockDb, contractID);
+            expect(configs).toHaveLength(1);
+            expect(configs[0]).toMatchObject({
+                channel_type: "slack",
+                channel_target: "#ops-alerts",
+            });
+
+            const targets = getAlertConfigTargets(mockDb, configs[0]!.id);
+            expect(targets).toHaveLength(1);
+            expect(targets[0]).toMatchObject({
+                channel_type: "webhook",
+                channel_target: "https://example.com/hook",
+            });
         });
 
         it("writes a slack alert to SQLite", () => {
@@ -280,7 +328,7 @@ describe("alerts command", () => {
             );
         });
 
-        it("exits with 1 for email type (not implemented)", () => {
+        it("exits with 1 for email type when --channel (recipient address) is missing", () => {
             parseExpectExit([
                 "alerts", "add",
                 "--contract", contractID,
@@ -290,8 +338,23 @@ describe("alerts command", () => {
             ]);
 
             expect(consoleErrorSpy).toHaveBeenCalledWith(
-                expect.stringContaining("not yet implemented")
+                expect.stringContaining("--channel is required")
             );
+        });
+
+        it("registers an email alert config when --channel (recipient address) is provided", () => {
+            parse([
+                "alerts", "add",
+                "--contract", contractID,
+                "--type", "email",
+                "--channel", "ops@example.com",
+                "--threshold", "1000",
+            ]);
+
+            const configs = getAlertConfigsForContract(mockDb, contractID);
+            expect(configs).toHaveLength(1);
+            expect(configs[0]!.channel_type).toBe("email");
+            expect(configs[0]!.channel_target).toBe("ops@example.com");
         });
 
         it("exits with 1 for an unknown channel type", () => {
@@ -583,6 +646,77 @@ describe("alerts command", () => {
         });
     });
 
+    // =========================================================================
+    // alerts enable / disable
+    // =========================================================================
+    describe("alerts enable / disable", () => {
+        it("disables an alert config without deleting it", () => {
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "webhook",
+                channel_target: "https://example.com/webhook",
+                threshold_ledgers: 1000,
+            });
+            const configId = getAlertConfigsForContract(mockDb, contractID)[0]!.id;
+
+            parse(["alerts", "disable", "--id", configId.toString()]);
+
+            const configs = getAlertConfigsForContract(mockDb, contractID);
+            expect(configs).toHaveLength(1); // still present, not deleted
+            expect(configs[0]!.enabled).toBe(0);
+            expect(consoleLogSpy).toHaveBeenCalledWith(
+                expect.stringContaining(`Alert config ID ${configId} disabled`)
+            );
+        });
+
+        it("re-enables a disabled alert config", () => {
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "webhook",
+                channel_target: "https://example.com/webhook",
+                threshold_ledgers: 1000,
+            });
+            const configId = getAlertConfigsForContract(mockDb, contractID)[0]!.id;
+
+            parse(["alerts", "disable", "--id", configId.toString()]);
+            parse(["alerts", "enable", "--id", configId.toString()]);
+
+            const configs = getAlertConfigsForContract(mockDb, contractID);
+            expect(configs[0]!.enabled).toBe(1);
+            expect(consoleLogSpy).toHaveBeenCalledWith(
+                expect.stringContaining(`Alert config ID ${configId} enabled`)
+            );
+        });
+
+        it("exits with 1 when disabling a non-existent config", () => {
+            parseExpectExit(["alerts", "disable", "--id", "99999"]);
+
+            expect(exitSpy).toHaveBeenCalledWith(1);
+            expect(consoleErrorSpy).toHaveBeenCalledWith(
+                expect.stringContaining("Alert config ID 99999 not found")
+            );
+        });
+
+        it("exits with 1 when enabling a non-existent config", () => {
+            parseExpectExit(["alerts", "enable", "--id", "99999"]);
+
+            expect(exitSpy).toHaveBeenCalledWith(1);
+            expect(consoleErrorSpy).toHaveBeenCalledWith(
+                expect.stringContaining("Alert config ID 99999 not found")
+            );
+        });
+
+        it("exits with 1 when --id is not a number (disable)", () => {
+            parseExpectExit(["alerts", "disable", "--id", "not-a-number"]);
+            expect(exitSpy).toHaveBeenCalledWith(1);
+        });
+
+        it("exits with 1 when --id is not a number (enable)", () => {
+            parseExpectExit(["alerts", "enable", "--id", "not-a-number"]);
+            expect(exitSpy).toHaveBeenCalledWith(1);
+        });
+    });
+
     describe("alerts test", () => {
         let webhookConfigId: number;
 
@@ -759,6 +893,152 @@ describe("alerts command", () => {
             expect(consoleLogSpy).toHaveBeenCalledWith(
                 expect.stringContaining("Test alert delivered successfully")
             );
+        });
+
+        it("with --dry-run prints the exact JSON payload and does not call deliverSingleAlert", async () => {
+            const program = new Command();
+            registerAlertsCommand(program);
+
+            await program.parseAsync([
+                "node", "sorokeep", "alerts", "test",
+                "--id", webhookConfigId.toString(),
+                "--dry-run",
+            ]);
+
+            expect(mockDeliverSingleAlert).not.toHaveBeenCalled();
+            expect(consoleLogSpy).toHaveBeenCalled();
+            
+            // Check that the printed payload is a valid JSON of the test alert event
+            const printCall = consoleLogSpy.mock.calls.find((args) => {
+                try {
+                    const parsed = JSON.parse(args[0]);
+                    return parsed.type === "threshold_crossed";
+                } catch {
+                    return false;
+                }
+            });
+            expect(printCall).toBeTruthy();
+        });
+
+        it("with --dry-run for signed webhook replicates the HMAC signing logic and prints X-Sorokeep-Signature header", async () => {
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "webhook",
+                channel_target: "https://example.com/signed",
+                threshold_ledgers: 500,
+                webhook_secret: "dry-run-secret",
+            });
+            const allConfigs = getAlertConfigsForContract(mockDb, contractID);
+            const signedConfig = allConfigs.find((c) => c.webhook_secret === "dry-run-secret")!;
+
+            const program = new Command();
+            registerAlertsCommand(program);
+
+            await program.parseAsync([
+                "node", "sorokeep", "alerts", "test",
+                "--id", signedConfig.id.toString(),
+                "--dry-run",
+            ]);
+
+            expect(mockDeliverSingleAlert).not.toHaveBeenCalled();
+            
+            // Should print X-Sorokeep-Signature: sha256=<hmac>
+            const signatureCall = consoleLogSpy.mock.calls.find((args) => 
+                typeof args[0] === "string" && args[0].startsWith("X-Sorokeep-Signature:")
+            );
+            expect(signatureCall).toBeTruthy();
+            expect(signatureCall![0]).toContain("X-Sorokeep-Signature: sha256=");
+        });
+    });
+
+    describe("alerts test-all", () => {
+        beforeEach(() => {
+            mockDeliverSingleAlert.mockReset();
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "webhook",
+                channel_target: "https://example.com/webhook",
+                threshold_ledgers: 1000,
+            });
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "slack",
+                channel_target: "#ops-alerts",
+                threshold_ledgers: 2000,
+            });
+        });
+
+        it("sends a test event to every configured channel for the contract", async () => {
+            mockDeliverSingleAlert.mockResolvedValue(true);
+
+            const program = new Command();
+            registerAlertsCommand(program);
+
+            await program.parseAsync([
+                "node", "sorokeep", "alerts", "test-all",
+                "--contract", contractID,
+            ]);
+
+            expect(mockDeliverSingleAlert).toHaveBeenCalledTimes(2);
+            expect(mockDeliverSingleAlert.mock.calls[0]![0]).toBe("webhook");
+            expect(mockDeliverSingleAlert.mock.calls[0]![1]).toBe("https://example.com/webhook");
+            expect(mockDeliverSingleAlert.mock.calls[1]![0]).toBe("slack");
+            expect(mockDeliverSingleAlert.mock.calls[1]![1]).toBe("#ops-alerts");
+
+            for (const [, , event] of mockDeliverSingleAlert.mock.calls) {
+                expect(event.type).toBe("threshold_crossed");
+                expect(event.contractId).toBe(contractID);
+            }
+        });
+
+        it("exits with 1 when any delivery fails", async () => {
+            mockDeliverSingleAlert.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+            const program = new Command();
+            registerAlertsCommand(program);
+
+            await expect(
+                program.parseAsync([
+                    "node", "sorokeep", "alerts", "test-all",
+                    "--contract", contractID,
+                ])
+            ).rejects.toThrow("process.exit called");
+
+            expect(mockDeliverSingleAlert).toHaveBeenCalledTimes(2);
+            expect(consoleErrorSpy).toHaveBeenCalledWith(
+                expect.stringContaining("1 channel(s) failed")
+            );
+            expect(exitSpy).toHaveBeenCalledWith(1);
+        });
+    });
+
+    describe("alerts channels", () => {
+        it("prints all five built-in channel names", () => {
+            parse(["alerts", "channels"]);
+
+            const output = consoleLogSpy.mock.calls.flat().join("\n");
+            expect(output).toContain("webhook");
+            expect(output).toContain("slack");
+            expect(output).toContain("pagerduty");
+            expect(output).toContain("discord");
+            expect(output).toContain("telegram");
+        });
+
+        it("includes dynamically registered plugin channels in the output", () => {
+            registerAlertChannel({
+                name: "matrix-listing-test",
+                channel: { send: vi.fn().mockResolvedValue(undefined) },
+                targetOption: "url",
+                missingTargetError: "Error: --url is required when --type is matrix-listing-test.",
+                supportsSigning: false,
+            });
+
+            parse(["alerts", "channels"]);
+
+            const output = consoleLogSpy.mock.calls.flat().join("\n");
+            expect(output).toContain("matrix-listing-test");
+            expect(output).toContain("url");
+            expect(output).toContain("no");
         });
     });
 });

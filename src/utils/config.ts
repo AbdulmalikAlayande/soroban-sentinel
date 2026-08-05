@@ -47,6 +47,13 @@ export interface SorokeepConfig {
      */
     feeSponsorSecret?: string;
 
+    /** SMTP configuration for email alert delivery. */
+    smtp?: {
+        host: string;
+        port: number;
+        user: string;
+        pass: string;
+    };
 }
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -104,6 +111,7 @@ export function loadConfig(customPath?: string): SorokeepConfig {
 
             vault,
             feeSponsorSecret: typeof parsed.feeSponsorSecret === "string" ? parsed.feeSponsorSecret : undefined,
+            smtp: parseSmtpConfig(parsed.smtp),
 
         };
     } catch (err: unknown) {
@@ -141,3 +149,19 @@ export function getSorokeepDir(): string {
   return SOROKEEP_DIR;
 }
 
+// ─── Internal helpers ────────────────────────────────────────────────────────
+
+function parseSmtpConfig(raw: unknown): SorokeepConfig["smtp"] {
+    if (!raw || typeof raw !== "object") return undefined;
+    const s = raw as Record<string, unknown>;
+    const port = typeof s.port === "number" ? s.port : typeof s.port === "string" ? Number(s.port) : NaN;
+    if (
+        typeof s.host === "string" && s.host.length > 0 &&
+        !isNaN(port) && port > 0 &&
+        typeof s.user === "string" && s.user.length > 0 &&
+        typeof s.pass === "string" && s.pass.length > 0
+    ) {
+        return { host: s.host, port, user: s.user, pass: s.pass };
+    }
+    return undefined;
+}

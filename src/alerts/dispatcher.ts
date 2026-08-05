@@ -4,6 +4,8 @@ import { buildAlertEvent, type AlertEvent, type AlertChannel } from "./types.js"
 import { registerBuiltinChannels } from "./builtins.js";
 import { listAlertChannels } from "./registry.js";
 import { getLogger } from "../logging/index.js";
+import { getAlertChannel } from "./registry.js";
+import "./builtins.js"; // Ensure builtins are registered
 
 const logger = getLogger().child({ component: "AlertDispatcher" });
 
@@ -101,6 +103,15 @@ export async function deliverPendingAlerts(
     logger.debug(`Dispatcher: ${pending.length} undelivered alert(s) for network ${network}`);
 
     for (const alert of pending) {
+        const channelDef = getAlertChannel(alert.channelType);
+        const maxRetries = channelDef?.maxRetries ?? MAX_RETRY_COUNT;
+
+        if (alert.retryCount >= maxRetries) {
+            // Already abandoned in a previous cycle, but DB query still fetched it 
+            // because DB uses the global MAX_RETRY_COUNT. Just ignore it.
+            continue;
+        }
+
         result.attempted++;
 
         // ── Quiet-hours check ───────────────────────────────────────────────
@@ -154,7 +165,7 @@ export async function deliverPendingAlerts(
             incrementRetryCount(db, alert.alertFiredId);
             const nextRetry = alert.retryCount + 1;
 
-            if (nextRetry >= MAX_RETRY_COUNT) {
+            if (nextRetry >= maxRetries) {
                 result.abandoned++;
                 logger.error(
                     `Alert abandoned after ${MAX_RETRY_COUNT} retries — id: ${alert.alertFiredId}, channel: ${alert.channelType}, error: ${message}`,

@@ -5,7 +5,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { getDatabase, vacuumDatabase } from "../db/database.js";
 import { Migrator } from "../db/migrator.js";
-import { exportDatabase, importDatabase, type DatabaseBackup } from "../db/backup.js";
+import { exportDatabase, importDatabase, isDatabaseEmpty, type DatabaseBackup } from "../db/backup.js";
 import { getLogger } from "../logging/index.js";
 
 const logger = getLogger().child({ component: "DbCommand" });
@@ -38,12 +38,20 @@ export function registerDbCommand(program: Command): void {
     dbCommand
         .command("import <file>")
         .description("Import tracked database tables from a JSON backup file")
-        .action((file: string) => {
+        .option("-f, --force", "Force import into a non-empty database (replaces existing data)")
+        .option("-m, --merge", "Merge imported data with existing data instead of replacing it")
+        .action((file: string, options: { force?: boolean; merge?: boolean }) => {
             try {
                 const db = getDatabase();
                 const raw = fs.readFileSync(file, "utf-8");
                 const backup = JSON.parse(raw) as DatabaseBackup;
-                importDatabase(db, backup);
+
+                if (!isDatabaseEmpty(db) && !options.force && !options.merge) {
+                    throw new Error("Target database is not empty. Use --force to replace existing data or --merge to merge data.");
+                }
+
+                const mode = options.merge ? "merge" : "replace";
+                importDatabase(db, backup, { mode });
                 console.log(chalk.green("Database import complete"));
             } catch (error: unknown) {
                 const message = error instanceof Error ? error.message : String(error);

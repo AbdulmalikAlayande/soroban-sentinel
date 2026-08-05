@@ -80,6 +80,7 @@ export function registerBudgetCommand(program: Command): void {
             `).run(pool.id, options.contract);
             console.log(chalk.green(`${formatContractID(options.contract)} assigned to shared budget pool "${options.pool}".`));
         });
+
     budgetCmd
         .command("status <contractId>")
         .description("View current budget status and spend progress")
