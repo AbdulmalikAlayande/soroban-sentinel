@@ -21,6 +21,9 @@ function buildDedupKey(event: AlertEvent): string {
     if (event.type === "state_changed") {
         return `sorokeep:${event.network}:${event.contractId}:state:${event.entry.keyXdr}:${event.diff.diffType}`;
     }
+    if (event.type === "budget_exhausted") {
+        return `sorokeep:${event.network}:${event.contractId}:budget:${event.budget.billingCycle}`;
+    }
     const entryKey = event.entry.keyXdr || event.entry.type;
     return `sorokeep:${event.network}:${event.contractId}:${entryKey}:${event.threshold.configuredLedgers}`;
 }
@@ -40,6 +43,10 @@ function buildSummary(event: AlertEvent): string {
     if (event.type === "state_changed") {
         const diffLabel = event.diff.diffType.charAt(0).toUpperCase() + event.diff.diffType.slice(1);
         return `Sorokeep alert: ${contractDisplay} state ${event.diff.diffType} detected for entry ${event.entry.label ?? event.entry.type}.`;
+    }
+
+    if (event.type === "budget_exhausted") {
+        return event.message;
     }
 
     return `Sorokeep alert resolved: ${contractDisplay} has recovered above threshold.`;
@@ -74,6 +81,18 @@ function buildCustomDetails(event: AlertEvent): Record<string, unknown> {
             timestamp: event.timestamp,
         };
     }
+    if (event.type === "budget_exhausted") {
+        return {
+            contractId: event.contractId,
+            contractName: event.contractName,
+            network: event.network,
+            billingCycle: event.budget.billingCycle,
+            limitXlm: event.budget.limitXlm,
+            spentXlm: event.budget.spentXlm,
+            estimatedFeeXlm: event.budget.estimatedFeeXlm,
+            timestamp: event.timestamp,
+        };
+    }
     return {
         contractId: event.contractId,
         contractName: event.contractName,
@@ -92,15 +111,15 @@ function buildCustomDetails(event: AlertEvent): Record<string, unknown> {
 function buildPayload(event: AlertEvent): unknown {
     return {
         routing_key: "",
-        event_action: event.type === "threshold_crossed" || event.type === "resource_alert" || event.type === "state_changed" ? "trigger" : "resolve",
+        event_action: event.type === "threshold_crossed" || event.type === "resource_alert" || event.type === "state_changed" || event.type === "budget_exhausted" ? "trigger" : "resolve",
         dedup_key: buildDedupKey(event),
         payload: {
             summary: buildSummary(event),
             source: event.contractId,
             severity: mapSeverity(event),
-            component: event.type === "resource_alert" ? "resource_monitor" : event.type === "state_changed" ? "state_monitor" : (event.entry.label ?? event.entry.type),
+            component: event.type === "resource_alert" ? "resource_monitor" : event.type === "state_changed" ? "state_monitor" : event.type === "budget_exhausted" ? "budget_monitor" : (event.entry.label ?? event.entry.type),
             group: event.network,
-            class: event.type === "resource_alert" ? `resource:${event.resource.type}` : event.type === "state_changed" ? `state:${event.diff.diffType}` : `threshold:${event.threshold.configuredLedgers}`,
+            class: event.type === "resource_alert" ? `resource:${event.resource.type}` : event.type === "state_changed" ? `state:${event.diff.diffType}` : event.type === "budget_exhausted" ? `budget:${event.budget.billingCycle}` : `threshold:${event.threshold.configuredLedgers}`,
             custom_details: buildCustomDetails(event),
         },
     };

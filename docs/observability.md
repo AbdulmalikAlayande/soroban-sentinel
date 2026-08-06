@@ -123,6 +123,8 @@ Once a bundled dashboard ships, this section will be updated with the import ste
 
 ### Example Alert Rules
 
+A ready-to-use rules file with these examples (plus a couple more) lives at [`devops/prometheus/sorokeep-alerts.yml`](../devops/prometheus/sorokeep-alerts.yml) — copy it directly or use it as a starting point.
+
 Create `sorokeep_alerts.yml`:
 
 ```yaml

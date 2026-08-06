@@ -13,6 +13,7 @@ import {
     getBudget,
     addBudgetSpent,
     countExtensionsInLastHour,
+    getAlertConfigsForContract,
 
 } from "../db/repositories.js";
 import { ChannelAccountPool } from "./channels.js";
@@ -20,6 +21,8 @@ import { getLogger } from "../logging/index.js";
 import { formatSecretKey } from "../utils/formatting.js";
 import { VaultResolver } from "./vault.js";
 import { loadConfig } from "../utils/config.js";
+import { buildBudgetExhaustedAlertEvent } from "../alerts/types.js";
+import { deliverSingleAlert } from "../alerts/dispatcher.js";
 
 const logger = getLogger().child({ component: "Extension" });
 
@@ -395,6 +398,23 @@ export async function runAutoExtensions(
                     
                     estimatedFeeXlm = (simResult.estimatedFee || 0) / 10000000;
                     if (budget.spent_xlm + estimatedFeeXlm > budget.limit_xlm) {
+                        const budgetEvent = buildBudgetExhaustedAlertEvent({
+                            contractId: contract.id,
+                            contractName: contract.name,
+                            network,
+                            billingCycle,
+                            limitXlm: budget.limit_xlm,
+                            spentXlm: budget.spent_xlm,
+                            estimatedFeeXlm,
+                        });
+                        for (const cfg of getAlertConfigsForContract(db, contract.id)) {
+                            deliverSingleAlert(cfg.channel_type, cfg.channel_target, budgetEvent, cfg.webhook_secret)
+                                .catch((err: unknown) => {
+                                    logger.warn(
+                                        `Budget-exhausted alert delivery failed for config ${cfg.id}: ${err instanceof Error ? err.message : String(err)}`,
+                                    );
+                                });
+                        }
                         throw new Error(`budget limit exceeded. Estimated cost: ${estimatedFeeXlm} XLM, Remaining: ${budget.limit_xlm - budget.spent_xlm} XLM`);
                     }
                 }
