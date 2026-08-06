@@ -31,6 +31,9 @@ function buildAlias(event: AlertEvent): string {
     if (event.type === "state_changed") {
         return `sorokeep:${event.network}:${event.contractId}:state:${event.entry.keyXdr}:${event.diff.diffType}`;
     }
+    if (event.type === "budget_exhausted") {
+        return `sorokeep:${event.network}:${event.contractId}:budget:${event.budget.billingCycle}`;
+    }
     // threshold_crossed | alert_resolved — both keyed on the same entry identity
     const entryKey = event.entry.keyXdr || event.entry.type;
     return `sorokeep:${event.network}:${event.contractId}:${entryKey}:${event.threshold.configuredLedgers}`;
@@ -52,6 +55,10 @@ function buildMessage(event: AlertEvent): string {
 
     if (event.type === "state_changed") {
         return `Sorokeep alert: ${contractDisplay} state ${event.diff.diffType} detected for entry ${event.entry.label ?? event.entry.type}.`;
+    }
+
+    if (event.type === "budget_exhausted") {
+        return event.message;
     }
 
     // alert_resolved — used only in the close-alert body note, not the create path
@@ -83,6 +90,19 @@ function buildDetails(event: AlertEvent): Record<string, string> {
             diffType: event.diff.diffType,
             oldValueXdr: String(event.diff.oldValueXdr ?? ""),
             newValueXdr: String(event.diff.newValueXdr ?? ""),
+            timestamp: event.timestamp,
+        };
+    }
+
+    if (event.type === "budget_exhausted") {
+        return {
+            contractId: event.contractId,
+            contractName: String(event.contractName ?? ""),
+            network: event.network,
+            billingCycle: event.budget.billingCycle,
+            limitXlm: String(event.budget.limitXlm),
+            spentXlm: String(event.budget.spentXlm),
+            estimatedFeeXlm: String(event.budget.estimatedFeeXlm),
             timestamp: event.timestamp,
         };
     }

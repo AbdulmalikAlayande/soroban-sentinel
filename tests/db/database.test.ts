@@ -211,4 +211,29 @@ describe("Database core functions", () => {
 
         });
     });
+
+    describe("CRLF-safe SQL comment stripping", () => {
+        // Mirrors the exact regex src/db/database.ts's SCHEMA constant uses to strip
+        // `-- comment` lines. Not exported from there, so pinned here for regression
+        // coverage — keep in sync if that pattern ever changes.
+        const stripComments = (sql: string) => sql.replace(/--[^\n]*\n/g, "");
+
+        it("strips a full-line SQL comment terminated by CRLF", () => {
+            const crlfSql = "-- comment line\r\nCREATE TABLE test_crlf (id INTEGER);\r\n";
+            const stripped = stripComments(crlfSql);
+            expect(stripped).not.toContain("comment line");
+            expect(stripped).toContain("CREATE TABLE test_crlf (id INTEGER);");
+        });
+
+        it("demonstrates the bug this pattern fixes: a `.`-based pattern fails on CRLF", () => {
+            // JS's `.` excludes all line terminators, including `\r`. On a CRLF-terminated
+            // comment line, this pattern stops one character short of the `\n` and never
+            // matches, silently leaving the comment (and, in the original bug, everything
+            // SQLite parses after it as a `--` comment) in place.
+            const buggyStripComments = (sql: string) => sql.replace(/--.*\n/g, "");
+            const crlfSql = "-- comment line\r\nCREATE TABLE test_crlf (id INTEGER);\r\n";
+            const stripped = buggyStripComments(crlfSql);
+            expect(stripped).toContain("comment line");
+        });
+    });
 });

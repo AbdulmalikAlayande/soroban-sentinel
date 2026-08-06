@@ -30,7 +30,7 @@ export function getTemplateContext(event: AlertEvent) {
     if (isResourceAlert) {
         resourceLabel = event.resource.type === "cpu" ? "CPU" : "Memory";
         resourceUnit = event.resource.type === "cpu" ? "instructions" : "bytes";
-    } else {
+    } else if ("entry" in event) {
         entryLabel = event.entry.label ?? event.entry.type;
     }
 

@@ -157,7 +157,7 @@ export const registerWatchCommand = (program: Command): void => {
               "' to enable auto-extension.",
           ),
         );
-      } catch (error: any) {
+      } catch (error: unknown) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
         logger.error("Watch command failed", { error: errorMessage });
@@ -206,7 +206,7 @@ export const registerWatchCommand = (program: Command): void => {
             }
           );
         }
-      } catch (error: any) {
+      } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         logger.error("Unwatch command failed", { error: errorMessage });
         console.log(chalk.red(`Failed to unwatch contract: ${errorMessage}`));

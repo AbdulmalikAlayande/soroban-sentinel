@@ -1078,6 +1078,9 @@ Track overall progress on the [Sorokeep Roadmap board](https://github.com/Abdulm
 
 - Prometheus `/metrics` endpoint for teams with existing observability stacks — see [Observability Setup Guide](docs/observability.md)
 
+
+- Prometheus `/metrics` endpoint for teams with existing observability stacks — see [Observability Setup Guide](docs/observability.md); an [example Grafana dashboard](devops/grafana/sorokeep-dashboard.json) is included
+
 - Reusable GitHub Action wrapping `sorokeep check` for CI-integrated TTL checks
 - Web dashboard for visual TTL monitoring
 - Multi-contract batch operations

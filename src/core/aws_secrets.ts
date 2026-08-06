@@ -1,3 +1,5 @@
+import type { SecretsManagerClientConfig } from "@aws-sdk/client-secrets-manager";
+
 export interface AWSSecretsResolverConfig {
     region?: string;
     profile?: string;
@@ -6,7 +8,7 @@ export interface AWSSecretsResolverConfig {
 export class AWSSecretsResolver {
     private region: string;
     private profile?: string;
-    private clientPromise?: Promise<any>;
+    private clientPromise?: Promise<unknown>;
 
     constructor(config: AWSSecretsResolverConfig = {}) {
         this.region = config.region || "us-east-1";
@@ -18,13 +20,13 @@ export class AWSSecretsResolver {
             this.clientPromise = (async () => {
                 const { SecretsManagerClient } = await import("@aws-sdk/client-secrets-manager");
                 
-                const clientConfig: any = { region: this.region };
+                const clientConfig: Record<string, unknown> = { region: this.region };
                 if (this.profile) {
                     const { fromIni } = await import("@aws-sdk/credential-providers");
                     clientConfig.credentials = fromIni({ profile: this.profile });
                 }
 
-                return new SecretsManagerClient(clientConfig);
+                return new SecretsManagerClient(clientConfig as SecretsManagerClientConfig);
             })();
         }
         return this.clientPromise;
@@ -32,10 +34,10 @@ export class AWSSecretsResolver {
 
     public async resolveKey(secretId: string): Promise<string> {
         const client = await this.getClient();
-        const { GetSecretValueCommand } = await import("@aws-sdk/client-secrets-manager");
+        const { GetSecretValueCommand, SecretsManagerClient } = await import("@aws-sdk/client-secrets-manager");
 
         const command = new GetSecretValueCommand({ SecretId: secretId });
-        const response = await client.send(command);
+        const response = await (client as InstanceType<typeof SecretsManagerClient>).send(command);
 
         if (!response.SecretString) {
             throw new Error(`SecretString is empty for secret: ${secretId}`);
