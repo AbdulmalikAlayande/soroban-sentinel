@@ -24,7 +24,7 @@ export const registerResumeCommand = (program: Command): void => {
 
                 setContractActiveStatus(db, contractId, true);
                 console.log(chalk.green(`Successfully resumed monitoring for ${formatContractID(contractId)}.`));
-            } catch (error: any) {
+            } catch (error: unknown) {
                 const errorMessage = error instanceof Error ? error.message : String(error);
                 logger.error("Resume command failed", { error: errorMessage });
                 console.log(chalk.red(`Failed to resume contract: ${errorMessage}`));

@@ -27,6 +27,7 @@ export function createProgram() {
 
 import { registerMetricsCommand } from "../commands/metrics.js";
 import { registerAuditLogCommand } from "../commands/audit-log.js";
+import { registerInitCommand } from "../commands/init.js";
 
 /**
  * Convention a `--channel-plugin` package must follow: default-export a
@@ -113,6 +114,7 @@ export function createProgram() {
 
   registerMetricsCommand(program);
   registerAuditLogCommand(program);
+  registerInitCommand(program);
 
 
   return program;

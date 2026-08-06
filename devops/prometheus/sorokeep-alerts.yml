@@ -1,0 +1,55 @@
+groups:
+  - name: sorokeep-alerts
+    rules:
+      # TTL-remaining below a threshold (adjust the threshold, e.g., 17280 ledgers is roughly 1 day)
+      - alert: SorokeepEntryTTLLow
+        expr: sorokeep_entry_ttl_remaining_ledgers < 17280
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sorokeep entry TTL is running low"
+          description: "Entry {{ $labels.contract_id }}/{{ $labels.entry_type }} TTL remaining ledgers ({{ $value }}) is below the safe threshold."
+
+      # Budget-remaining near zero (adjust the threshold based on your typical monthly budget and usage)
+      - alert: SorokeepBudgetNearZero
+        expr: sorokeep_budget_remaining_xlm < 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sorokeep contract budget is near zero"
+          description: "Remaining XLM budget for contract {{ $labels.contract_id }} ({{ $value }}) has fallen below the critical threshold."
+
+      # Extension cost rate spike (adjust the rate threshold to your normal spend pattern)
+      - alert: SorokeepExtensionCostSpike
+        expr: rate(sorokeep_extension_cost_xlm_total[1h]) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High extension cost rate detected"
+          description: "Contract {{ $labels.contract_id }} extension cost rate is {{ $value }} XLM/hour — investigate unusual extension activity."
+
+      # Daemon cycle duration exceeding the poll interval — histogram_quantile over the
+      # _bucket series, since sorokeep_daemon_cycle_duration_seconds is a Histogram, not
+      # a plain gauge (adjust both the quantile and the seconds threshold to your poll interval).
+      - alert: SorokeepDaemonCycleTooLong
+        expr: histogram_quantile(0.95, rate(sorokeep_daemon_cycle_duration_seconds_bucket[5m])) > 60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sorokeep daemon cycle is taking too long on {{ $labels.network }}"
+          description: "The p95 daemon cycle duration ({{ $value }}s) exceeds the configured threshold — the fleet may have grown too large for the poll interval."
+
+      # Daemon falling behind: scheduled ticks skipped because the previous cycle was
+      # still in flight when the next one was due.
+      - alert: SorokeepDaemonCyclesSkipped
+        expr: increase(sorokeep_daemon_cycles_skipped_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sorokeep daemon cycles are being skipped on {{ $labels.network }}"
+          description: "The daemon has skipped {{ $value }} scheduled cycle(s) in the last 10 minutes."

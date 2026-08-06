@@ -12,7 +12,9 @@ function severityEmoji(event: AlertEvent): string {
     return "⚠️";
 }
 
-function buildBlocks(event: AlertEvent): any[] {
+type SlackBlock = Record<string, unknown>;
+
+function buildBlocks(event: AlertEvent): SlackBlock[] {
     const icon = severityEmoji(event);
     const contractDisplay = event.contractName ?? event.contractId;
 
@@ -25,6 +27,8 @@ function buildBlocks(event: AlertEvent): any[] {
     } else if (event.type === "state_changed") {
         const diffLabel = event.diff.diffType.charAt(0).toUpperCase() + event.diff.diffType.slice(1);
         status = `State ${diffLabel}`;
+    } else if (event.type === "budget_exhausted") {
+        status = "Budget Exhausted";
     } else {
         status = "Alert Resolved";
     }
@@ -38,7 +42,7 @@ function buildBlocks(event: AlertEvent): any[] {
         },
     };
 
-    let details: any;
+    let details: SlackBlock;
     if (event.type === "resource_alert") {
         const usageStr = event.resource.currentUsage.toLocaleString();
         const limitStr = event.resource.limit.toLocaleString();
@@ -63,6 +67,16 @@ function buildBlocks(event: AlertEvent): any[] {
                 { type: "mrkdwn", text: `*Change Type:*\n${event.diff.diffType}` },
                 { type: "mrkdwn", text: `*Old Value:*\n\`${oldVal}\`` },
                 { type: "mrkdwn", text: `*New Value:*\n\`${newVal}\`` },
+            ],
+        };
+    } else if (event.type === "budget_exhausted") {
+        details = {
+            type: "section",
+            fields: [
+                { type: "mrkdwn", text: `*Network:*\n${event.network}` },
+                { type: "mrkdwn", text: `*Billing Cycle:*\n${event.budget.billingCycle}` },
+                { type: "mrkdwn", text: `*Budget:*\n${event.budget.spentXlm.toFixed(7)} / ${event.budget.limitXlm.toFixed(7)} XLM spent` },
+                { type: "mrkdwn", text: `*Blocked Extension Cost:*\n${event.budget.estimatedFeeXlm.toFixed(7)} XLM` },
             ],
         };
     } else {
@@ -130,7 +144,7 @@ export class SlackChannel {
         logger.debug(`Sending Slack alert to webhook`, { type: event.type, contractId: event.contractId });
 
         const customMessage = renderAlertTemplate("slack", event);
-        let payload: { text?: string; blocks?: any[] };
+        let payload: { text?: string; blocks?: SlackBlock[] };
 
         if (customMessage !== null) {
             try {
