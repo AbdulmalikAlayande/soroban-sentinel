@@ -25,6 +25,8 @@ function buildBlocks(event: AlertEvent): any[] {
     } else if (event.type === "state_changed") {
         const diffLabel = event.diff.diffType.charAt(0).toUpperCase() + event.diff.diffType.slice(1);
         status = `State ${diffLabel}`;
+    } else if (event.type === "budget_exhausted") {
+        status = "Budget Exhausted";
     } else {
         status = "Alert Resolved";
     }
@@ -63,6 +65,16 @@ function buildBlocks(event: AlertEvent): any[] {
                 { type: "mrkdwn", text: `*Change Type:*\n${event.diff.diffType}` },
                 { type: "mrkdwn", text: `*Old Value:*\n\`${oldVal}\`` },
                 { type: "mrkdwn", text: `*New Value:*\n\`${newVal}\`` },
+            ],
+        };
+    } else if (event.type === "budget_exhausted") {
+        details = {
+            type: "section",
+            fields: [
+                { type: "mrkdwn", text: `*Network:*\n${event.network}` },
+                { type: "mrkdwn", text: `*Billing Cycle:*\n${event.budget.billingCycle}` },
+                { type: "mrkdwn", text: `*Budget:*\n${event.budget.spentXlm.toFixed(7)} / ${event.budget.limitXlm.toFixed(7)} XLM spent` },
+                { type: "mrkdwn", text: `*Blocked Extension Cost:*\n${event.budget.estimatedFeeXlm.toFixed(7)} XLM` },
             ],
         };
     } else {
