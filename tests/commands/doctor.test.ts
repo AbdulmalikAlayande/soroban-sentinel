@@ -12,12 +12,11 @@ vi.mock("../../src/core/doctor.js", () => ({
 import { registerDoctorCommand } from "../../src/commands/doctor";
 
 describe("doctor command", () => {
-  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
   let originalExitCode: number;
 
   beforeEach(() => {
     mockRunDiagnostics.mockReset();
-    consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
     originalExitCode = process.exitCode;
   });
 

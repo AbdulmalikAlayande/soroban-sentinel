@@ -1,7 +1,7 @@
 import { formatTimeToCloseLedger } from "../utils/formatting.js";
 
 export type AlertSeverity = "critical" | "warning" | "info";
-export type AlertEventType = "threshold_crossed" | "alert_resolved" | "resource_alert" | "state_changed";
+export type AlertEventType = "threshold_crossed" | "alert_resolved" | "resource_alert" | "state_changed" | "budget_exhausted";
 
 export interface TTLAlertEvent {
     type: "threshold_crossed" | "alert_resolved";
@@ -73,7 +73,29 @@ export interface StateChangeAlertEvent {
     timestamp: string;
 }
 
-export type AlertEvent = TTLAlertEvent | ResourceAlertEvent | StateChangeAlertEvent;
+export interface BudgetExhaustedAlertEvent {
+    type: "budget_exhausted";
+    severity: "critical";
+    contractId: string;
+    contractName: string | null;
+    network: string;
+    budget: {
+        /** Billing cycle in YYYY-MM format. */
+        billingCycle: string;
+        /** Configured monthly limit in XLM. */
+        limitXlm: number;
+        /** Amount already spent this cycle in XLM. */
+        spentXlm: number;
+        /** Estimated fee of the blocked extension in XLM. */
+        estimatedFeeXlm: number;
+    };
+    /** Human-readable summary of why the extension was blocked. */
+    message: string;
+    /** ISO 8601 timestamp. */
+    timestamp: string;
+}
+
+export type AlertEvent = TTLAlertEvent | ResourceAlertEvent | StateChangeAlertEvent | BudgetExhaustedAlertEvent;
 
 export interface AlertChannel {
     send(target: string, event: AlertEvent, secret?: string | null): Promise<void>;
@@ -193,6 +215,41 @@ export function buildStateChangeAlertEvent(opts: {
             newValueXdr: opts.newValueXdr,
         },
         detectedAtLedger: opts.detectedAtLedger,
+        timestamp: new Date().toISOString(),
+    };
+}
+
+/**
+ * Build a budget-exhausted AlertEvent from raw data.
+ * Fired when a contract's projected spend would exceed its configured monthly limit,
+ * blocking an auto-extension transaction.
+ */
+export function buildBudgetExhaustedAlertEvent(opts: {
+    contractId: string;
+    contractName: string | null;
+    network: string;
+    billingCycle: string;
+    limitXlm: number;
+    spentXlm: number;
+    estimatedFeeXlm: number;
+}): BudgetExhaustedAlertEvent {
+    const remaining = opts.limitXlm - opts.spentXlm;
+    return {
+        type: "budget_exhausted",
+        severity: "critical",
+        contractId: opts.contractId,
+        contractName: opts.contractName,
+        network: opts.network,
+        budget: {
+            billingCycle: opts.billingCycle,
+            limitXlm: opts.limitXlm,
+            spentXlm: opts.spentXlm,
+            estimatedFeeXlm: opts.estimatedFeeXlm,
+        },
+        message:
+            `Auto-extension blocked: estimated fee ${opts.estimatedFeeXlm.toFixed(7)} XLM ` +
+            `exceeds remaining budget ${remaining.toFixed(7)} XLM ` +
+            `(limit: ${opts.limitXlm.toFixed(7)} XLM, spent: ${opts.spentXlm.toFixed(7)} XLM).`,
         timestamp: new Date().toISOString(),
     };
 }

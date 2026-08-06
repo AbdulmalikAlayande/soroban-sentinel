@@ -2,7 +2,7 @@ import { xdr, Address, scValToNative } from '@stellar/stellar-sdk';
 
 export interface DecodedLedgerKey {
   contractId: string;
-  symbol: any;
+  symbol: unknown;
   durability: string;
 }
 
@@ -19,7 +19,7 @@ export function decodeLedgerKey(base64Key: string): DecodedLedgerKey {
   const contractId = contractAddress.toString();
 
   const scValKey = contractData.key();
-  let symbol: any;
+  let symbol: unknown;
   if (scValKey.switch() === xdr.ScValType.scvLedgerKeyContractInstance()) {
     symbol = 'ContractInstance';
   } else {

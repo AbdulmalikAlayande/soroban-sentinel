@@ -71,12 +71,12 @@ export function registerInspectCommand(program: Command): void {
                             console.log(formattedJson);
                         }
                         console.log(
-                            `    TTL:        ${item.remainingTTL.toLocaleString()} ledgers (${item.approximateTimeRemaining})  ${statusIndicator(item.status as any)}`,
+                            `    TTL:        ${item.remainingTTL.toLocaleString()} ledgers (${item.approximateTimeRemaining})  ${statusIndicator(item.status as "ok" | "warning" | "critical" | "expired")}`,
                         );
                     }
                     console.log();
                 }
-            } catch (error: any) {
+            } catch (error: unknown) {
                 const msg = error instanceof Error ? error.message : String(error);
                 spinner.fail(chalk.red("Error"));
                 console.error(chalk.red(`Error: ${msg}`));
