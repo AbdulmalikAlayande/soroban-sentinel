@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type Database from "better-sqlite3";
+import Database from "better-sqlite3";
+import type DatabaseType from "better-sqlite3";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,7 +13,7 @@ const { mockGetDatabase } = vi.hoisted(() => ({
   mockGetDatabase: vi.fn(),
 }));
 
-let mockDb: Database.Database;
+let mockDb: DatabaseType.Database;
 let tempDir: string;
 let originalSlackToken: string | undefined;
 let originalTelegramToken: string | undefined;
@@ -95,19 +96,64 @@ describe("runDiagnostics", () => {
     expect(credentialCheck?.detail).toContain("SOROKEEP_SLACK_TOKEN");
   });
 
+  it("reports a schema failure when the database schema is outdated", async () => {
+    const dbPath = path.join(tempDir, "sorokeep.db");
+    const rawDb = new Database(dbPath);
+    rawDb.exec("CREATE TABLE contracts (id TEXT PRIMARY KEY, name TEXT);");
+    rawDb.close();
+
+    const results = await runDiagnostics();
+    const schemaCheck = results.find((result) => result.check === "schema");
+
+    expect(schemaCheck).toBeDefined();
+    expect(schemaCheck?.status).toBe("fail");
+    expect(schemaCheck?.detail).toContain("outdated");
+    expect(schemaCheck?.detail).toContain("poll_interval_seconds");
+  });
+
   it("reports a schema failure when the database cannot be opened", async () => {
+    const dbPath = path.join(tempDir, "sorokeep.db");
+    fs.writeFileSync(dbPath, "this is not a sqlite database");
+
+    const results = await runDiagnostics();
+    const schemaCheck = results.find((result) => result.check === "schema");
+
+    expect(schemaCheck).toBeDefined();
+    expect(schemaCheck?.status).toBe("fail");
+  });
+
+  it("reports a warning when no database has been initialized yet", async () => {
+    const results = await runDiagnostics();
+    const schemaCheck = results.find((result) => result.check === "schema");
+
+    expect(schemaCheck).toBeDefined();
+    expect(schemaCheck?.status).toBe("warn");
+    expect(schemaCheck?.detail).toContain("not yet initialized");
+  });
+
+  it("reports a failure when the data directory path is not a directory", async () => {
+    const filePath = path.join(tempDir, "not-a-directory");
+    fs.writeFileSync(filePath, "plain file");
+    vi.mocked(config.getSorokeepDir).mockReturnValue(filePath);
+
+    const results = await runDiagnostics();
+    const dataDirCheck = results.find((result) => result.check === "data directory");
+
+    expect(dataDirCheck).toBeDefined();
+    expect(dataDirCheck?.status).toBe("fail");
+    expect(dataDirCheck?.detail).toContain("Not a directory");
+  });
+
+  it("reports the credential check as skipped when the database cannot be opened", async () => {
     mockGetDatabase.mockImplementation(() => {
       throw new Error("sqlite open failed");
     });
 
     const results = await runDiagnostics();
-    const schemaCheck = results.find((result) => result.check === "schema");
     const credentialCheck = results.find((result) => result.check === "alert-channel credentials");
 
-    expect(schemaCheck).toBeDefined();
-    expect(schemaCheck?.status).toBe("fail");
-    expect(schemaCheck?.detail).toContain("sqlite open failed");
+    expect(credentialCheck).toBeDefined();
     expect(credentialCheck?.status).toBe("warn");
-    expect(results.some((result) => result.status === "fail")).toBe(true);
+    expect(credentialCheck?.detail).toContain("sqlite open failed");
   });
 });
