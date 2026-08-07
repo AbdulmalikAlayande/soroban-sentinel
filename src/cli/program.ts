@@ -24,6 +24,7 @@ import { registerDoctorCommand } from "../commands/doctor.js";
 import { registerInitCommand } from "../commands/init.js";
 import { registerContractsCommand } from "../commands/contracts.js";
 import { registerTagCommand } from "../commands/tag.js";
+import { registerFleetCommand } from "../commands/fleet.js";
 import { setYesOverride } from "../utils/prompt.js";
 
 /**
@@ -113,6 +114,7 @@ export function createProgram() {
   registerInitCommand(program);
   registerContractsCommand(program);
   registerTagCommand(program);
+  registerFleetCommand(program);
 
   return program;
 }
