@@ -2,7 +2,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { getDatabase } from "../db/database.js";
 import { getExtensionCosts, calculateFeeAdjustedProjection, getMultiPeriodCosts, type MultiPeriodCostsData } from "../core/costs.js";
-import { getEntriesForContract } from "../db/repositories.js";
+import { getEntriesForContract, getFleetCostRollup, type FleetCostRollup } from "../db/repositories.js";
 import {
     projectRentWindows,
     DEFAULT_FEE_PER_RENT_1KB,
@@ -99,13 +99,39 @@ export function formatForecastedRentEntry(
     return lines;
 }
 
+/**
+ * Print a fleet-level cost rollup table to stdout.
+ */
+function printFleetCostTable(
+    rollup: FleetCostRollup,
+    period: { days: number | null; label: string },
+    tag?: string,
+): void {
+    const tagLabel = tag ? ` [tag: ${tag}]` : "";
+    console.log(`\n${chalk.bold("Fleet Extension Costs")}${tagLabel} (${period.label})`);
+    console.log(`  Contracts: ${chalk.cyan(rollup.contract_count.toString())}`);
+
+    console.log(`\n  ${chalk.bold("Summary")}`);
+    console.log(`  Total extensions: ${chalk.cyan(rollup.total_extensions.toString())}`);
+    console.log(`  Total cost:       ${chalk.cyan(rollup.total_cost_xlm.toFixed(7))} XLM`);
+
+    console.log(`\n  ${chalk.bold("By Entry Type")}`);
+    for (const [type, data] of Object.entries(rollup.byType)) {
+        console.log(
+            `    ${type}: ${data.count} extensions (${data.cost_xlm.toFixed(7)} XLM)`,
+        );
+    }
+}
+
 // ─── Command registration ─────────────────────────────────────────────────────
 
 
 export function registerCostsCommand(program: Command): void {
     program
-        .command("costs <contractId>")
-        .description("Show rent costs and extension history for a contract")
+        .command("costs [contractId]")
+        .description("Show rent costs and extension history for a contract (or the whole fleet with --fleet)")
+        .option("--fleet", "Show aggregated costs across all monitored contracts")
+        .option("--tag <tag>", "Filter fleet rollup to contracts with this tag (requires --fleet)")
         .option("--period <days>", "Show costs for the last N days", "30")
         .option("--all", "Show all extension history")
         .option("--json", "Output machine-readable JSON")
@@ -113,9 +139,65 @@ export function registerCostsCommand(program: Command): void {
             "--monthly-budget <xlm>",
             "Monthly budget in XLM — highlight forecast windows that exceed this limit",
         )
-        .action(async (contractId: string, options: { period?: string; all?: boolean; json?: boolean; monthlyBudget?: string } = {}) => {
+        .action(async (contractId: string | undefined, options: { fleet?: boolean; tag?: string; period?: string; all?: boolean; json?: boolean; monthlyBudget?: string } = {}) => {
             options = options || {};
             try {
+                const db = getDatabase();
+
+                // ── Fleet mode ───────────────────────────────────────────────
+                if (options.fleet) {
+                    const fleetDays = options.all ? undefined : parseInt(options.period ?? "30", 10);
+
+                    if (fleetDays !== undefined && (!Number.isInteger(fleetDays) || fleetDays <= 0)) {
+                        if (options.json) {
+                            console.log(JSON.stringify({
+                                success: false,
+                                error: "invalid_period",
+                                period: options.period,
+                            }));
+                        } else {
+                            console.error(chalk.red("--period must be a positive integer number of days"));
+                        }
+                        process.exit(1);
+                        return;
+                    }
+
+                    const rollup = getFleetCostRollup(db, {
+                        tag: options.tag,
+                        days: fleetDays,
+                    });
+
+                    const periodLabel = options.all ? "all time" : `last ${fleetDays} days`;
+                    const period = { days: fleetDays ?? null, label: periodLabel };
+
+                    if (options.json) {
+                        console.log(JSON.stringify({
+                            fleet: true,
+                            tag: options.tag ?? null,
+                            period,
+                            total_extensions: rollup.total_extensions,
+                            total_cost_xlm: rollup.total_cost_xlm,
+                            contract_count: rollup.contract_count,
+                            byType: rollup.byType,
+                        }, null, 2));
+                        return;
+                    }
+
+                    printFleetCostTable(rollup, period, options.tag);
+                    return;
+                }
+
+                // ── Single-contract mode ─────────────────────────────────────
+                if (!contractId) {
+                    if (options.json) {
+                        console.log(JSON.stringify({ success: false, error: "missing_contract_id", message: "A contract ID is required unless --fleet is used." }));
+                    } else {
+                        console.error(chalk.red("A contract ID is required unless --fleet is used."));
+                    }
+                    process.exit(1);
+                    return;
+                }
+
                 const contractIdValidation = validateContractId(contractId);
                 if (!contractIdValidation.valid) {
                     if (options.json) {
@@ -127,7 +209,6 @@ export function registerCostsCommand(program: Command): void {
                     return;
                 }
 
-                const db = getDatabase();
                 const days = options.all ? undefined : parseInt(options.period ?? "30", 10);
 
                 if (days !== undefined && (!Number.isInteger(days) || days <= 0)) {
