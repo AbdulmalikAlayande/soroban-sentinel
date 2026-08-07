@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Command } from "commander";
+import stripAnsi from "strip-ansi";
 import type Database from "better-sqlite3";
 import { getDatabaseForTesting } from "../../src/db/database.js";
 import { registerCostsCommand } from "../../src/commands/costs.js";
@@ -8,6 +9,11 @@ import {
     upsertEntry,
     recordExtension,
 } from "../../src/db/repositories.js";
+
+const SNAPSHOT_TIMESTAMP = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/g;
+function normalizeOutput(output: string): string {
+    return stripAnsi(output).replace(SNAPSHOT_TIMESTAMP, "YYYY-MM-DD HH:MM:SS");
+}
 
 // ─── Shared mock state ────────────────────────────────────────────────────────
 
@@ -276,4 +282,118 @@ describe("costs command — Forecasted Rent section", () => {
         expect(allOutput).not.toMatch(/exceed|over|breach/i);
     });
 
+});
+
+// ─── Snapshot tests ────────────────────────────────────────────────────────
+
+describe("costs command — snapshot tests", () => {
+    let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+    let exitSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+        mockDb = getDatabaseForTesting();
+        consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+        exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+            throw new Error("process.exit called");
+        });
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    function seedOneExtension(costXlm = 0.001) {
+        insertContract(mockDb, {
+            id: CONTRACT_ID,
+            name: "test-contract",
+            network: "testnet",
+        });
+
+        upsertEntry(mockDb, {
+            contract_id: CONTRACT_ID,
+            entry_key_xdr: "AAAAA",
+            entry_type: "instance",
+            label: "instance",
+            live_until_ledger: 500000,
+            last_modified_ledger: 400000,
+            discovery_source: "deterministic",
+        });
+
+        const entryRow = mockDb
+            .prepare("SELECT id FROM contract_entries WHERE contract_id = ? LIMIT 1")
+            .get(CONTRACT_ID) as { id: number };
+
+        mockDb.prepare(`
+            INSERT INTO extension_history (contract_id, contract_entry_id, old_ttl_ledgers, new_ttl_ledgers, tx_hash, cost_xlm, mem_bytes, executed_at_ledger, executed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        `).run(CONTRACT_ID, entryRow.id, 10000, 20000, "abc123def456abc123def456abc123de", costXlm, 2048, 400001);
+
+        return entryRow.id;
+    }
+
+    it("matches snapshot for full output with extension history", async () => {
+        seedOneExtension();
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", CONTRACT_ID]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(normalizeOutput(allOutput)).toMatchSnapshot();
+    });
+
+    it("matches snapshot when no extensions exist", async () => {
+        insertContract(mockDb, {
+            id: CONTRACT_ID,
+            name: "empty-contract",
+            network: "testnet",
+        });
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", CONTRACT_ID]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(normalizeOutput(allOutput)).toMatchSnapshot();
+    });
+
+    it("matches snapshot with budget warning when forecast exceeds budget", async () => {
+        seedOneExtension(999);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync([
+            "node", "sorokeep", "costs", CONTRACT_ID,
+            "--monthly-budget", "0.001",
+        ]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(normalizeOutput(allOutput)).toMatchSnapshot();
+    });
+
+    it("matches snapshot with extension costs table (multi-period)", async () => {
+        seedOneExtension(0.001);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", CONTRACT_ID]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        const normalized = normalizeOutput(allOutput);
+
+        // Verify Extension Costs table structure
+        expect(normalized).toContain("Extension Costs");
+        expect(normalized).toContain("Period");
+        expect(normalized).toContain("Extensions");
+        expect(normalized).toContain("Total XLM");
+        expect(normalized).toContain("7 days");
+        expect(normalized).toContain("30 days");
+        expect(normalized).toContain("90 days");
+
+        expect(normalized).toMatchSnapshot();
+    });
 });
