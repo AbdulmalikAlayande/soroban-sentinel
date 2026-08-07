@@ -23,7 +23,7 @@
 
 <br />
 
-## Why This Exists
+## Why Sorokeep Exists
 
 *(Unfamiliar with Soroban/Stellar terminology like TTL, footprint, or ledger entry? Check out the [Glossary](docs/glossary.md).)*
 
