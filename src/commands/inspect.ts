@@ -9,6 +9,38 @@ import { handleRpcUnreachableError } from "../rpc/client.js";
 
 const logger = getLogger().child({ component: "InspectCommand" });
 
+export interface DiffRenderOptions {
+    diffType: "created" | "updated" | "deleted";
+    oldValue?: string | null;
+    newValue?: string | null;
+    useColors?: boolean;
+}
+
+/**
+ * Renders a state-diff value with git-diff-style coloring (removed lines
+ * red, added lines green). Not currently wired into `inspect`'s live
+ * output — `inspectContract` doesn't fetch/attach historical state to diff
+ * against yet, so there's nothing to render here today. Kept as a tested,
+ * ready-to-use renderer for whenever that wiring lands (see #383 comment
+ * thread for context).
+ */
+export function renderDiffValue(options: DiffRenderOptions): string {
+    const { diffType, oldValue, newValue, useColors = true } = options;
+    const colorize = (value: string, color: (input: string) => string): string => (useColors ? color(value) : value);
+
+    switch (diffType) {
+        case "created":
+            return colorize(`+ ${newValue ?? "(none)"}`, chalk.green);
+        case "deleted":
+            return colorize(`- ${oldValue ?? "(none)"}`, chalk.red);
+        default:
+            return [
+                colorize(`- ${oldValue ?? "(none)"}`, chalk.red),
+                colorize(`+ ${newValue ?? "(none)"}`, chalk.green),
+            ].join("\n");
+    }
+}
+
 export function registerInspectCommand(program: Command): void {
     program
         .command("inspect <contractId>")
