@@ -108,6 +108,18 @@ The daemon will check TTLs every 5 minutes, fire alerts when thresholds are cros
 
 ## Commands
 
+### Global Options
+
+The following options can be used with any command:
+
+| Option | Description |
+|--------|-------------|
+| `-y, --yes` | Skip all confirmation prompts on destructive commands (e.g., `unwatch`). Use in scripts and CI pipelines to run non-interactively. |
+| `-h, --help` | Show help for any command or subcommand. |
+| `-V, --version` | Print the Sorokeep version. |
+
+> **Note:** `--yes` bypasses interactive confirmation prompts only. For the `check` command, use `--force` (see below) to bypass CI exit-code failures instead.
+
 ### `sorokeep watch <contract-id>`
 
 Register a contract for monitoring. Connects to the Stellar RPC, discovers the contract's instance and WASM code entries, reads their TTLs, and stores everything locally.
@@ -351,6 +363,17 @@ Inspect on-chain state directly. Can parse Stellar Asset Contract (SAC) token ba
 ### `sorokeep check`
 
 Perform an ad-hoc, one-off execution of the monitoring cycle without starting the long-running daemon.
+
+```bash
+sorokeep check <contract-id> [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--fail-under <ledgers>` | Exit with code 1 if any entry TTL is below this many ledgers (required) |
+| `--force` | Bypass CI TTL failures and exit 0 even when entries are below the threshold. Use in CI pipelines where you want to report TTL health without failing the build. |
+
+> **Note:** `--force` on `check` is different from the global `--yes` flag. `--force` overrides the exit code for CI/CD workflows; `--yes` skips interactive confirmation prompts on destructive commands.
 
 ---
 

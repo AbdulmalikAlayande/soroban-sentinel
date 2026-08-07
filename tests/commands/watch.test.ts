@@ -5,7 +5,7 @@ import * as dbLib from "../../src/db/database";
 import * as watchCore from "../../src/core/watch";
 import * as watchConfig from "../../src/utils/watch-config";
 import * as repositories from "../../src/db/repositories";
-import readline from "node:readline";
+import * as prompt from "../../src/utils/prompt";
 
 vi.mock("../../src/db/database");
 vi.mock("../../src/core/watch");
@@ -249,8 +249,7 @@ describe("Unwatch Command CLI", () => {
   let program: Command;
   let mockExit: any;
   let mockLog: any;
-  let unwatchActionFn: (contractId: string, options: any) => Promise<void>;
-  let mockRl: any;
+  let unwatchActionFn: (contractId: string) => Promise<void>;
 
   beforeEach(() => {
     program = new Command();
@@ -268,56 +267,48 @@ describe("Unwatch Command CLI", () => {
     mockExit = vi.spyOn(process, "exit").mockImplementation((() => {}) as any);
     mockLog = vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(dbLib, "getDatabase").mockReturnValue({ close: vi.fn() } as any);
-    
-    mockRl = {
-      question: vi.fn(),
-      close: vi.fn()
-    };
-    vi.spyOn(readline, "createInterface").mockReturnValue(mockRl as any);
   });
 
   afterEach(() => {
+    prompt.setYesOverride(false);
     vi.restoreAllMocks();
   });
 
   it("exits with 1 when no contract id provided", async () => {
     // commander requires it, but if bypassed:
-    await unwatchActionFn(undefined as any, {});
+    await unwatchActionFn(undefined as any);
     expect(mockExit).toHaveBeenCalledWith(1);
   });
 
   it("exits with 1 when contract is not found", async () => {
     vi.mocked(repositories.getContract).mockReturnValue(undefined);
-    await unwatchActionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", {});
+    await unwatchActionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526");
     expect(mockExit).toHaveBeenCalledWith(1);
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("not being watched"));
   });
 
-  it("deletes contract directly when --yes is passed", async () => {
+  it("deletes contract directly when --yes is active (via setYesOverride)", async () => {
+    prompt.setYesOverride(true);
     vi.mocked(repositories.getContract).mockReturnValue({ id: "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526" } as any);
-    await unwatchActionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { yes: true });
+    await unwatchActionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526");
     expect(repositories.deleteContract).toHaveBeenCalledWith(expect.anything(), "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526");
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("Successfully unwatched"));
   });
 
-  it("prompts for confirmation when --yes is not passed and deletes if confirmed", async () => {
+  it("prompts for confirmation when --yes is not active and deletes if confirmed", async () => {
+    vi.spyOn(prompt, "confirmPrompt").mockResolvedValue(true);
     vi.mocked(repositories.getContract).mockReturnValue({ id: "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526" } as any);
-    mockRl.question.mockImplementation((query: string, cb: (ans: string) => void) => {
-        cb("yes");
-    });
-    await unwatchActionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", {});
-    expect(mockRl.question).toHaveBeenCalled();
+    await unwatchActionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526");
+    expect(prompt.confirmPrompt).toHaveBeenCalled();
     expect(repositories.deleteContract).toHaveBeenCalledWith(expect.anything(), "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526");
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("Successfully unwatched"));
   });
 
   it("does not delete if confirmation is denied", async () => {
+    vi.spyOn(prompt, "confirmPrompt").mockResolvedValue(false);
     vi.mocked(repositories.getContract).mockReturnValue({ id: "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526" } as any);
-    mockRl.question.mockImplementation((query: string, cb: (ans: string) => void) => {
-        cb("no");
-    });
-    await unwatchActionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", {});
-    expect(mockRl.question).toHaveBeenCalled();
+    await unwatchActionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526");
+    expect(prompt.confirmPrompt).toHaveBeenCalled();
     expect(repositories.deleteContract).not.toHaveBeenCalled();
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("Unwatch cancelled"));
   });

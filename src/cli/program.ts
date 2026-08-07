@@ -24,6 +24,7 @@ import { registerDoctorCommand } from "../commands/doctor.js";
 import { registerInitCommand } from "../commands/init.js";
 import { registerContractsCommand } from "../commands/contracts.js";
 import { registerTagCommand } from "../commands/tag.js";
+import { setYesOverride } from "../utils/prompt.js";
 
 /**
  * Convention a `--channel-plugin` package must follow: default-export a
@@ -67,13 +68,17 @@ export function createProgram() {
       "Load an external npm package that registers an alert channel (repeatable)",
       collectRepeatedOption,
       [] as string[],
-    );
+    )
+    .option("-y, --yes", "Skip all confirmation prompts on destructive commands");
 
   program.hook("preAction", async (_thisCommand, actionCommand) => {
+    const globalOpts = actionCommand.optsWithGlobals();
+    setYesOverride(Boolean(globalOpts.yes));
+
     if (channelPluginsLoaded) return;
     channelPluginsLoaded = true;
 
-    const channelPlugins = actionCommand.optsWithGlobals().channelPlugin as string[];
+    const channelPlugins = globalOpts.channelPlugin as string[];
     for (const packageName of channelPlugins) {
       try {
         await loadChannelPlugin(packageName);
