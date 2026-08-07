@@ -5,6 +5,7 @@ import { getDatabase } from "../db/database.js";
 import { inspectContract } from "../core/inspect.js";
 import { statusIndicator, formatContractID, printOutput } from "../utils/formatting.js";
 import { getLogger } from "../logging/index.js";
+import { handleRpcUnreachableError } from "../rpc/client.js";
 
 const logger = getLogger().child({ component: "InspectCommand" });
 
@@ -33,7 +34,9 @@ export function registerInspectCommand(program: Command): void {
                         return;
                     }
                     spinner?.fail(chalk.red("Inspection failed"));
-                    console.error(chalk.red(result.error));
+                    if (!handleRpcUnreachableError(result.error)) {
+                        console.error(chalk.red(result.error));
+                    }
                     process.exit(1);
                     return;
                 }
@@ -99,7 +102,9 @@ export function registerInspectCommand(program: Command): void {
                     return;
                 }
                 spinner?.fail(chalk.red("Error"));
-                console.error(chalk.red(`Error: ${msg}`));
+                if (!handleRpcUnreachableError(error)) {
+                    console.error(chalk.red(`Error: ${msg}`));
+                }
                 logger.error("Inspect command failed", { error: msg });
                 process.exit(1);
             }

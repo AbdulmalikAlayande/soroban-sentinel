@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { StellarRpcClient, extractResourceCosts, executeWithRetry } from "../../src/rpc/client";
+import { StellarRpcClient, extractResourceCosts, executeWithRetry, RpcUnreachableError, isNetworkError, handleRpcUnreachableError } from "../../src/rpc/client";
 import { Contract, xdr, Keypair } from "@stellar/stellar-sdk";
 
 vi.mock("@stellar/stellar-sdk", async () =>  {
@@ -17,6 +17,11 @@ vi.mock("@stellar/stellar-sdk", async () =>  {
         }
 
         async getHealth() {
+            if (this.serverUrl && this.serverUrl.includes("refused")) {
+                const err = new TypeError("fetch failed");
+                (err as any).cause = { code: "ECONNREFUSED", message: "connect ECONNREFUSED" };
+                throw err;
+            }
             if (this.serverUrl && this.serverUrl.includes("timeout")) {
                 throw new Error("Timeout");
             }
@@ -655,6 +660,90 @@ describe("StellarRpcClient", () => {
 
             await expect(executeWithRetry(action)).rejects.toThrow("400 Bad Request");
             expect(action).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    describe("RPC unreachable errors", () => {
+        it("wraps network failures in RpcUnreachableError, preserving the cause chain", async () => {
+            const unreachableClient = new StellarRpcClient("testnet", "https://refused.com");
+
+            let thrownError: any;
+            try {
+                await unreachableClient.checkHealth();
+            } catch (err) {
+                thrownError = err;
+            }
+
+            expect(thrownError).toBeInstanceOf(RpcUnreachableError);
+            expect(thrownError.url).toBe("https://refused.com");
+            expect(thrownError.cause.message).toBe("fetch failed");
+            expect(thrownError.cause.cause.code).toBe("ECONNREFUSED");
+        });
+
+        it("produces a message naming the unreachable URL", async () => {
+            const unreachableClient = new StellarRpcClient("testnet", "https://refused.com");
+            await expect(unreachableClient.checkHealth()).rejects.toThrow(
+                /RPC endpoint at https:\/\/refused\.com is unreachable/,
+            );
+        });
+
+        it("does not wrap non-network errors (e.g. an unhealthy but reachable endpoint)", async () => {
+            const unhealthyClient = new StellarRpcClient("testnet", "https://unhealthy.com");
+            const result = await unhealthyClient.checkHealth();
+            expect(result.status).toBe("offline");
+        });
+    });
+
+    describe("isNetworkError", () => {
+        it("recognizes known network error codes", () => {
+            expect(isNetworkError({ code: "ECONNREFUSED" })).toBe(true);
+            expect(isNetworkError({ code: "ETIMEDOUT" })).toBe(true);
+        });
+
+        it("recognizes network-shaped messages", () => {
+            expect(isNetworkError({ message: "fetch failed" })).toBe(true);
+            expect(isNetworkError({ message: "Connection unreachable" })).toBe(true);
+        });
+
+        it("recurses into the cause chain", () => {
+            expect(isNetworkError({ message: "wrapped", cause: { code: "ENOTFOUND" } })).toBe(true);
+        });
+
+        it("returns false for unrelated errors", () => {
+            expect(isNetworkError({ message: "Invalid Contract ID format" })).toBe(false);
+            expect(isNetworkError(null)).toBe(false);
+            expect(isNetworkError(undefined)).toBe(false);
+        });
+
+        it("does not infinite-loop on a self-referential cause chain", () => {
+            const err: any = { message: "circular" };
+            err.cause = err;
+            expect(isNetworkError(err)).toBe(false);
+        });
+    });
+
+    describe("handleRpcUnreachableError", () => {
+        it("returns true and prints suggestions for an RpcUnreachableError", () => {
+            const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+            const handled = handleRpcUnreachableError(new RpcUnreachableError("https://down.example.com"));
+            expect(handled).toBe(true);
+            expect(errorSpy.mock.calls.flat().join("\n")).toContain("https://down.example.com");
+            errorSpy.mockRestore();
+        });
+
+        it("recognizes a plain string message (structured-result error paths)", () => {
+            const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+            const handled = handleRpcUnreachableError("RPC endpoint at https://down.example.com is unreachable");
+            expect(handled).toBe(true);
+            errorSpy.mockRestore();
+        });
+
+        it("returns false for unrelated errors and prints nothing", () => {
+            const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+            const handled = handleRpcUnreachableError(new Error("Invalid Contract ID format"));
+            expect(handled).toBe(false);
+            expect(errorSpy).not.toHaveBeenCalled();
+            errorSpy.mockRestore();
         });
     });
 

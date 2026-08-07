@@ -14,6 +14,7 @@ import {
 } from "../utils/formatting.js";
 import { watchContract, type WatchResult } from "../core/watch.js";
 import { loadWatchContractsFile } from "../utils/watch-config.js";
+import { handleRpcUnreachableError } from "../rpc/client.js";
 
 const logger = getLogger().child({ component: "WatchCommand" });
 
@@ -104,6 +105,11 @@ export const registerWatchCommand = (program: Command): void => {
           printBatchSummary(results);
 
           if (results.some((result) => result.status === "FAILED")) {
+            for (const result of results) {
+              if (result.status === "FAILED" && handleRpcUnreachableError(result.message)) {
+                break;
+              }
+            }
             process.exit(1);
           }
           return;
@@ -151,6 +157,7 @@ export const registerWatchCommand = (program: Command): void => {
           }
 
           spinner?.fail(chalk.red(watchResult.error));
+          handleRpcUnreachableError(watchResult.error);
           process.exit(1);
           return;
         }
@@ -220,7 +227,9 @@ export const registerWatchCommand = (program: Command): void => {
           return;
         }
         logger.error("Watch command failed", { error: errorMessage });
-        console.log(chalk.red(`Failed to watch contract: ${errorMessage}`));
+        if (!handleRpcUnreachableError(error)) {
+          console.log(chalk.red(`Failed to watch contract: ${errorMessage}`));
+        }
         process.exit(1);
       }
     });
