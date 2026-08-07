@@ -199,6 +199,10 @@ Order imports by:
 
 Use explicit `.js` extensions for internal imports (ESM requirement). Type-only imports use `import type`.
 
+### Regex on File Content
+
+Avoid `.` in a regex meant to match "anything up to a line break" (e.g. `/--.*\n/`) — JavaScript's `.` excludes all line terminator characters, including `\r`. On a CRLF-checked-out file, a line ending in `\r\n` leaves a trailing `\r` that `.` won't consume, so the pattern silently fails to match and no error is thrown. Use a negated character class instead, e.g. `/--[^\n]*\n/`, which consumes everything up to (but not including) the newline regardless of a preceding `\r`.
+
 ### Error Handling
 
 Catch errors and return structured results (like `WatchResult`) instead of throwing from core functions. Let the CLI layer decide how to present errors.

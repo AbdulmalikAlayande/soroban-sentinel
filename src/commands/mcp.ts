@@ -12,7 +12,7 @@ export function registerMcpCommand(program: Command): void {
         const server = createMcpServer(() => getDatabase());
         const transport = new StdioServerTransport();
         await server.connect(transport);
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error("MCP server error:", error);
         process.exit(1);
       }

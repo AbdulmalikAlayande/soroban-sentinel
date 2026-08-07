@@ -23,7 +23,7 @@
 
 <br />
 
-## Why This Exists
+## Why Sorokeep Exists
 
 *(Unfamiliar with Soroban/Stellar terminology like TTL, footprint, or ledger entry? Check out the [Glossary](docs/glossary.md).)*
 
@@ -695,7 +695,7 @@ Track overall progress on the [Sorokeep Roadmap board](https://github.com/Abdulm
 > If you're a maintainer, follow that doc to create and link the board.
 
 - Plugin interface for alert channels — so a new channel (Matrix, MS Teams, email) doesn't require touching core dispatch code or the DB schema
-- Prometheus `/metrics` endpoint for teams with existing observability stacks — see [Observability Setup Guide](docs/observability.md)
+- Prometheus `/metrics` endpoint for teams with existing observability stacks — see [Observability Setup Guide](docs/observability.md); an [example Grafana dashboard](devops/grafana/sorokeep-dashboard.json) is included
 - Reusable GitHub Action wrapping `sorokeep check` for CI-integrated TTL checks
 - Web dashboard for visual TTL monitoring
 - Multi-contract batch operations
