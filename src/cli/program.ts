@@ -25,6 +25,7 @@ import { registerInitCommand } from "../commands/init.js";
 import { registerContractsCommand } from "../commands/contracts.js";
 import { registerTagCommand } from "../commands/tag.js";
 import { registerFleetCommand } from "../commands/fleet.js";
+import { registerGroupCommand } from "../commands/group.js";
 import { setYesOverride } from "../utils/prompt.js";
 
 /**
@@ -115,6 +116,7 @@ export function createProgram() {
   registerContractsCommand(program);
   registerTagCommand(program);
   registerFleetCommand(program);
+  registerGroupCommand(program);
 
   return program;
 }

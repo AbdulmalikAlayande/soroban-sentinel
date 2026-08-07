@@ -1640,6 +1640,20 @@ export function getGroupsForContract(
 }
 
 /**
+ * Look up a group by its unique name.
+ */
+export function getGroupByName(db: Database.Database, name: string): ContractGroup | undefined {
+    return db.prepare("SELECT * FROM contract_groups WHERE name = ?").get(name) as ContractGroup | undefined;
+}
+
+/**
+ * Return every contract group, ordered by name.
+ */
+export function getAllGroups(db: Database.Database): ContractGroup[] {
+    return db.prepare("SELECT * FROM contract_groups ORDER BY name ASC").all() as ContractGroup[];
+}
+
+/**
  * Insert an alert config for every contract whose `tags` column contains the
  * given tag (comma-separated list). A tag match is performed as an exact
  * word match — splitting on commas and trimming whitespace — so `"defi"` does
