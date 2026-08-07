@@ -251,3 +251,10 @@ CREATE TABLE IF NOT EXISTS digest_configs (
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Fleet query performance indexes (matching migration 007, issue #406)
+CREATE INDEX IF NOT EXISTS idx_contracts_network_active
+    ON contracts(network, active);
+
+CREATE INDEX IF NOT EXISTS idx_extension_history_executed_at
+    ON extension_history(executed_at);

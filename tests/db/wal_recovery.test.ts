@@ -33,15 +33,18 @@ describe("SQLite WAL recovery", () => {
                 "--eval",
                 `
                     import Database from "better-sqlite3";
+                    import fs from "node:fs";
                     const dbPath = process.argv[1];
+                    const schemaPath = process.argv[2];
                     const db = new Database(dbPath);
                     db.pragma("journal_mode = WAL");
-                    db.exec("CREATE TABLE IF NOT EXISTS contracts (id TEXT PRIMARY KEY, name TEXT NOT NULL, network TEXT NOT NULL)");
+                    db.exec(fs.readFileSync(schemaPath, "utf-8"));
                     db.prepare("INSERT INTO contracts (id, name, network) VALUES (?, ?, ?)").run("contract-1", "alpha", "testnet");
                     db.prepare("INSERT INTO contracts (id, name, network) VALUES (?, ?, ?)").run("contract-2", "beta", "testnet");
                     process.exit(0);
                 `,
                 dbPath,
+                path.join(process.cwd(), "src", "db", "schema.sql"),
             ],
             { encoding: "utf8" },
         );
