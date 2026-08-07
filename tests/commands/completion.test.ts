@@ -1,10 +1,13 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import type Database from "better-sqlite3";
+import { Command } from "commander";
 import { getDatabaseForTesting } from "../../src/db/database.js";
 import { insertContract } from "../../src/db/repositories.js";
+import { registerCompletionCommand } from "../../src/commands/completion.js";
 import {
   getCompletionSuggestions,
   renderBashCompletionScript,
+  renderFishCompletionScript,
   renderZshCompletionScript,
   TOP_LEVEL_COMMANDS,
 } from "../../src/core/completion.js";
@@ -48,5 +51,29 @@ describe("CLI completion", () => {
     const script = renderZshCompletionScript();
     expect(script).toContain("sorokeep completion --query");
     expect(script).toContain("compdef _sorokeep sorokeep");
+  });
+
+  it("renders the fish completion script with fish-specific completion entries", () => {
+    const script = renderFishCompletionScript();
+    expect(script).toContain("complete -c sorokeep");
+    expect(script).toContain("watch status check daemon alerts guard costs resources restore channels completion");
+  });
+
+  it("prints the fish completion script when --script fish is used", () => {
+    const program = new Command();
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    let action: ((words: string[], options: { script?: string; query?: boolean; cursor?: number }) => void) | undefined;
+
+    vi.spyOn(Command.prototype, "action").mockImplementation(function (this: Command, fn) {
+      action = fn as typeof action;
+      return this;
+    });
+
+    registerCompletionCommand(program);
+    expect(action).toBeDefined();
+
+    action?.([], { script: "fish" });
+
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("complete -c sorokeep"));
   });
 });
