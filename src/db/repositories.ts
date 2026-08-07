@@ -150,6 +150,77 @@ export function getContract(db: Database.Database, id: string): Contract | undef
   return db.prepare("SELECT * FROM contracts WHERE id = ?").get(id) as Contract | undefined;
 }
 
+/**
+ * Parse the comma-separated `tags` column into a list of trimmed, non-empty
+ * tags. The format matches the one used by the exact-match `--tag` filter:
+ * comma-separated values with surrounding whitespace trimmed.
+ */
+function parseTags(tags: string | null): string[] {
+  if (!tags) return [];
+  return tags
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter((tag) => tag.length > 0);
+}
+
+/**
+ * Persist the given tag list using the canonical comma-separated format.
+ * An empty list is stored as NULL.
+ */
+function writeTags(db: Database.Database, contractId: string, tags: string[]): void {
+  const value = tags.length > 0 ? tags.join(",") : null;
+  db.prepare("UPDATE contracts SET tags = ? WHERE id = ?").run(value, contractId);
+}
+
+/**
+ * Add a tag to a contract's tag list. Adding a tag that already exists is a
+ * no-op (exact, trimmed match — same semantics as the `--tag` filter).
+ *
+ * @returns The resulting tag list after the mutation.
+ * @throws If no contract is registered under `contractId`.
+ */
+export function addContractTag(db: Database.Database, contractId: string, tag: string): string[] {
+  const contract = getContract(db, contractId);
+  if (!contract) {
+    throw new Error(`Contract ${contractId} is not registered.`);
+  }
+
+  const normalizedTag = tag.trim();
+  if (!normalizedTag) {
+    return parseTags(contract.tags);
+  }
+
+  const tags = parseTags(contract.tags);
+  if (!tags.includes(normalizedTag)) {
+    tags.push(normalizedTag);
+    writeTags(db, contractId, tags);
+  }
+  return tags;
+}
+
+/**
+ * Remove a tag from a contract's tag list. Removing a tag that is not present
+ * is a no-op. When the last tag is removed the tags column is reset to NULL.
+ *
+ * @returns The resulting tag list after the mutation.
+ * @throws If no contract is registered under `contractId`.
+ */
+export function removeContractTag(db: Database.Database, contractId: string, tag: string): string[] {
+  const contract = getContract(db, contractId);
+  if (!contract) {
+    throw new Error(`Contract ${contractId} is not registered.`);
+  }
+
+  const normalizedTag = tag.trim();
+  const tags = parseTags(contract.tags);
+  const updated = tags.filter((existing) => existing !== normalizedTag);
+
+  if (updated.length !== tags.length) {
+    writeTags(db, contractId, updated);
+  }
+  return updated;
+}
+
 export function getAllContracts(db: Database.Database): Contract[] {
   return db.prepare("SELECT * FROM contracts").all() as Contract[];
 }

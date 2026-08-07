@@ -54,6 +54,76 @@ describe("Database Repositories", () => {
         });
     });
 
+    describe("Contract Tags", () => {
+        it("adds a tag to a contract with no existing tags", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            const tags = repo.addContractTag(db, "C1", "defi");
+            expect(tags).toEqual(["defi"]);
+            expect(repo.getContract(db, "C1")?.tags).toBe("defi");
+        });
+
+        it("appends a new tag to existing tags using the comma-separated format", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "nft" });
+            const tags = repo.addContractTag(db, "C1", "defi");
+            expect(tags).toEqual(["nft", "defi"]);
+            expect(repo.getContract(db, "C1")?.tags).toBe("nft,defi");
+        });
+
+        it("adding a tag that already exists is a no-op, not a duplicate", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "defi" });
+            const tags = repo.addContractTag(db, "C1", "defi");
+            expect(tags).toEqual(["defi"]);
+            expect(repo.getContract(db, "C1")?.tags).toBe("defi");
+        });
+
+        it("trims surrounding whitespace when adding a tag", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            const tags = repo.addContractTag(db, "C1", "  defi  ");
+            expect(tags).toEqual(["defi"]);
+            expect(repo.getContract(db, "C1")?.tags).toBe("defi");
+        });
+
+        it("produces a clear error when adding a tag to an unregistered contract", () => {
+            expect(() => repo.addContractTag(db, "MISSING", "defi")).toThrow(/not registered/i);
+        });
+
+        it("removes an existing tag", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "defi,nft" });
+            const tags = repo.removeContractTag(db, "C1", "defi");
+            expect(tags).toEqual(["nft"]);
+            expect(repo.getContract(db, "C1")?.tags).toBe("nft");
+        });
+
+        it("removing a tag that is not present does not error and leaves tags unchanged", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "nft" });
+            const tags = repo.removeContractTag(db, "C1", "defi");
+            expect(tags).toEqual(["nft"]);
+            expect(repo.getContract(db, "C1")?.tags).toBe("nft");
+        });
+
+        it("removing the last tag resets the tags column to null", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "defi" });
+            const tags = repo.removeContractTag(db, "C1", "defi");
+            expect(tags).toEqual([]);
+            expect(repo.getContract(db, "C1")?.tags).toBeNull();
+        });
+
+        it("produces a clear error when removing a tag from an unregistered contract", () => {
+            expect(() => repo.removeContractTag(db, "MISSING", "defi")).toThrow(/not registered/i);
+        });
+
+        it("keeps tags interoperable with the exact-match --tag filter format", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "defi" });
+            repo.addContractTag(db, "C1", "nft");
+
+            // Stored format must be a trimmed, comma-separated string so an
+            // exact-match tag filter finds it.
+            expect(repo.getContract(db, "C1")?.tags).toBe("defi,nft");
+            repo.removeContractTag(db, "C1", "defi");
+            expect(repo.getContract(db, "C1")?.tags).toBe("nft");
+        });
+    });
+
     describe("ContractEntry CRUD", () => {
         it("upserts and gets entries", () => {
             repo.insertContract(db, { id: "C1", network: "testnet" });
