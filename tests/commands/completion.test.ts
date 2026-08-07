@@ -76,4 +76,22 @@ describe("CLI completion", () => {
 
     expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("complete -c sorokeep"));
   });
+
+  it("prints the PowerShell completion script when --script powershell is used", () => {
+    const program = new Command();
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    let action: ((words: string[], options: { script?: string; query?: boolean; cursor?: number }) => void) | undefined;
+
+    vi.spyOn(Command.prototype, "action").mockImplementation(function (this: Command, fn) {
+      action = fn as typeof action;
+      return this;
+    });
+
+    registerCompletionCommand(program);
+    expect(action).toBeDefined();
+
+    action?.([], { script: "powershell" });
+
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("Register-ArgumentCompleter"));
+  });
 });

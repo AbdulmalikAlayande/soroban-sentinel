@@ -17,6 +17,16 @@ function readEnReadme(): string {
     return fs.readFileSync(README_EN_PATH, "utf-8");
 }
 
+/**
+ * Counts markdown headings, excluding fenced code blocks — a shell comment
+ * like `# do the thing` inside a ```bash block is not a heading, but the
+ * naive `/^#{1,4} /gm` pattern can't tell the difference.
+ */
+function countHeadings(markdown: string): number {
+    const withoutCodeFences = markdown.replace(/```[\s\S]*?```/g, "");
+    return (withoutCodeFences.match(/^#{1,4} /gm) || []).length;
+}
+
 describe("README.pt.md existence", () => {
     it("README.pt.md exists in the project root", () => {
         expect(fs.existsSync(README_PT_PATH)).toBe(true);
@@ -416,8 +426,8 @@ describe("section coverage", () => {
     describe("content parity with English README", () => {
         it("has at least as many headings as the English README", () => {
             const enContent = readEnReadme();
-            const enHeadings = (enContent.match(/^#{1,4} /gm) || []).length;
-            const ptHeadings = (ptContent.match(/^#{1,4} /gm) || []).length;
+            const enHeadings = countHeadings(enContent);
+            const ptHeadings = countHeadings(ptContent);
             expect(ptHeadings).toBeGreaterThanOrEqual(enHeadings);
         });
 
