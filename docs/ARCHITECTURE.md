@@ -6,49 +6,40 @@ This document explains how sorokeep's pieces fit together at runtime. For *why* 
 
 The daemon (`sorokeep daemon`) is the long-running process most deployments actually run. Everything else — `watch`, `status`, `check` — exercises the same core functions as one-shot invocations.
 
-```
-setInterval tick
-      │
-      ▼
-┌─────────────────────────────────────────────────────────────┐
-│ executeCycle()                    src/daemon/loop.ts         │
-│                                                                │
-│  1. runMonitorCycle()             src/core/monitor.ts         │
-│     ┌──────────────────────────────────────────────────┐    │
-│     │ for each active contract on this network:          │    │
-│     │   a. batch-fetch TTLs for all tracked entries       │    │
-│     │      (one RPC call per contract, not per entry)     │    │
-│     │   b. upsert fresh TTL + last_modified_ledger        │    │
-│     │   c. for each alert_config on this contract:        │    │
-│     │      - TTL crossed below threshold?                 │    │
-│     │        → recordAlertFired() (writes to the queue,   │    │
-│     │          does NOT send anything yet)                │    │
-│     │      - TTL recovered above threshold?                │    │
-│     │        → resolveAlerts() + immediate resolution      │    │
-│     │          notification via deliverSingleAlert()       │    │
-│     │                                                        │    │
-│     │ then: runAutoExtensions()   src/core/extension.ts    │    │
-│     │   - reads extension_policies for guarded contracts   │    │
-│     │   - for entries below the policy's extend threshold: │    │
-│     │     simulate ExtendFootprintTTLOp, then submit        │    │
-│     │   - records extension_history (cost, tx hash, TTL Δ) │    │
-│     │   - rate-limited: max 5 extensions/contract/hour      │    │
-│     │     (HOURLY_RATE_LIMIT in extension.ts)               │    │
-│     └──────────────────────────────────────────────────┘    │
-│                                                                │
-│  2. deliverPendingAlerts()        src/alerts/dispatcher.ts    │
-│     ┌──────────────────────────────────────────────────┐    │
-│     │ reads undelivered rows from alerts_fired            │    │
-│     │ routes each to its configured channel:               │    │
-│     │   webhook / slack / discord / telegram / pagerduty   │    │
-│     │ on failure: increments retry_count, retries next      │    │
-│     │   cycle, abandons after MAX_RETRY_COUNT (5)           │    │
-│     └──────────────────────────────────────────────────┘    │
-│                                                                │
-│  3. aggregateDailyCostSnapshots() src/db/repositories.ts      │
-│     rolls extension_history into cost_daily_snapshots         │
-│     (per-entry-type cost breakdown, used by `sorokeep costs`) │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant loop as src/daemon/loop.ts
+    participant monitor as src/core/monitor.ts
+    participant extension as src/core/extension.ts
+    participant dispatcher as src/alerts/dispatcher.ts
+    participant db as src/db/repositories.ts
+
+    Note over loop: setInterval tick triggers executeCycle()
+    
+    loop->>monitor: runMonitorCycle(db, network)
+    activate monitor
+    Note over monitor: 1. Batch-fetch TTLs via RPC<br/>2. Upsert fresh TTLs<br/>3. Detect threshold crossings & record AlertFired<br/>4. Resolve recovered alerts
+    
+    monitor->>extension: runAutoExtensions(db, network)
+    activate extension
+    Note over extension: Read extension_policies<br/>Simulate & submit ExtendFootprintTTLOp<br/>Record extension_history (cost, tx hash)
+    extension-->>monitor: (extension results)
+    deactivate extension
+    
+    monitor-->>loop: MonitorCycleResult
+    deactivate monitor
+
+    loop->>dispatcher: deliverPendingAlerts(db, network)
+    activate dispatcher
+    Note over dispatcher: Reads undelivered alerts from DB<br/>Routes to webhook/slack/etc.<br/>Increments retries on failure
+    dispatcher-->>loop: (delivery results)
+    deactivate dispatcher
+
+    loop->>db: aggregateDailyCostSnapshots(db)
+    activate db
+    Note over db: Rolls extension_history into daily snapshots
+    db-->>loop: (void)
+    deactivate db
 ```
 
 **Why threshold detection and delivery are separate steps.** `recordAlertFired` only writes a row — it never calls a webhook or Slack API directly from inside the monitor loop. This means a slow or failing alert channel can never block TTL detection or auto-extension, and a channel outage doesn't lose alerts — they sit in the queue and retry next cycle. The one exception is *resolution* notifications (`alert_resolved`), which fire immediately via `deliverSingleAlert` since they're not time-critical the way a new threshold crossing is, and there's no risk of losing an alert that was never "pending" in the first place.
@@ -74,6 +65,28 @@ Everything sorokeep knows lives in one SQLite file (`~/.sorokeep/sorokeep.db`, s
 - `extension_policies` → `extension_history` → `cost_daily_snapshots` — guard config, every extension transaction, and the daily rollups `sorokeep costs` reads
 - `channel_accounts` — the pool of funded keypairs used to submit extension/restore transactions concurrently without sequence-number collisions (see `core/channels.ts`)
 - `state_snapshots` / `state_changes` — used by the state-change detection path (diffing an entry's value across polls, independent of TTL)
+
+## Module Dependencies
+
+To enforce clean architecture, dependencies flow strictly inward. The `core` logic never depends on the CLI (`commands/`), allowing the daemon and one-shot commands to share the exact same implementations.
+
+```mermaid
+graph TD
+    commands["src/commands/"] --> core["src/core/"]
+    
+    daemon["src/daemon/"] --> core
+    daemon --> alerts["src/alerts/"]
+    daemon --> db["src/db/"]
+    daemon --> rpc["src/rpc/"]
+    
+    core --> rpc
+    core --> db
+    core --> alerts
+    
+    alerts --> db
+    
+    style commands stroke-dasharray: 5 5
+```
 
 ## Where a New Contribution Usually Lands
 
