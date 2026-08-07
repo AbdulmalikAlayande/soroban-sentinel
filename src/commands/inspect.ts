@@ -3,7 +3,7 @@ import chalk from "chalk";
 import ora from "ora";
 import { getDatabase } from "../db/database.js";
 import { inspectContract } from "../core/inspect.js";
-import { statusIndicator, formatContractID, printOutput } from "../utils/formatting.js";
+import { statusIndicator, formatContractID, printOutput, validateContractId } from "../utils/formatting.js";
 import { getLogger } from "../logging/index.js";
 import { handleRpcUnreachableError } from "../rpc/client.js";
 
@@ -18,6 +18,18 @@ export function registerInspectCommand(program: Command): void {
         .option("-r, --rpc-url <url>", "Custom RPC URL")
         .option("--json", "Output machine-readable JSON")
         .action(async (contractId: string, options: { entry: string[]; network?: string; rpcUrl?: string; json?: boolean }) => {
+            const contractIdValidation = validateContractId(contractId);
+            if (!contractIdValidation.valid) {
+                if (options.json) {
+                    printOutput({ success: false, error: "invalid_contract_id", contractId, message: contractIdValidation.reason }, true);
+                    process.exitCode = 1;
+                    return;
+                }
+                console.error(chalk.red(`Invalid contract ID: ${contractIdValidation.reason}`));
+                process.exit(1);
+                return;
+            }
+
             const spinner = options.json ? null : ora(`Inspecting contract ${formatContractID(contractId)}...`).start();
             try {
                 const db = getDatabase();

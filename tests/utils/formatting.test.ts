@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { convertLedgerCloseTimeToSeconds, formatTimeToCloseLedger, classifyTTL, statusIndicator, formatContractID, formatSecretKey } from "../../src/utils/formatting";
+import { convertLedgerCloseTimeToSeconds, formatTimeToCloseLedger, classifyTTL, statusIndicator, formatContractID, formatSecretKey, validateContractId } from "../../src/utils/formatting";
 
 describe("convertLedgerCloseTimeToSeconds", () => {
     it("should convert ledger close time to seconds using 5.5s average", () => {
@@ -131,5 +131,53 @@ describe("formatSecretKey", () => {
   it("produces exactly 11 characters for a 56-char Stellar secret key", () => {
     const key = "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     expect(formatSecretKey(key).length).toBe(11);
+  });
+});
+
+describe("validateContractId", () => {
+  const VALID_CONTRACT_ID = "CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ";
+  const ACCOUNT_ADDRESS = "GABCDEF123456789012345678901234567890123456789012345678";
+
+  it("accepts a valid contract ID", () => {
+    expect(validateContractId(VALID_CONTRACT_ID)).toEqual({ valid: true });
+  });
+
+  it("rejects an empty or missing ID", () => {
+    const result = validateContractId("");
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toMatch(/empty or missing/);
+  });
+
+  it("rejects a wrong-prefix ID with a distinct reason (account address)", () => {
+    const result = validateContractId(ACCOUNT_ADDRESS);
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.reason).toMatch(/must start with 'C'/);
+      expect(result.reason).toMatch(/account address/);
+    }
+  });
+
+  it("rejects a too-short ID with a distinct reason", () => {
+    const result = validateContractId("CSHORT");
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toMatch(/56 characters/);
+  });
+
+  it("rejects a checksum-invalid ID with a distinct reason", () => {
+    const badChecksum = VALID_CONTRACT_ID.slice(0, -1) + (VALID_CONTRACT_ID.endsWith("A") ? "B" : "A");
+    const result = validateContractId(badChecksum);
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toMatch(/invalid Stellar checksum/);
+  });
+
+  it("produces distinct reasons across all failure modes", () => {
+    const reasons = [
+      validateContractId(""),
+      validateContractId(ACCOUNT_ADDRESS),
+      validateContractId("CSHORT"),
+      validateContractId(VALID_CONTRACT_ID.slice(0, -1) + (VALID_CONTRACT_ID.endsWith("A") ? "B" : "A")),
+    ].map((r) => (r.valid ? null : r.reason));
+
+    expect(new Set(reasons).size).toBe(reasons.length);
   });
 });

@@ -4,7 +4,7 @@ import ora from "ora";
 import { getDatabase } from "../db/database.js";
 import { getContract, getEntriesForContract, upsertExtensionPolicy, getExtensionPolicy } from "../db/repositories.js";
 import { simulateExtension, extendEntries, resolveSecretKey } from "../core/extension.js";
-import { formatContractID, formatTimeToCloseLedger, formatBytes, formatCpuInsns, printOutput } from "../utils/formatting.js";
+import { formatContractID, formatTimeToCloseLedger, formatBytes, formatCpuInsns, printOutput, validateContractId } from "../utils/formatting.js";
 import { getLogger } from "../logging/index.js";
 import { handleRpcUnreachableError } from "../rpc/client.js";
 
@@ -25,6 +25,18 @@ export function registerGuardCommand(program: Command): void {
         .option("--json", "Output machine-readable JSON")
         .action(async (contractId: string, options: { json?: boolean; targetTtl?: string; threshold?: string; keypair?: string; keypairEnv?: string; keypairVault?: string; autoExtend?: boolean; dryRun?: boolean; disable?: boolean } = {}) => {
             try {
+                const contractIdValidation = validateContractId(contractId);
+                if (!contractIdValidation.valid) {
+                    if (options.json) {
+                        printOutput({ success: false, error: "invalid_contract_id", contractId, message: contractIdValidation.reason }, true);
+                        process.exitCode = 1;
+                        return;
+                    }
+                    console.error(chalk.red(`Invalid contract ID: ${contractIdValidation.reason}`));
+                    process.exit(1);
+                    return;
+                }
+
                 const db = getDatabase();
                 const contract = getContract(db, contractId);
 

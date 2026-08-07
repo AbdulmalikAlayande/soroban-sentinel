@@ -9,7 +9,7 @@ import {
 } from "../core/rent_projection.js";
 import type { RentWindowsResult } from "../core/rent_projection.js";
 import { StellarRpcClient, handleRpcUnreachableError } from "../rpc/client.js";
-import { formatContractID } from "../utils/formatting.js";
+import { formatContractID, validateContractId } from "../utils/formatting.js";
 import { loadConfig } from "../utils/config.js";
 import { getLogger } from "../logging/index.js";
 import type { FeeStatsResult } from "../rpc/client.js";
@@ -116,6 +116,17 @@ export function registerCostsCommand(program: Command): void {
         .action(async (contractId: string, options: { period?: string; all?: boolean; json?: boolean; monthlyBudget?: string } = {}) => {
             options = options || {};
             try {
+                const contractIdValidation = validateContractId(contractId);
+                if (!contractIdValidation.valid) {
+                    if (options.json) {
+                        console.log(JSON.stringify({ success: false, error: "invalid_contract_id", contractId, message: contractIdValidation.reason }));
+                    } else {
+                        console.error(chalk.red(`Invalid contract ID: ${contractIdValidation.reason}`));
+                    }
+                    process.exit(1);
+                    return;
+                }
+
                 const db = getDatabase();
                 const days = options.all ? undefined : parseInt(options.period ?? "30", 10);
 

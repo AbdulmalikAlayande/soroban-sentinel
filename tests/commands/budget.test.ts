@@ -44,7 +44,7 @@ describe("Budget Command CLI", () => {
                 percentage: 25
             });
 
-            program.parse(["node", "test", "budget", "status", "C123"]);
+            program.parse(["node", "test", "budget", "status", "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"]);
 
             expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("25.00 / 100.00 XLM"));
             expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("25.0%"));

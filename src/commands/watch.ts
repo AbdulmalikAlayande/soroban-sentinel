@@ -11,6 +11,7 @@ import {
   formatTimeToCloseLedger,
   printOutput,
   statusIndicator,
+  validateContractId,
 } from "../utils/formatting.js";
 import { watchContract, type WatchResult } from "../core/watch.js";
 import { loadWatchContractsFile } from "../utils/watch-config.js";
@@ -135,6 +136,18 @@ export const registerWatchCommand = (program: Command): void => {
           return;
         }
 
+        const contractIdValidation = validateContractId(contractId);
+        if (!contractIdValidation.valid) {
+          if (options.json) {
+            printOutput({ success: false, error: "invalid_contract_id", contractId, message: contractIdValidation.reason }, true);
+            process.exitCode = 1;
+            return;
+          }
+          console.log(chalk.red(`Invalid contract ID: ${contractIdValidation.reason}`));
+          process.exit(1);
+          return;
+        }
+
         const displayId = formatContractID(contractId);
         const spinner = !options.json
           ? ora(
@@ -240,6 +253,13 @@ export const registerWatchCommand = (program: Command): void => {
     .option("-y, --yes", "Skip confirmation prompt")
     .action(async (contractId: string, options: { yes?: boolean }) => {
       try {
+        const unwatchValidation = validateContractId(contractId);
+        if (!unwatchValidation.valid) {
+          console.log(chalk.red(`Invalid contract ID: ${unwatchValidation.reason}`));
+          process.exit(1);
+          return;
+        }
+
         const db = getDatabase();
         const contract = getContract(db, contractId);
 

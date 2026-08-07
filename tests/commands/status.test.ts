@@ -104,10 +104,10 @@ describe("status command", () => {
 
     it("exits with code 1 if contract is not found", () => {
         vi.mocked(statusModule.getContractStatus).mockImplementation(() => {
-            throw new ContractNotFoundError("MISSING_ID");
+            throw new ContractNotFoundError("CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ");
         });
 
-        actionFn("MISSING_ID", { json: false });
+        actionFn("CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ", { json: false });
 
         expect(mockExit).toHaveBeenCalledWith(1);
         expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("is not registered"));
@@ -118,6 +118,6 @@ describe("status command", () => {
             throw new Error("DB Corrupt");
         });
 
-        expect(() => actionFn("VALID_ID", { json: false })).toThrow("DB Corrupt");
+        expect(() => actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { json: false })).toThrow("DB Corrupt");
     });
 });
