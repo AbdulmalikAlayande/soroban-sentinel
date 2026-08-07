@@ -1905,3 +1905,61 @@ export function insertAlertConfigBulk(
     return contracts.length;
 }
 
+// ─── Digest Configs (issue #399) ─────────────────────────────────────────────
+
+export interface DigestConfig {
+    id: number;
+    network: string;
+    /** Any registered alert channel name (see src/alerts/registry.ts) — not a fixed enum. */
+    channel_type: string;
+    channel_target: string;
+    /** Delivery interval in milliseconds. */
+    interval_ms: number;
+    webhook_secret: string | null;
+    /** 1 = enabled, 0 = disabled. */
+    enabled: number;
+    created_at: string;
+}
+
+/**
+ * Insert a new digest configuration row.
+ * Returns the auto-generated row id.
+ */
+export function insertDigestConfig(
+    db: Database.Database,
+    config: {
+        network: string;
+        channel_type: string;
+        channel_target: string;
+        interval_ms: number;
+        webhook_secret?: string | null;
+    },
+): number {
+    const info = db
+        .prepare(
+            `INSERT INTO digest_configs (network, channel_type, channel_target, interval_ms, webhook_secret)
+             VALUES (@network, @channel_type, @channel_target, @interval_ms, @webhook_secret)`,
+        )
+        .run({
+            network: config.network,
+            channel_type: config.channel_type,
+            channel_target: config.channel_target,
+            interval_ms: config.interval_ms,
+            webhook_secret: config.webhook_secret ?? null,
+        });
+    return info.lastInsertRowid as number;
+}
+
+/**
+ * Return all enabled digest configs for the given network.
+ */
+export function getDigestConfigs(
+    db: Database.Database,
+    network: string,
+): DigestConfig[] {
+    return db
+        .prepare(
+            `SELECT * FROM digest_configs WHERE network = ? AND enabled = 1 ORDER BY id ASC`,
+        )
+        .all(network) as DigestConfig[];
+}
