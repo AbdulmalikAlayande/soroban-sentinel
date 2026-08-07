@@ -4,6 +4,7 @@ import ora from "ora";
 import { getDatabase } from "../db/database.js";
 import { getContract, getEntriesForContract, upsertExtensionPolicy, getExtensionPolicy } from "../db/repositories.js";
 import { simulateExtension, extendEntries, resolveSecretKey } from "../core/extension.js";
+import { applyGuardPolicyByTag } from "../core/fleet.js";
 import { formatContractID, formatTimeToCloseLedger, formatBytes, formatCpuInsns, printOutput, validateContractId } from "../utils/formatting.js";
 import { getLogger } from "../logging/index.js";
 import { handleRpcUnreachableError } from "../rpc/client.js";
@@ -12,8 +13,9 @@ const logger = getLogger().child({ component: "GuardCommand" });
 
 export function registerGuardCommand(program: Command): void {
     program
-        .command("guard <contractId>")
-        .description("Configure auto-extension policy for a contract")
+        .command("guard [contractId]")
+        .description("Configure auto-extension policy for a contract, or in bulk via --tag")
+        .option("--tag <tag>", "Apply policy to all contracts matching this tag instead of a single contract")
         .option("--target-ttl <ledgers>", "Target TTL in ledgers after extension", "100000")
         .option("--threshold <ledgers>", "Extend when TTL drops below this many ledgers", "20000")
         .option("--keypair <secret>", "Stellar secret key for signing extension transactions")
@@ -23,9 +25,38 @@ export function registerGuardCommand(program: Command): void {
         .option("--dry-run", "Simulate the extension without submitting")
         .option("--disable", "Disable auto-extension for this contract")
         .option("--json", "Output machine-readable JSON")
-        .action(async (contractId: string, options: { json?: boolean; targetTtl?: string; threshold?: string; keypair?: string; keypairEnv?: string; keypairVault?: string; autoExtend?: boolean; dryRun?: boolean; disable?: boolean } = {}) => {
+        .action(async (contractId: string | undefined, options: { json?: boolean; tag?: string; targetTtl?: string; threshold?: string; keypair?: string; keypairEnv?: string; keypairVault?: string; autoExtend?: boolean; dryRun?: boolean; disable?: boolean } = {}) => {
             try {
-                const contractIdValidation = validateContractId(contractId);
+                if (contractId && options.tag) {
+                    if (options.json) {
+                        printOutput({ success: false, error: "mutually_exclusive_args", message: "Cannot specify both a contract ID and --tag" }, true);
+                        process.exitCode = 1;
+                        return;
+                    }
+                    console.error(chalk.red("Cannot specify both a contract ID and --tag"));
+                    process.exit(1);
+                    return;
+                }
+
+                if (!contractId && !options.tag) {
+                    if (options.json) {
+                        printOutput({ success: false, error: "missing_target", message: "Specify either a <contractId> or --tag <tag>" }, true);
+                        process.exitCode = 1;
+                        return;
+                    }
+                    console.error(chalk.red("Please specify either a <contractId> or --tag <tag>"));
+                    process.exit(1);
+                    return;
+                }
+
+                const db = getDatabase();
+
+                if (options.tag) {
+                    await applyGuardPolicyToTag(db, options.tag, options);
+                    return;
+                }
+
+                const contractIdValidation = validateContractId(contractId!);
                 if (!contractIdValidation.valid) {
                     if (options.json) {
                         printOutput({ success: false, error: "invalid_contract_id", contractId, message: contractIdValidation.reason }, true);
@@ -37,8 +68,7 @@ export function registerGuardCommand(program: Command): void {
                     return;
                 }
 
-                const db = getDatabase();
-                const contract = getContract(db, contractId);
+                const contract = getContract(db, contractId!);
 
                 if (!contract) {
                     if (options.json) {
@@ -46,7 +76,7 @@ export function registerGuardCommand(program: Command): void {
                         process.exitCode = 1;
                         return;
                     }
-                    console.error(chalk.red(`Contract ${formatContractID(contractId)} not found. Run 'sorokeep watch' first.`));
+                    console.error(chalk.red(`Contract ${formatContractID(contractId!)} not found. Run 'sorokeep watch' first.`));
                     process.exit(1);
                 }
 
@@ -91,7 +121,7 @@ export function registerGuardCommand(program: Command): void {
                 // Handle --disable
                 if (options.disable) {
                     upsertExtensionPolicy(db, {
-                        contract_id: contractId,
+                        contract_id: contractId!,
                         enabled: false,
                         target_ttl_ledgers: targetTTL,
                         extend_when_below_ledgers: threshold,
@@ -100,7 +130,7 @@ export function registerGuardCommand(program: Command): void {
                         printOutput({ success: true, contractId, mode: "disabled", policy: { enabled: false, target_ttl_ledgers: targetTTL, extend_when_below_ledgers: threshold } }, true);
                         return;
                     }
-                    console.log(chalk.yellow(`Auto-extension disabled for ${contract.name ?? formatContractID(contractId)}`));
+                    console.log(chalk.yellow(`Auto-extension disabled for ${contract.name ?? formatContractID(contractId!)}`));
                     return;
                 }
 
@@ -146,7 +176,7 @@ export function registerGuardCommand(program: Command): void {
                     const kp = Keypair.fromSecret(secretKey!);
 
                     upsertExtensionPolicy(db, {
-                        contract_id: contractId,
+                        contract_id: contractId!,
                         enabled: true,
                         target_ttl_ledgers: targetTTL,
                         extend_when_below_ledgers: threshold,
@@ -159,7 +189,7 @@ export function registerGuardCommand(program: Command): void {
                         return;
                     }
 
-                    console.log(chalk.green(`\nAuto-extension enabled for ${contract.name ?? formatContractID(contractId)}`));
+                    console.log(chalk.green(`\nAuto-extension enabled for ${contract.name ?? formatContractID(contractId!)}`));
                     console.log(`  Target TTL:  ${targetTTL.toLocaleString()} ledgers (${formatTimeToCloseLedger(targetTTL)})`);
                     console.log(`  Threshold:   ${threshold.toLocaleString()} ledgers (${formatTimeToCloseLedger(threshold)})`);
                     console.log(`  Funded by:   ${kp.publicKey().slice(0, 8)}...${kp.publicKey().slice(-4)}`);
@@ -180,7 +210,7 @@ export function registerGuardCommand(program: Command): void {
                         process.exit(1);
                     }
 
-                     const entries = getEntriesForContract(db, contractId);
+                     const entries = getEntriesForContract(db, contractId!);
                      if (entries.length === 0) {
                          if (options.json) {
                              printOutput({ success: true, contractId, mode: "dry-run", message: "No entries to extend", entriesExtended: 0 }, true);
@@ -196,7 +226,7 @@ export function registerGuardCommand(program: Command): void {
 
                      const result = await simulateExtension(
                          db,
-                         contractId,
+                         contractId!,
                          entries.map(e => e.entry_key_xdr),
                          targetTTL,
                          kp.publicKey(),
@@ -234,7 +264,7 @@ export function registerGuardCommand(program: Command): void {
 
                 // One-time manual extension
                 if (secretKey) {
-                    const entries = getEntriesForContract(db, contractId);
+                    const entries = getEntriesForContract(db, contractId!);
                     if (entries.length === 0) {
                         if (options.json) {
                             printOutput({ success: true, contractId, mode: "manual-extend", message: "No entries to extend", entriesExtended: 0 }, true);
@@ -247,7 +277,7 @@ export function registerGuardCommand(program: Command): void {
                     const spinner = !options.json ? ora("Extending TTL...").start() : undefined;
                     const result = await extendEntries(
                         db,
-                        contractId,
+                        contractId!,
                         entries.map(e => e.entry_key_xdr),
                         targetTTL,
                         secretKey,
@@ -276,13 +306,13 @@ export function registerGuardCommand(program: Command): void {
                 }
 
                 // No keypair provided - just show current policy
-                const policy = getExtensionPolicy(db, contractId);
+                const policy = getExtensionPolicy(db, contractId!);
                 if (options.json) {
                     printOutput({ success: true, contractId, policy: policy ?? null, message: policy ? "Extension policy loaded" : "No extension policy configured" }, true);
                     return;
                 }
                 if (policy) {
-                    console.log(`\nExtension policy for ${contract.name ?? formatContractID(contractId)}:`);
+                    console.log(`\nExtension policy for ${contract.name ?? formatContractID(contractId!)}:`);
                     console.log(`  Status:    ${policy.enabled ? chalk.green("ENABLED") : chalk.yellow("DISABLED")}`);
                     console.log(`  Target:    ${policy.target_ttl_ledgers.toLocaleString()} ledgers (${formatTimeToCloseLedger(policy.target_ttl_ledgers)})`);
                     console.log(`  Threshold: ${policy.extend_when_below_ledgers.toLocaleString()} ledgers (${formatTimeToCloseLedger(policy.extend_when_below_ledgers)})`);
@@ -310,4 +340,139 @@ export function registerGuardCommand(program: Command): void {
                 process.exit(1);
             }
         });
+}
+
+interface TagPolicyOptions {
+    json?: boolean;
+    targetTtl?: string;
+    threshold?: string;
+    keypair?: string;
+    keypairEnv?: string;
+    keypairVault?: string;
+    autoExtend?: boolean;
+    disable?: boolean;
+}
+
+async function applyGuardPolicyToTag(
+    db: ReturnType<typeof getDatabase>,
+    tag: string,
+    options: TagPolicyOptions,
+): Promise<void> {
+    const targetTtlRaw = options.targetTtl ?? "100000";
+    const thresholdRaw = options.threshold ?? "20000";
+    const targetTTL = Number(targetTtlRaw);
+    const threshold = Number(thresholdRaw);
+    const isValidLedgerCount = (raw: string, value: number): boolean =>
+        /^\d+$/.test(raw) && Number.isSafeInteger(value) && value > 0;
+
+    if (!isValidLedgerCount(targetTtlRaw, targetTTL)) {
+        if (options.json) {
+            printOutput({ success: false, error: "invalid_target_ttl", tag, targetTtl: options.targetTtl }, true);
+            process.exitCode = 1;
+            return;
+        }
+        console.error(chalk.red("--target-ttl must be a positive number"));
+        process.exit(1);
+        return;
+    }
+
+    if (!isValidLedgerCount(thresholdRaw, threshold)) {
+        if (options.json) {
+            printOutput({ success: false, error: "invalid_threshold", tag, threshold: options.threshold }, true);
+            process.exitCode = 1;
+            return;
+        }
+        console.error(chalk.red("--threshold must be a positive number"));
+        process.exit(1);
+        return;
+    }
+
+    if (threshold >= targetTTL) {
+        if (options.json) {
+            printOutput({ success: false, error: "invalid_threshold_range", tag, targetTtl: targetTTL, threshold }, true);
+            process.exitCode = 1;
+            return;
+        }
+        console.error(chalk.red("--threshold must be less than --target-ttl"));
+        process.exit(1);
+        return;
+    }
+
+    let keypairSource: string | undefined;
+    let secretKey: string | undefined;
+
+    if (options.keypairEnv) {
+        keypairSource = `env:${options.keypairEnv}`;
+    } else if (options.keypairVault) {
+        keypairSource = `vault:${options.keypairVault}`;
+    } else if (options.keypair) {
+        keypairSource = options.keypair;
+    }
+
+    if (keypairSource) {
+        secretKey = await resolveSecretKey(keypairSource) ?? undefined;
+        if (!secretKey) {
+            if (options.json) {
+                printOutput({ success: false, error: "secret_resolution_failed", tag }, true);
+                process.exitCode = 1;
+                return;
+            }
+            console.error(chalk.red(`Failed to resolve secret key from source: ${keypairSource}`));
+            process.exit(1);
+            return;
+        }
+    }
+
+    if (options.autoExtend) {
+        if (!keypairSource || !(keypairSource.startsWith("env:") || keypairSource.startsWith("vault:"))) {
+            if (options.json) {
+                printOutput({ success: false, error: "invalid_key_source", tag, message: "--auto-extend requires --keypair-env or --keypair-vault" }, true);
+                process.exitCode = 1;
+                return;
+            }
+            console.error(chalk.red("--auto-extend requires --keypair-env or --keypair-vault so the daemon can resolve the key at runtime"));
+            process.exit(1);
+            return;
+        }
+    }
+
+    let keypairPublic: string | undefined;
+    if (options.autoExtend && secretKey) {
+        const { Keypair } = await import("@stellar/stellar-sdk");
+        const kp = Keypair.fromSecret(secretKey);
+        keypairPublic = kp.publicKey();
+    }
+
+    const results = applyGuardPolicyByTag(db, tag, {
+        enabled: options.disable ? false : true,
+        target_ttl_ledgers: targetTTL,
+        extend_when_below_ledgers: threshold,
+        keypair_public: keypairPublic,
+        keypair_source: keypairSource,
+    });
+
+    const successCount = results.filter((r) => r.status === "ok").length;
+    const failures = results.filter((r) => r.status === "error");
+
+    if (options.json) {
+        printOutput({ success: failures.length === 0, tag, applied: successCount, failed: failures.length, results }, true);
+        if (failures.length > 0) {
+            process.exitCode = 1;
+        }
+        return;
+    }
+
+    if (results.length === 0) {
+        console.log(chalk.yellow(`No contracts matched tag '${tag}'.`));
+        return;
+    }
+
+    console.log(chalk.green(`Applied policy to ${successCount} contract(s) matching tag '${tag}'`));
+    if (failures.length > 0) {
+        console.error(chalk.red(`Failed to update ${failures.length} contract(s):`));
+        for (const res of failures) {
+            console.error(chalk.red(`  ${formatContractID(res.contractId)}: ${res.error}`));
+        }
+        process.exitCode = 1;
+    }
 }
