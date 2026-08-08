@@ -727,6 +727,16 @@ Sigue el progreso general en el [tablero de la Hoja de Ruta de Sorokeep](https:/
 - Panel web para monitoreo visual del TTL
 - Operaciones en lote para múltiples contratos
 
+## Obtener Ayuda
+
+**¿Problemas con el demonio?** Consulta [docs/troubleshooting.md](docs/troubleshooting.md) (en inglés) para una guía completa que cubre los modos de fallo más comunes (ciclos colgados, alertas que no se disparan, auto-extensión bloqueada, errores de RPC) con comandos de diagnóstico y pasos de resolución.
+
+Si tienes dudas o problemas:
+- Consulta las [issues abiertas](https://github.com/AbdulmalikAlayande/sorokeep/issues)
+- Contacta por X: [@The_good_man02](https://twitter.com/The_good_man02)
+
+Para problemas de seguridad (filtración de claves, transacciones no intencionadas), consulta [SECURITY.md](SECURITY.md) en lugar de abrir un issue público.
+
 ## Contribución
 
 Las contribuciones son bienvenidas. Consulta [CONTRIBUTING.md](CONTRIBUTING.md) para ver las pautas, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) sobre cómo funciona el sistema en tiempo de ejecución, y [SECURITY.md](SECURITY.md) para informar sobre vulnerabilidades. Este proyecto sigue un [Código de Conducta](CODE_OF_CONDUCT.md).
