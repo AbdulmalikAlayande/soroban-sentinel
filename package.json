@@ -28,6 +28,7 @@
     "lint": "eslint src/ tests/",
     "check:test-locations": "node scripts/check-test-file-locations.mjs",
     "test": "vitest run",
+    "mutation-test": "npx stryker run",
     "test:e2e": "vitest run tests/e2e",
     "test:watch": "vitest"
   },
@@ -72,6 +73,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@stryker-mutator/core": "^9.6.1",
+    "@stryker-mutator/vitest-runner": "^9.6.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.6.2",
     "@types/nodemailer": "^8.0.1",

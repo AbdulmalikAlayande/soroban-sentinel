@@ -137,7 +137,12 @@ npx vitest run -u
 
 # Update snapshot for a specific file
 npx vitest run tests/commands/status.test.ts -u
+
+# Mutation testing (src/core/ only)
+npm run mutation-test
 ```
+
+The baseline mutation score for `src/core/` is **62.33%**. We aim to improve or maintain this score. If a surviving mutant reveals a genuinely weak test, strengthen the test rather than gaming the source code.
 
 All tests use in-memory SQLite databases and mocked RPC responses — no network calls, no filesystem side effects.
 
