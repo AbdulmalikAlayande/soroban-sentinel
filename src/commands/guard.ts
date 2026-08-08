@@ -122,6 +122,7 @@ export function registerGuardCommand(program: Command): void {
     // subcommand avoids the collision entirely.
     guard
         .command("apply [contractId]", { isDefault: true, hidden: true })
+        .description("Configure auto-extension policy for a contract, or in bulk via --tag")
         .option("--tag <tag>", "Apply policy to all contracts matching this tag instead of a single contract")
         .option("--target-ttl <ledgers>", "Target TTL in ledgers after extension", "100000")
         .option("--threshold <ledgers>", "Extend when TTL drops below this many ledgers", "20000")

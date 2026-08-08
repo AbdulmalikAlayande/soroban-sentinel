@@ -31,10 +31,13 @@ function isExcluded(relPath) {
 
 const cwd = process.cwd();
 
-// Glob every *.test.ts in the repo tree.
+// Glob every *.test.ts in the repo tree. Exclude at the glob level (not just
+// via the post-filter below) — walking node_modules first and filtering
+// after is slow enough to risk timing out once node_modules is large.
 const allTestFiles = globSync("**/*.test.ts", {
   cwd,
   nodir: true,
+  exclude: (relPath) => isExcluded(relPath.split("/").join(sep)),
 });
 
 // Partition into good (inside tests/) and bad (everything else).
