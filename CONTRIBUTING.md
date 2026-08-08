@@ -149,6 +149,16 @@ All tests use in-memory SQLite databases and mocked RPC responses — no network
 
 Snapshot tests strip ANSI color codes and normalize timestamps before comparing, so diffs focus on content and alignment rather than escape sequences.
 
+### Flaky Tests
+
+To maintain trust in our CI pipeline, we run a scheduled workflow to detect intermittent test failures (flaky tests). A test must pass reliably.
+
+If your PR is flagged as introducing a flaky test (or if a scheduled workflow opens an issue assigned to you):
+1. **Do not ignore it.** Flaky tests erode confidence in the test suite and block other contributors.
+2. **Reproduce locally:** Run the failing test repeatedly to reproduce the flakiness (e.g., using `npx vitest run tests/your.test.ts`).
+3. **Identify the root cause:** Common causes include race conditions, unmocked network or timer calls, or shared state leaking across tests.
+4. **Fix it:** Ensure the test passes 100% of the time. Avoid simply using test retries to mask the underlying issue.
+
 ### Running the CLI During Development
 
 Use `tsx` to run TypeScript directly without compiling:
