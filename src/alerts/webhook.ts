@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import type { AlertEvent } from "./types.js";
 import { getLogger } from "../logging/index.js";
 import { renderAlertTemplate } from "./templates.js";
+import { getStellarExpertContractUrl } from "./links.js";
 
 const logger = getLogger().child({ component: "WebhookHandler" });
 
@@ -32,7 +33,8 @@ export async function sendWebhookAlert(url: string, event: AlertEvent, secret?: 
             headers["Content-Type"] = "text/plain";
         }
     } else {
-        body = JSON.stringify(event);
+        const stellarExpertUrl = getStellarExpertContractUrl(event);
+        body = JSON.stringify(stellarExpertUrl ? { ...event, stellarExpertUrl } : event);
     }
 
     if (secret) {

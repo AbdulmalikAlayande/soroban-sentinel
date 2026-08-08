@@ -1,6 +1,7 @@
 import type { AlertEvent, AlertSeverity } from "./types.js";
 import { getLogger } from "../logging/index.js";
 import { renderAlertTemplate } from "./templates.js";
+import { getStellarExpertContractUrl } from "./links.js";
 
 const logger = getLogger().child({ component: "DiscordHandler" });
 const TIMEOUT_MS = 10_000;
@@ -23,6 +24,7 @@ interface DiscordField {
 
 interface DiscordEmbed {
     title: string;
+    url?: string;
     color: number;
     fields: DiscordField[];
     footer: { text: string };
@@ -159,6 +161,7 @@ function buildEmbed(event: AlertEvent): DiscordEmbed {
 
     return {
         title: buildTitle(event),
+        url: getStellarExpertContractUrl(event),
         color: SEVERITY_COLORS[event.severity],
         fields,
         footer: {

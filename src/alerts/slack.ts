@@ -1,6 +1,7 @@
 import type { AlertEvent } from "./types.js";
 import { getLogger } from "../logging/index.js";
 import { renderAlertTemplate } from "./templates.js";
+import { getStellarExpertContractUrl } from "./links.js";
 
 const logger = getLogger().child({ component: "SlackHandler" });
 const TIMEOUT_MS = 10_000;
@@ -91,10 +92,15 @@ function buildBlocks(event: AlertEvent): SlackBlock[] {
         };
     }
 
+    const contractUrl = getStellarExpertContractUrl(event);
+    const footerText = contractUrl
+        ? `Severity: *${event.severity}* | Run \`sorokeep status ${event.contractId}\` for details. | <${contractUrl}|View on Stellar.expert>`
+        : `Severity: *${event.severity}* | Run \`sorokeep status ${event.contractId}\` for details.`;
+
     const footer = {
         type: "context",
         elements: [
-            { type: "mrkdwn", text: `Severity: *${event.severity}* | Run \`sorokeep status ${event.contractId}\` for details.` },
+            { type: "mrkdwn", text: footerText },
         ],
     };
 
@@ -104,6 +110,8 @@ function buildBlocks(event: AlertEvent): SlackBlock[] {
 function buildFallbackText(event: AlertEvent): string {
     const icon = severityEmoji(event);
     const contractDisplay = event.contractName ?? event.contractId;
+    const contractUrl = getStellarExpertContractUrl(event);
+    const linkSuffix = contractUrl ? ` | ${contractUrl}` : "";
 
     if (event.type === "resource_alert") {
         const resourceType = event.resource.type === "cpu" ? "CPU" : "Memory";
@@ -111,14 +119,14 @@ function buildFallbackText(event: AlertEvent): string {
         return (
             `${icon} ${status} — ${contractDisplay} (${event.network}) | ` +
             `Usage: ${event.resource.currentUsage.toLocaleString()} / ${event.resource.limit.toLocaleString()} ` +
-            `(${event.resource.usagePercent}%)`
+            `(${event.resource.usagePercent}%)` + linkSuffix
         );
     } else if (event.type === "state_changed") {
         const diffLabel = event.diff.diffType.charAt(0).toUpperCase() + event.diff.diffType.slice(1);
         return (
             `${icon} State ${diffLabel} — ${contractDisplay} (${event.network}) | ` +
             `Entry: ${event.entry.label ?? event.entry.type} | ` +
-            `Old: ${event.diff.oldValueXdr ?? "(none)"} → New: ${event.diff.newValueXdr ?? "(none)"}`
+            `Old: ${event.diff.oldValueXdr ?? "(none)"} → New: ${event.diff.newValueXdr ?? "(none)"}` + linkSuffix
         );
     } else if (event.type === "threshold_crossed") {
         const status = `TTL ${event.severity === "critical" ? "CRITICAL" : "Warning"}`;
@@ -126,10 +134,10 @@ function buildFallbackText(event: AlertEvent): string {
             `${icon} ${status} — ${contractDisplay} (${event.network}) | ` +
             `Remaining: ${event.threshold.currentRemainingLedgers.toLocaleString()} ledgers ` +
             `(${event.threshold.approximateTimeRemaining}) | ` +
-            `Threshold: ${event.threshold.configuredLedgers.toLocaleString()} ledgers`
+            `Threshold: ${event.threshold.configuredLedgers.toLocaleString()} ledgers` + linkSuffix
         );
     } else {
-        return `${icon} Alert Resolved — ${contractDisplay} (${event.network})`;
+        return `${icon} Alert Resolved — ${contractDisplay} (${event.network})` + linkSuffix;
     }
 }
 

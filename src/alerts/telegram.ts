@@ -2,6 +2,7 @@ import type { AlertEvent } from "./types.js";
 import { loadConfig } from "../utils/config.js";
 import { getLogger } from "../logging/index.js";
 import { renderAlertTemplate } from "./templates.js";
+import { getStellarExpertContractUrl } from "./links.js";
 
 const logger = getLogger().child({ component: "TelegramHandler" });
 const TELEGRAM_API_BASE = "https://api.telegram.org/bot";
@@ -37,9 +38,18 @@ function severityEmoji(event: AlertEvent): string {
     return "⚠️";
 }
 
+/**
+ * A MarkdownV2 line linking to Stellar.expert, or "" if no URL can be built.
+ */
+function buildStellarExpertLine(event: AlertEvent): string {
+    const url = getStellarExpertContractUrl(event);
+    return url ? `[View on Stellar\\.expert](${url})` : "";
+}
+
 function buildMessage(event: AlertEvent): string {
     const icon = severityEmoji(event);
     const contractDisplay = event.contractName ?? event.contractId;
+    const expertLine = buildStellarExpertLine(event);
 
     if (event.type === "resource_alert") {
         const level = event.severity === "critical" ? "CRITICAL" : "Warning";
@@ -53,6 +63,7 @@ function buildMessage(event: AlertEvent): string {
             `*Usage:* ${event.resource.usagePercent}% \\(${event.resource.currentUsage.toLocaleString()} / ${event.resource.limit.toLocaleString()}\\)`,
             ``,
             `_Severity: ${escapeMarkdown(event.severity)} \\| Contract: ${escapeMarkdown(event.contractId)}_`,
+            ...(expertLine ? [expertLine] : []),
         ].join("\n");
     }
 
@@ -72,6 +83,7 @@ function buildMessage(event: AlertEvent): string {
             `*New Value:* ${newValStr}`,
             ``,
             `_Contract: ${escapeMarkdown(event.contractId)}_`,
+            ...(expertLine ? [expertLine] : []),
         ].join("\n");
     }
 
@@ -85,6 +97,7 @@ function buildMessage(event: AlertEvent): string {
             `*Blocked Extension Cost:* ${escapeMarkdown(`${event.budget.estimatedFeeXlm.toFixed(7)} XLM`)}`,
             ``,
             `_Contract: ${escapeMarkdown(event.contractId)}_`,
+            ...(expertLine ? [expertLine] : []),
         ].join("\n");
     }
 
@@ -103,6 +116,7 @@ function buildMessage(event: AlertEvent): string {
         `*Threshold:* ${event.threshold.configuredLedgers.toLocaleString()} ledgers`,
         ``,
         `_Severity: ${escapeMarkdown(event.severity)} \\| Contract: ${escapeMarkdown(event.contractId)}_`,
+        ...(expertLine ? [expertLine] : []),
     ].join("\n");
 }
 
