@@ -20,6 +20,8 @@
     <a href="#alerting">Alerting</a>
     &middot;
     <a href="#contributing">Contributing</a>
+    &middot;
+    <a href="CHANGELOG.md">Changelog</a>
   </p>
 </p>
 
@@ -635,6 +637,8 @@ slackToken: "xoxb-..." # Optional — can also use SOROKEEP_SLACK_TOKEN env var
 rpcUrl: "https://..." # Optional — overrides network default
 ```
 
+For a complete list of all supported fields (including integrations like Telegram, Vault, and Templates) and their environment variable overrides, see the [Configuration Reference](docs/config-reference.md).
+
 The config file is created with `0600` permissions (owner read/write only) to protect sensitive values like the Slack token.
 
 ## Project Structure
@@ -774,6 +778,16 @@ Track overall progress on the [Sorokeep Roadmap board](https://github.com/Abdulm
 - Reusable GitHub Action wrapping `sorokeep check` for CI-integrated TTL checks
 - Web dashboard for visual TTL monitoring
 - Multi-contract batch operations
+
+## Getting Help
+
+**Troubleshooting daemon issues?** See [docs/troubleshooting.md](docs/troubleshooting.md) for a complete runbook covering common failure modes (hung cycles, alerts not firing, auto-extension blocked, RPC errors) with diagnostic commands and resolution steps.
+
+If you're stuck or have questions:
+- Check [open issues](https://github.com/AbdulmalikAlayande/sorokeep/issues)
+- Reach out on X: [@The_good_man02](https://twitter.com/The_good_man02)
+
+For security issues (key leakage, unintended transactions), see [SECURITY.md](SECURITY.md) instead of opening a public issue.
 
 ## Contributing
 

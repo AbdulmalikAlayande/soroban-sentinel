@@ -334,4 +334,6 @@ Before submitting a PR, verify:
 
 ## Getting Help
 
+**Troubleshooting production daemon issues?** See [docs/troubleshooting.md](docs/troubleshooting.md) for a complete runbook covering common failure modes (hung cycles, alerts not firing, auto-extension blocked, RPC errors) with diagnostic commands and resolution steps.
+
 If you're stuck or have questions about the codebase, open an issue or reach out on X ([@The_good_man02](https://twitter.com/The_good_man02)). We'd rather answer questions early than review a PR that went in the wrong direction.
