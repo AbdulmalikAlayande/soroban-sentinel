@@ -20,6 +20,8 @@
     <a href="#alerting">Alerting</a>
     &middot;
     <a href="#contributing">Contributing</a>
+    &middot;
+    <a href="CHANGELOG.md">Changelog</a>
   </p>
 </p>
 

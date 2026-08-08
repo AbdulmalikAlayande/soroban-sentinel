@@ -12,6 +12,7 @@
   "files": [
     "dist",
     "man",
+    "CHANGELOG.md",
     "README.md",
     "LICENSE",
     "CONTRIBUTING.md"
