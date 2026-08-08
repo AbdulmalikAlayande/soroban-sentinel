@@ -784,6 +784,16 @@ Track overall progress on the [Sorokeep Roadmap board](https://github.com/Abdulm
 - Web dashboard for visual TTL monitoring
 - Multi-contract batch operations
 
+## Getting Help
+
+**Troubleshooting daemon issues?** See [docs/troubleshooting.md](docs/troubleshooting.md) for a complete runbook covering common failure modes (hung cycles, alerts not firing, auto-extension blocked, RPC errors) with diagnostic commands and resolution steps.
+
+If you're stuck or have questions:
+- Check [open issues](https://github.com/AbdulmalikAlayande/sorokeep/issues)
+- Reach out on X: [@The_good_man02](https://twitter.com/The_good_man02)
+
+For security issues (key leakage, unintended transactions), see [SECURITY.md](SECURITY.md) instead of opening a public issue.
+
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the system works at runtime, and [SECURITY.md](SECURITY.md) for reporting vulnerabilities. This project follows a [Code of Conduct](CODE_OF_CONDUCT.md).
