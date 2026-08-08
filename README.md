@@ -640,6 +640,8 @@ slackToken: "xoxb-..." # Optional — can also use SOROKEEP_SLACK_TOKEN env var
 rpcUrl: "https://..." # Optional — overrides network default
 ```
 
+For a complete list of all supported fields (including integrations like Telegram, Vault, and Templates) and their environment variable overrides, see the [Configuration Reference](docs/config-reference.md).
+
 The config file is created with `0600` permissions (owner read/write only) to protect sensitive values like the Slack token.
 
 ## Project Structure
