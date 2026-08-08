@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+﻿import { describe, it, expect, vi, beforeEach } from "vitest";
 import type Database from "better-sqlite3";
 import { getDatabaseForTesting } from "../../src/db/database";
 import {
@@ -291,13 +291,13 @@ describe("deliverPendingAlerts", () => {
             channels.webhook.send.mockRejectedValue(new Error("fail"));
             const { alertFiredId } = seedAlert(db, { contractId: "CA" });
 
-            // Run 2 cycles — each should attempt delivery.
+            // Run 2 cycles ΓÇö each should attempt delivery.
             for (let i = 0; i < 2; i++) {
                 await deliverPendingAlerts(db, "testnet", channels);
             }
             expect(channels.webhook.send).toHaveBeenCalledTimes(2);
 
-            // Next cycle should NOT attempt delivery — alert excluded by retry cap of 2.
+            // Next cycle should NOT attempt delivery ΓÇö alert excluded by retry cap of 2.
             await deliverPendingAlerts(db, "testnet", channels);
             expect(channels.webhook.send).toHaveBeenCalledTimes(2);
 
@@ -553,7 +553,7 @@ describe("Quiet hours", () => {
     });
 
     it("delivers an alert whose config has NO quiet hours configured", async () => {
-        // Baseline: no quiet hours → behaves exactly as before.
+        // Baseline: no quiet hours ΓåÆ behaves exactly as before.
         seedAlert(db, {
             contractId: "CA",
             // No quietHoursStart / quietHoursEnd / quietHoursTimezone
@@ -568,7 +568,7 @@ describe("Quiet hours", () => {
 
     it("skips (keeps pending) an alert when the current time is inside the quiet window", async () => {
         // Use UTC timezone so we don't need offset arithmetic in the test.
-        // Set the quiet window to cover a large range (00:00–23:59) in UTC
+        // Set the quiet window to cover a large range (00:00ΓÇô23:59) in UTC
         // so that whatever time the test runs it will be inside the window.
         seedAlert(db, {
             contractId: "CA",
@@ -596,7 +596,7 @@ describe("Quiet hours", () => {
         // At any normal test run time (unless tests run exactly at midnight UTC!)
         // the current UTC time will be after 00:01.
         // To make the test deterministic, we set up a window that ended in the past.
-        // We use the fixed string "00:00"-"00:01" in UTC — unless the test runs
+        // We use the fixed string "00:00"-"00:01" in UTC ΓÇö unless the test runs
         // at exactly 00:00 UTC, the current time is outside this window.
         const now = new Date();
         const utcHour = now.getUTCHours();
@@ -626,15 +626,15 @@ describe("Quiet hours", () => {
         expect(result.delivered).toBe(1);
     });
 
-    it("handles overnight quiet windows (start > end, e.g. 22:00–06:00)", async () => {
-        // 22:00–06:00 UTC covers midnight. Since tests could run at any time,
+    it("handles overnight quiet windows (start > end, e.g. 22:00ΓÇô06:00)", async () => {
+        // 22:00ΓÇô06:00 UTC covers midnight. Since tests could run at any time,
         // we test both inside and outside with two separate assertions.
         const now = new Date();
         const utcHour = now.getUTCHours();
         const utcMin = now.getUTCMinutes();
         const currentMinutes = utcHour * 60 + utcMin;
 
-        // Current time is in 22:00–23:59 or 00:00–05:59 → inside window.
+        // Current time is in 22:00ΓÇô23:59 or 00:00ΓÇô05:59 ΓåÆ inside window.
         const insideWindow =
             currentMinutes >= 22 * 60 || currentMinutes < 6 * 60;
 
@@ -668,7 +668,7 @@ describe("Quiet hours", () => {
             quietHoursTimezone: "UTC",
         });
 
-        // First cycle: inside window — skipped.
+        // First cycle: inside window ΓÇö skipped.
         await deliverPendingAlerts(db, "testnet", channels);
         expect(channels.webhook.send).not.toHaveBeenCalled();
 
@@ -684,7 +684,7 @@ describe("Quiet hours", () => {
             "UPDATE alert_configs SET quiet_hours_start = NULL, quiet_hours_end = NULL, quiet_hours_timezone = NULL WHERE contract_id = 'CA'"
         ).run();
 
-        // Second cycle: outside window — delivered.
+        // Second cycle: outside window ΓÇö delivered.
         const result = await deliverPendingAlerts(db, "testnet", channels);
         expect(channels.webhook.send).toHaveBeenCalledTimes(1);
         expect(result.delivered).toBe(1);
@@ -707,13 +707,13 @@ describe("Quiet hours", () => {
             .prepare("SELECT retry_count, delivered FROM alerts_fired WHERE id = 1")
             .get() as { retry_count: number; delivered: number };
 
-        // retry_count must stay at 0 — quiet-hour skips are NOT failures.
+        // retry_count must stay at 0 ΓÇö quiet-hour skips are NOT failures.
         expect(row.retry_count).toBe(0);
         expect(row.delivered).toBe(0);
     });
 
     it("a second alert without quiet hours is delivered even when another alert is skipped", async () => {
-        // Alert A: has quiet window covering all day → skipped.
+        // Alert A: has quiet window covering all day ΓåÆ skipped.
         seedAlert(db, {
             contractId: "CA",
             entryKeyXdr: "key-a",
@@ -722,7 +722,7 @@ describe("Quiet hours", () => {
             quietHoursTimezone: "UTC",
         });
 
-        // Alert B: no quiet window → delivered.
+        // Alert B: no quiet window ΓåÆ delivered.
         seedAlert(db, {
             contractId: "CB",
             entryKeyXdr: "key-b",
