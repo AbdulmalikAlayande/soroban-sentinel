@@ -56,10 +56,13 @@ export function statusIndicator(status: TTLStatus): string {
 
 export function formatBytes(bytes: number): string {
     if (bytes === 0) return "0 B";
+    const isNegative = bytes < 0;
+    const absBytes = Math.abs(bytes);
     const k = 1024;
     const sizes = ["B", "KB", "MB", "GB", "TB"];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+    const i = Math.floor(Math.log(absBytes) / Math.log(k));
+    const result = parseFloat((absBytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+    return isNegative ? "-" + result : result;
 }
 
 export function formatCpuInsns(insns: number): string {
