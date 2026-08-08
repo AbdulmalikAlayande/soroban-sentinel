@@ -125,3 +125,46 @@ export function validateContractId(id: string): ValidationResult {
 
     return { valid: true };
 }
+
+export interface PaginationMeta {
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    totalPages: number;
+}
+
+export interface PaginationResult<T> {
+    items: T[];
+    meta: PaginationMeta;
+}
+
+/**
+ * Paginate an already-fetched, in-memory list. Out-of-range page numbers are
+ * clamped to the nearest valid page rather than returning an empty slice —
+ * callers get valid, non-empty output instead of having to special-case
+ * out-of-range requests.
+ */
+export function paginateList<T>(
+    items: T[],
+    page: number,
+    pageSize: number = 25,
+): PaginationResult<T> {
+    const totalItems = items.length;
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+    const safePage = Math.max(1, Math.min(page, totalPages));
+    const start = (safePage - 1) * pageSize;
+
+    return {
+        items: items.slice(start, start + pageSize),
+        meta: {
+            page: safePage,
+            pageSize,
+            totalItems,
+            totalPages,
+        },
+    };
+}
+
+export function formatPaginationFooter(meta: PaginationMeta): string {
+    return `Page ${meta.page} of ${meta.totalPages} (${meta.totalItems} total)`;
+}

@@ -6,6 +6,8 @@ import {
     classifyTTL,
     statusIndicator,
     formatContractID,
+    paginateList,
+    formatPaginationFooter,
     type TTLStatus,
 } from "../utils/formatting.js";
 
@@ -22,7 +24,9 @@ export function registerFleetCommand(program: Command): void {
     program
         .command("fleet status")
         .description("Show aggregate health dashboard across all watched contracts")
-        .action(() => {
+        .option("--page <n>", "Page number", "1")
+        .option("--page-size <n>", "Items per page", "25")
+        .action((_status: string, options: { page?: string; pageSize?: string } = {}) => {
             const db = getDatabase();
             const contracts = getAllContracts(db);
 
@@ -94,10 +98,14 @@ export function registerFleetCommand(program: Command): void {
                 10,
             );
 
+            const page = parseInt(options.page ?? "1", 10);
+            const pageSize = parseInt(options.pageSize ?? "25", 10);
+            const result = paginateList(contractStatuses, page, pageSize);
+
             console.log(`  ${chalk.bold("Contract".padEnd(maxNameLen))}  ${chalk.bold("Network".padEnd(8))}  ${chalk.bold("Status")}`);
             console.log(`  ${"─".repeat(maxNameLen + 2 + 8 + 2 + 10)}`);
 
-            for (const cs of contractStatuses) {
+            for (const cs of result.items) {
                 const displayName = cs.name ?? formatContractID(cs.id);
                 const paddedName = displayName.padEnd(maxNameLen);
                 console.log(
@@ -105,6 +113,8 @@ export function registerFleetCommand(program: Command): void {
                 );
             }
 
+            console.log();
+            console.log(chalk.dim(`  ${formatPaginationFooter(result.meta)}`));
             console.log();
         });
 }

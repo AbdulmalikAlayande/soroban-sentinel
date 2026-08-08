@@ -1,17 +1,63 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { getDatabase } from "../db/database.js";
+import { getAllContracts } from "../db/repositories.js";
 import { getContractStatus, ContractNotFoundError } from "../core/status.js";
 import {
     statusIndicator,
     formatContractID,
     validateContractId,
+    paginateList,
+    formatPaginationFooter,
 } from "../utils/formatting.js";
 
 export function registerStatusCommand(program: Command): void {
-    program
-        .command("status <contractId>")
-        .description("Show TTL and storage health for a watched contract")
+    const status = program
+        .command("status")
+        .description("Show TTL and storage health for watched contracts");
+
+    status
+        .command("list")
+        .description("List all watched contracts")
+        .option("--page <n>", "Page number", "1")
+        .option("--page-size <n>", "Items per page", "25")
+        .action((options: { page?: string; pageSize?: string } = {}) => {
+            const db = getDatabase();
+            const contracts = getAllContracts(db);
+
+            if (contracts.length === 0) {
+                console.log();
+                console.log(chalk.yellow("  No contracts watched yet."));
+                console.log(chalk.dim("  Run 'sorokeep watch <contractId>' first."));
+                console.log();
+                return;
+            }
+
+            const page = parseInt(options.page ?? "1", 10);
+            const pageSize = parseInt(options.pageSize ?? "25", 10);
+            const result = paginateList(contracts, page, pageSize);
+
+            console.log();
+            console.log(chalk.bold("  Watched Contracts"));
+            console.log();
+
+            for (const contract of result.items) {
+                const displayName = contract.name ?? formatContractID(contract.id);
+                const ledgerStr = contract.last_checked_ledger != null
+                    ? `ledger ${contract.last_checked_ledger.toLocaleString()}`
+                    : chalk.dim("never checked");
+                console.log(
+                    `  ${chalk.cyan(formatContractID(contract.id))}  ${displayName}  ${contract.network}  ${ledgerStr}`,
+                );
+            }
+
+            console.log();
+            console.log(chalk.dim(`  ${formatPaginationFooter(result.meta)}`));
+            console.log();
+        });
+
+    status
+        .argument("<contractId>", "Contract ID to inspect")
         .option("--json", "Output machine-readable JSON")
         .action((contractId: string, options: { json?: boolean } = {}) => {
             const contractIdValidation = validateContractId(contractId);

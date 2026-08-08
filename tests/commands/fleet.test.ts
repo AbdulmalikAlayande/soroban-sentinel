@@ -112,4 +112,59 @@ describe("fleet status command", () => {
         expect(output).toContain("CRITICAL: 1");
         expect(output).toContain("OK: 0");
     });
+
+    // ── Pagination (#408) ────────────────────────────────────────────────
+
+    function seedManyContracts(count: number) {
+        for (let i = 0; i < count; i++) {
+            const id = `C${String(i).padStart(55, "0")}`;
+            seedContract(id, `Contract ${i + 1}`, 1_000_000, 50_000);
+        }
+    }
+
+    it("shows 25 contracts on page 1 of a 60-contract fleet by default", () => {
+        seedManyContracts(60);
+
+        parse(["fleet", "status"]);
+
+        const output = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(output).toContain("Contract 1");
+        expect(output).toContain("Contract 25");
+        expect(output).not.toContain("Contract 26");
+        expect(output).toContain("Page 1 of 3 (60 total)");
+    });
+
+    it("shows contracts 26-50 on page 2 with --page-size 25", () => {
+        seedManyContracts(60);
+
+        parse(["fleet", "status", "--page", "2", "--page-size", "25"]);
+
+        const output = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(output).toContain("Contract 26");
+        expect(output).toContain("Contract 50");
+        expect(output).not.toContain("Contract 25 ");
+        expect(output).toContain("Page 2 of 3 (60 total)");
+    });
+
+    it("shows the remaining 10 contracts on page 3 with --page-size 25", () => {
+        seedManyContracts(60);
+
+        parse(["fleet", "status", "--page", "3", "--page-size", "25"]);
+
+        const output = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(output).toContain("Contract 51");
+        expect(output).toContain("Contract 60");
+        expect(output).toContain("Page 3 of 3 (60 total)");
+    });
+
+    it("clamps an out-of-range page to the last valid page instead of showing empty or error output", () => {
+        seedManyContracts(60);
+
+        parse(["fleet", "status", "--page", "99", "--page-size", "25"]);
+
+        const output = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(output).toContain("Fleet Health Summary");
+        expect(output).toContain("Page 3 of 3 (60 total)");
+        expect(output).toContain("Contract 51");
+    });
 });
