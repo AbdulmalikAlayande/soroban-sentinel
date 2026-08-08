@@ -20,7 +20,7 @@ vi.mock("ora", () => ({
 }));
 
 import { getDatabaseForTesting } from "../../src/db/database";
-import { insertContract, getExtensionPolicy } from "../../src/db/repositories";
+import { insertContract, getExtensionPolicy, upsertEntry, recordExtension } from "../../src/db/repositories";
 
 // A genuine Stellar secret key used across all tests (safe — only for testing)
 const VALID_TEST_SECRET = "SCG2IACKCYEUMINFHVGAOB3UFDVSVRACCZJH4K3R6WVC2OTRDQPK2GWG";
@@ -302,5 +302,120 @@ describe("Guard Command --auto-extend integration", () => {
 
         delete process.env.STELLAR_TEST_KEY;
 
+    });
+});
+
+// ─── guard cost-estimate (#508) ─────────────────────────────────────────────
+
+describe("guard cost-estimate", () => {
+    function seedExtensionHistory(contractId: string, costs: number[]): void {
+        upsertEntry(sharedDb, {
+            contract_id: contractId,
+            entry_key_xdr: "AAAA",
+            entry_type: "instance",
+            live_until_ledger: 500_000,
+        });
+        const entry = sharedDb
+            .prepare("SELECT id FROM contract_entries WHERE contract_id = ?")
+            .get(contractId) as { id: number };
+
+        costs.forEach((cost, i) => {
+            recordExtension(sharedDb, {
+                contract_id: contractId,
+                contract_entry_id: entry.id,
+                old_ttl_ledgers: 1_000,
+                new_ttl_ledgers: 100_000,
+                tx_hash: `TX${i}`,
+                cost_xlm: cost,
+                executed_at_ledger: 400_000 + i,
+            });
+        });
+    }
+
+    beforeEach(() => {
+        vi.restoreAllMocks();
+        sharedDb = getDatabaseForTesting();
+        insertContract(sharedDb, {
+            id: TEST_CONTRACT_ID,
+            name: "Cost Estimate Contract",
+            network: "testnet",
+        });
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        vi.spyOn(console, "error").mockImplementation(() => {});
+        vi.spyOn(process, "exit").mockImplementation((() => {}) as any);
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it("a higher target TTL produces a lower estimated extensions/month than a lower target TTL", async () => {
+        seedExtensionHistory(TEST_CONTRACT_ID, [0.1, 0.1, 0.1]);
+        const logSpy = vi.spyOn(console, "log");
+
+        const program = new Command();
+        registerGuardCommand(program);
+        await program.parseAsync([
+            "node", "sorokeep",
+            "guard", "cost-estimate", TEST_CONTRACT_ID,
+            "--target-ttl", "50000,500000",
+        ]);
+
+        const output = logSpy.mock.calls.map((args) => args.join(" ")).join("\n");
+        const rowFor = (ttl: string) => output.split("\n").find((line) => line.trim().startsWith(ttl));
+        const lowTtlRow = rowFor("50000")!;
+        const highTtlRow = rowFor("500000")!;
+        expect(lowTtlRow).toBeDefined();
+        expect(highTtlRow).toBeDefined();
+
+        const extractExtensionsPerMonth = (line: string) => parseFloat(line.trim().split(/\s+/)[1]);
+        expect(extractExtensionsPerMonth(highTtlRow)).toBeLessThan(extractExtensionsPerMonth(lowTtlRow));
+    });
+
+    it("handles a contract with no extension history gracefully", async () => {
+        const logSpy = vi.spyOn(console, "log");
+        const exitSpy = vi.spyOn(process, "exit");
+
+        const program = new Command();
+        registerGuardCommand(program);
+        await program.parseAsync([
+            "node", "sorokeep",
+            "guard", "cost-estimate", TEST_CONTRACT_ID,
+            "--target-ttl", "100000",
+        ]);
+
+        expect(exitSpy).not.toHaveBeenCalled();
+        const output = logSpy.mock.calls.map((args) => args.join(" ")).join("\n");
+        expect(output).toContain("No extension history found");
+    });
+
+    it("rejects a non-numeric --target-ttl", async () => {
+        seedExtensionHistory(TEST_CONTRACT_ID, [0.1]);
+        const exitSpy = vi.spyOn(process, "exit");
+
+        const program = new Command();
+        registerGuardCommand(program);
+        await program.parseAsync([
+            "node", "sorokeep",
+            "guard", "cost-estimate", TEST_CONTRACT_ID,
+            "--target-ttl", "not-a-number",
+        ]);
+
+        expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it("rejects a contract that isn't registered", async () => {
+        const exitSpy = vi.spyOn(process, "exit");
+        const UNREGISTERED = "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526";
+
+        const program = new Command();
+        registerGuardCommand(program);
+        await program.parseAsync([
+            "node", "sorokeep",
+            "guard", "cost-estimate", UNREGISTERED,
+            "--target-ttl", "100000",
+        ]);
+
+        expect(exitSpy).toHaveBeenCalledWith(1);
     });
 });

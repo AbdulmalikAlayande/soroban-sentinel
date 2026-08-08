@@ -5,16 +5,123 @@ import { getDatabase } from "../db/database.js";
 import { getContract, getEntriesForContract, upsertExtensionPolicy, getExtensionPolicy } from "../db/repositories.js";
 import { simulateExtension, extendEntries, resolveSecretKey } from "../core/extension.js";
 import { applyGuardPolicyByTag } from "../core/fleet.js";
-import { formatContractID, formatTimeToCloseLedger, formatBytes, formatCpuInsns, printOutput, validateContractId } from "../utils/formatting.js";
+import { getExtensionCosts } from "../core/costs.js";
+import { formatContractID, formatTimeToCloseLedger, formatBytes, formatCpuInsns, printOutput, validateContractId, convertLedgerCloseTimeToSeconds } from "../utils/formatting.js";
 import { getLogger } from "../logging/index.js";
 import { handleRpcUnreachableError } from "../rpc/client.js";
 
 const logger = getLogger().child({ component: "GuardCommand" });
 
+function parseTargetTtlCandidates(rawValue: string): number[] {
+    const values = rawValue
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .map((item) => parseInt(item, 10));
+
+    if (values.length === 0 || values.some((value) => Number.isNaN(value) || value <= 0)) {
+        return [];
+    }
+
+    return values;
+}
+
+function estimateExtensionsPerMonth(targetTtlLedgers: number): number {
+    const secondsPerLedger = convertLedgerCloseTimeToSeconds(1);
+    const ledgersPerMonth = (30 * 24 * 60 * 60) / secondsPerLedger;
+    return ledgersPerMonth / targetTtlLedgers;
+}
+
+async function runCostEstimateCommand(contractId: string, options: { targetTtl?: string }): Promise<void> {
+    try {
+        const contractIdValidation = validateContractId(contractId);
+        if (!contractIdValidation.valid) {
+            console.error(chalk.red(`Invalid contract ID: ${contractIdValidation.reason}`));
+            process.exit(1);
+            return;
+        }
+
+        const db = getDatabase();
+        const contract = getContract(db, contractId);
+
+        if (!contract) {
+            console.error(chalk.red(`Contract ${formatContractID(contractId)} not found. Run 'sorokeep watch' first.`));
+            process.exit(1);
+            return;
+        }
+
+        const targetTtls = parseTargetTtlCandidates(options.targetTtl ?? "100000");
+        if (targetTtls.length === 0) {
+            console.error(chalk.red("--target-ttl must be a comma-separated list of positive numbers"));
+            process.exit(1);
+            return;
+        }
+
+        const costResult = getExtensionCosts(db, contractId, { period: 30 });
+        if (!costResult.success) {
+            console.error(chalk.red(`Unable to estimate cost for ${formatContractID(contractId)}.`));
+            process.exit(1);
+            return;
+        }
+
+        if (costResult.data.summary.totalExtensions === 0) {
+            console.log(chalk.yellow(`No extension history found for ${contract.name ?? formatContractID(contractId)}. Unable to estimate monthly costs.`));
+            return;
+        }
+
+        const averageCostPerExtension = costResult.data.summary.totalCostXlm / costResult.data.summary.totalExtensions;
+        const rows = targetTtls.map((targetTtl) => {
+            const estimatedExtensionsPerMonth = estimateExtensionsPerMonth(targetTtl);
+            return {
+                targetTtl,
+                estimatedExtensionsPerMonth,
+                estimatedMonthlyCost: estimatedExtensionsPerMonth * averageCostPerExtension,
+            };
+        });
+
+        console.log();
+        console.log(chalk.bold(`  Estimated monthly cost for ${contract.name ?? formatContractID(contractId)}:`));
+        console.log();
+        console.log(`  ${"Target TTL".padEnd(14)} ${"Est. Extensions/Month".padEnd(24)} Est. Monthly Cost`);
+        for (const row of rows) {
+            console.log(
+                `  ${String(row.targetTtl).padEnd(14)} ${row.estimatedExtensionsPerMonth.toFixed(3).padEnd(24)} ${row.estimatedMonthlyCost.toFixed(6)} XLM`,
+            );
+        }
+        console.log();
+    } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error("Guard cost-estimate failed", { error: msg });
+        if (!handleRpcUnreachableError(error)) {
+            console.error(chalk.red(`Error: ${msg}`));
+        }
+        process.exit(1);
+    }
+}
+
 export function registerGuardCommand(program: Command): void {
-    program
-        .command("guard [contractId]")
-        .description("Configure auto-extension policy for a contract, or in bulk via --tag")
+    const guard = program
+        .command("guard")
+        .description("Configure auto-extension policy for a contract, or in bulk via --tag");
+
+    guard
+        .command("cost-estimate <contractId>")
+        .description("Estimate monthly extension cost for one or more candidate target TTL values")
+        .option("--target-ttl <values>", "Comma-separated target TTL values in ledgers", "100000")
+        .action(async (contractId: string, options: { targetTtl?: string }) => {
+            await runCostEstimateCommand(contractId, options);
+        });
+
+    // Registered as a real (hidden, default) subcommand rather than attached
+    // directly to `guard` via .argument()/.option() — Commander lets a
+    // parent's own option silently shadow an identically-named option on a
+    // child subcommand when the parent also owns argument/option/action of
+    // its own, which broke `guard cost-estimate --target-ttl` above (it kept
+    // resolving to this command's --target-ttl default instead of the value
+    // the user passed to cost-estimate). Making this its own isDefault
+    // subcommand avoids the collision entirely.
+    guard
+        .command("apply [contractId]", { isDefault: true, hidden: true })
         .option("--tag <tag>", "Apply policy to all contracts matching this tag instead of a single contract")
         .option("--target-ttl <ledgers>", "Target TTL in ledgers after extension", "100000")
         .option("--threshold <ledgers>", "Extend when TTL drops below this many ledgers", "20000")
