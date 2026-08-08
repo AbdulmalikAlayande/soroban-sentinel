@@ -4,6 +4,7 @@ import { registerBudgetCommand } from "../../src/commands/budget";
 import { Command } from "commander";
 import * as dbLib from "../../src/db/database";
 import * as budgetModule from "../../src/core/budget";
+import Database from "better-sqlite3";
 
 vi.mock("../../src/db/database");
 
@@ -50,6 +51,68 @@ describe("Budget Command CLI", () => {
             expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("25.0%"));
             // progress bar characters
             expect(mockLog).toHaveBeenCalledWith(expect.stringMatching(/█/));
+        });
+    });
+
+    describe("pool", () => {
+        let db: Database.Database;
+
+        beforeEach(() => {
+            db = new Database(":memory:");
+            db.exec(`
+                CREATE TABLE contracts (id TEXT PRIMARY KEY);
+                CREATE TABLE shared_budget_pools (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+                    monthly_limit_xlm REAL NOT NULL CHECK(monthly_limit_xlm >= 0),
+                    billing_cycle TEXT NOT NULL, spent_xlm REAL NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE shared_budget_pool_contracts (
+                    pool_id INTEGER NOT NULL REFERENCES shared_budget_pools(id) ON DELETE CASCADE,
+                    contract_id TEXT NOT NULL UNIQUE REFERENCES contracts(id) ON DELETE CASCADE,
+                    assigned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(pool_id, contract_id)
+                );
+                INSERT INTO contracts (id) VALUES ('C123');
+            `);
+            vi.spyOn(dbLib, "getDatabase").mockReturnValue(db);
+        });
+
+        afterEach(() => db.close());
+
+        it("creates a named shared pool with a monthly limit", () => {
+            program.parse(["node", "test", "budget", "pool", "create", "--name", "product-line", "--limit", "100"]);
+            expect(db.prepare(`SELECT name, monthly_limit_xlm, spent_xlm FROM shared_budget_pools`).get())
+                .toEqual({ name: "product-line", monthly_limit_xlm: 100, spent_xlm: 0 });
+            expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('Shared budget pool "product-line" created'));
+        });
+
+        it("assigns a contract to a named pool", () => {
+            db.prepare(`INSERT INTO shared_budget_pools (name, monthly_limit_xlm, billing_cycle) VALUES ('product-line', 100, '2026-07')`).run();
+            program.parse(["node", "test", "budget", "pool", "assign", "--pool", "product-line", "--contract", "C123"]);
+            expect(db.prepare(`SELECT p.name, pc.contract_id FROM shared_budget_pool_contracts pc JOIN shared_budget_pools p ON p.id = pc.pool_id`).get())
+                .toEqual({ name: "product-line", contract_id: "C123" });
+            expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("assigned"));
+        });
+
+        it("rejects a negative pool limit", () => {
+            program.parse(["node", "test", "budget", "pool", "create", "--name", "bad", "--limit", "-1"]);
+            expect(mockExit).toHaveBeenCalledWith(1);
+            expect(db.prepare("SELECT COUNT(*) AS count FROM shared_budget_pools").get()).toEqual({ count: 0 });
+        });
+
+        it("reports a clear error when assigning to a pool that doesn't exist", () => {
+            program.parse(["node", "test", "budget", "pool", "assign", "--pool", "ghost", "--contract", "C123"]);
+            expect(mockExit).toHaveBeenCalledWith(1);
+            expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('"ghost" not found'));
+        });
+
+        it("reports a clear error when assigning an unregistered contract", () => {
+            db.prepare(`INSERT INTO shared_budget_pools (name, monthly_limit_xlm, billing_cycle) VALUES ('product-line', 100, '2026-07')`).run();
+            program.parse(["node", "test", "budget", "pool", "assign", "--pool", "product-line", "--contract", "C999"]);
+            expect(mockExit).toHaveBeenCalledWith(1);
+            expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("not found"));
         });
     });
 });
