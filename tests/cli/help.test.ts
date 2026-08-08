@@ -2,6 +2,7 @@
  * help.test.ts
  *
  * Walks the full Commander command tree built by src/index.ts and asserts
+ * Walks the full Commander command tree built by createProgram() and asserts
  * that every command, subcommand, and option has non-empty help text.
  *
  * This test exists so that a copy-pasted new command cannot silently ship
@@ -73,6 +74,17 @@ beforeAll(async () => {
     registerDbCommand(program);
     registerPauseCommand(program);
     registerResumeCommand(program);
+import { describe, it, expect, beforeAll } from "vitest";
+import { Command } from "commander";
+import { createProgram } from "../../src/cli/program.js";
+
+let program: Command;
+
+beforeAll(() => {
+    // createProgram() only registers commands/options/actions — it does not
+    // invoke any of them, so no DB/RPC/logging mocking is needed to build
+    // the tree (same approach as tests/commands/channel_plugin_flag.test.ts).
+    program = createProgram();
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -200,5 +212,28 @@ describe("CLI help text completeness", () => {
                 expect(cmd!.description().toLowerCase()).toContain(expectedFragment.toLowerCase());
             },
         );
+    });
+    describe("command tree sanity", () => {
+        it("registers a substantial set of top-level commands", () => {
+            // A loose floor rather than a hardcoded list — this repo's command
+            // set grows regularly, and pinning an exact list here just makes
+            // this test go stale the same way the issue was written to prevent.
+            expect(program.commands.length).toBeGreaterThanOrEqual(15);
+        });
+
+        it("every top-level command has a unique name", () => {
+            const names = program.commands.map((c) => c.name());
+            expect(new Set(names).size).toBe(names.length);
+        });
+
+        it("commands with subcommands expose at least one subcommand", () => {
+            // Sanity check that collectCommands() is actually descending —
+            // if this ever returns 0, the recursive walk above is broken and
+            // the description-completeness tests are silently only checking
+            // top-level commands.
+            const all = collectCommands(program);
+            const withChildren = all.filter(({ command }) => command.commands.length > 0);
+            expect(withChildren.length).toBeGreaterThan(0);
+        });
     });
 });

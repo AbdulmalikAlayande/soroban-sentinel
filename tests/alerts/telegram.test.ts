@@ -207,6 +207,17 @@ describe("sendTelegramAlert", () => {
             expect(body.text).toContain("mainnet");
         });
 
+        it("includes a Stellar.expert contract link", async () => {
+            mockFetch.mockResolvedValue(makeOkResponse());
+            const event = makeAlertEvent({ contractId: "CDEF1234ABCD5678", network: "mainnet" });
+
+            await sendTelegramAlert(VALID_CHAT_ID, event);
+
+            const [, options] = mockFetch.mock.calls[0]!;
+            const body = JSON.parse(options.body as string);
+            expect(body.text).toContain("https://stellar.expert/explorer/public/contract/CDEF1234ABCD5678");
+        });
+
         it("uses a warning indicator for threshold_crossed events", async () => {
             mockFetch.mockResolvedValue(makeOkResponse());
             const event = makeAlertEvent({ type: "threshold_crossed" });

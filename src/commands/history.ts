@@ -5,7 +5,7 @@ import {
     getContract,
     getStateChangeHistory,
 } from "../db/repositories.js";
-import { formatContractID } from "../utils/formatting.js";
+import { formatContractID, validateContractId } from "../utils/formatting.js";
 
 export function registerHistoryCommand(program: Command): void {
     program
@@ -14,6 +14,13 @@ export function registerHistoryCommand(program: Command): void {
         .option("--limit <n>", "Max number of records to show", "20")
         .option("--entry <keyXdr>", "Filter by specific entry key XDR")
         .action((contractId: string, options: { limit: string; entry?: string }) => {
+            const validation = validateContractId(contractId);
+            if (!validation.valid) {
+                console.error(chalk.red(`Invalid contract ID: ${validation.reason}`));
+                process.exit(1);
+                return;
+            }
+
             const db = getDatabase();
             const limit = parseInt(options.limit, 10);
 

@@ -357,6 +357,23 @@ Tarefas de gerenciamento do banco de dados, incluindo migrações, backups e ger
 
 Gere scripts de autocompletar para shell bash/zsh para habilitar completar por tabulação para todos os comandos do Sorokeep.
 
+---
+
+### `sorokeep contracts`
+
+Liste todos os contratos monitorados rapidamente — uma visão de índice útil quando você gerencia mais de alguns contratos.
+
+```bash
+sorokeep contracts [opções]
+```
+
+| Opção | Descrição |
+|--------|-------------|
+| `--network <network>` | Filtrar por `testnet` ou `mainnet` |
+| `--json` | Saída em JSON legível por máquina |
+
+Exibe uma tabela com o ID do contrato (truncado), nome, rede, contagem de entradas, pior TTL restante e status (OK / Warning / Critical / Expired). Lê apenas do banco de dados local — instantâneo, sem chamadas RPC.
+
 ## Alertas
 
 O Sorokeep entrega alertas através de múltiplos canais: **webhooks**, **Slack**, **Discord**, **Telegram**, **PagerDuty**, **Opsgenie**, **Microsoft Teams**, **Matrix**, **e-mail**, **Google Chat**, e um segundo canal de **Webhook v2** configurável. Cada alerta inclui um nível de gravidade e contexto rico sobre a entrada afetada. O Sorokeep utiliza uma arquitetura robusta e desacoplada de detecção e despacho com fila baseada em banco de dados.
@@ -687,6 +704,16 @@ E-mail ainda não foi implementado. O CLI rejeitará `--type email` com uma mens
 - GitHub Action reutilizável encapsulando `sorokeep check` para verificações de TTL integradas a CI
 - Dashboard web para monitoramento visual de TTL
 - Operações em lote multi-contrato
+
+## Obtendo Ajuda
+
+**Problemas com o daemon?** Veja [docs/troubleshooting.md](docs/troubleshooting.md) (em inglês) para um guia completo cobrindo modos de falha comuns (ciclos travados, alertas que não disparam, auto-extensão bloqueada, erros de RPC) com comandos de diagnóstico e passos de resolução.
+
+Se você estiver com dúvidas ou problemas:
+- Consulte as [issues abertas](https://github.com/AbdulmalikAlayande/sorokeep/issues)
+- Entre em contato no X: [@The_good_man02](https://twitter.com/The_good_man02)
+
+Para problemas de segurança (vazamento de chaves, transações não intencionais), veja [SECURITY.md](SECURITY.md) em vez de abrir uma issue pública.
 
 ## Contribuir
 

@@ -131,9 +131,38 @@ npx vitest
 
 # With coverage
 npx vitest run --coverage
+
+# Update all snapshot files after intentional formatting changes
+npx vitest run -u
+
+# Update snapshot for a specific file
+npx vitest run tests/commands/status.test.ts -u
+
+# Mutation testing (src/core/ only)
+npm run mutation-test
 ```
 
+The baseline mutation score for `src/core/` is **62.33%**. We aim to improve or maintain this score. If a surviving mutant reveals a genuinely weak test, strengthen the test rather than gaming the source code.
+
 All tests use in-memory SQLite databases and mocked RPC responses — no network calls, no filesystem side effects.
+
+**Snapshot tests** (`toMatchSnapshot()`) capture the ANSI-stripped rendered output of CLI commands such as `status`, `costs`, and `alerts list`. If you intentionally change the formatting of a command's output — column alignment, labels, colors, or field order — the snapshot tests will fail. To update them:
+
+1. Verify the new output is correct by inspecting the diff shown by Vitest.
+2. Run `npx vitest run -u` to regenerate the `.snap` files.
+3. Commit the updated `.snap` files alongside your formatting changes.
+
+Snapshot tests strip ANSI color codes and normalize timestamps before comparing, so diffs focus on content and alignment rather than escape sequences.
+
+### Flaky Tests
+
+To maintain trust in our CI pipeline, we run a scheduled workflow to detect intermittent test failures (flaky tests). A test must pass reliably.
+
+If your PR is flagged as introducing a flaky test (or if a scheduled workflow opens an issue assigned to you):
+1. **Do not ignore it.** Flaky tests erode confidence in the test suite and block other contributors.
+2. **Reproduce locally:** Run the failing test repeatedly to reproduce the flakiness (e.g., using `npx vitest run tests/your.test.ts`).
+3. **Identify the root cause:** Common causes include race conditions, unmocked network or timer calls, or shared state leaking across tests.
+4. **Fix it:** Ensure the test passes 100% of the time. Avoid simply using test retries to mask the underlying issue.
 
 ### Running the CLI During Development
 
@@ -199,6 +228,10 @@ Order imports by:
 
 Use explicit `.js` extensions for internal imports (ESM requirement). Type-only imports use `import type`.
 
+### Regex on File Content
+
+Avoid `.` in a regex meant to match "anything up to a line break" (e.g. `/--.*\n/`) — JavaScript's `.` excludes all line terminator characters, including `\r`. On a CRLF-checked-out file, a line ending in `\r\n` leaves a trailing `\r` that `.` won't consume, so the pattern silently fails to match and no error is thrown. Use a negated character class instead, e.g. `/--[^\n]*\n/`, which consumes everything up to (but not including) the newline regardless of a preceding `\r`.
+
 ### Error Handling
 
 Catch errors and return structured results (like `WatchResult`) instead of throwing from core functions. Let the CLI layer decide how to present errors.
@@ -244,6 +277,7 @@ Significant design decisions are documented as Architecture Decision Records (AD
 | [ADR-004](docs/adr/ADR-004-polling-daemon-architecture.md) | Polling Daemon Architecture | Why polling over event-driven |
 | [ADR-005](docs/adr/ADR-005-use-typescript-over-rust.md) | Use TypeScript (Not Rust) | Why TypeScript over Rust for this tool |
 | [ADR-006](docs/adr/ADR-006-in-memory-sqlite-for-testing.md) | In-Memory SQLite for Testing | Why tests use in-memory databases |
+| [ADR-007](docs/adr/ADR-007-use-a-plugin-registry-for-alert-channels.md) | Use a Plugin Registry for Alert Channels | Why a Map-based registry over hardcoded channel maps or dynamic plugins |
 | [ADR-008](docs/adr/ADR-008-application-layer-channel-type-validation.md) | Application-Layer Channel Type Validation | Why channel_type CHECK was relaxed from a fixed SQL enum to a non-empty-string guard, validated by the alert channel registry |
 
 Before making a significant new design decision, write an ADR. This helps future contributors understand why things are the way they are.
@@ -272,6 +306,8 @@ If you're new to the project, look for issues tagged `good first issue`. These a
 - Documentation improvements
 - Adding test coverage for edge cases
 
+> **New Contributor?** Check out our [First PR Tutorial](docs/first-pr-tutorial.md) where we walk through picking a real trivial issue, writing the failing test, implementing the fix, and creating the PR.
+
 ### Larger Contributions
 
 For anything beyond small fixes, open an issue first to discuss the approach. This is especially important for:
@@ -297,5 +333,7 @@ Before submitting a PR, verify:
 - [ ] E2E sandbox tested (for changes affecting RPC or daemon interactions)
 
 ## Getting Help
+
+**Troubleshooting production daemon issues?** See [docs/troubleshooting.md](docs/troubleshooting.md) for a complete runbook covering common failure modes (hung cycles, alerts not firing, auto-extension blocked, RPC errors) with diagnostic commands and resolution steps.
 
 If you're stuck or have questions about the codebase, open an issue or reach out on X ([@The_good_man02](https://twitter.com/The_good_man02)). We'd rather answer questions early than review a PR that went in the wrong direction.

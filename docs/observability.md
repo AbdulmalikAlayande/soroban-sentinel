@@ -104,7 +104,7 @@ sorokeep metrics --json     # structured JSON
 
 ## 3. Build a Grafana Dashboard
 
-A pre-built, importable dashboard JSON is planned but not yet bundled with sorokeep. In the meantime, build panels manually in Grafana against the metric names from the table above — each is a standard Prometheus gauge/counter/histogram, so any panel type (stat, time series, heatmap for the histogram) works with a plain PromQL query against them. A few starting points:
+A ready-to-import dashboard JSON lives at [`devops/grafana/sorokeep-dashboard.json`](../devops/grafana/sorokeep-dashboard.json) — import it directly via Grafana's **Dashboards → Import** screen, or use it as a starting point. It covers fleet overview, TTL-over-time, extension activity/cost, and daemon health, all against the metric names from the table above. Each metric is a standard Prometheus gauge/counter/histogram, so any panel type (stat, time series, heatmap for the histogram) works with a plain PromQL query against them. A few starting points:
 
 | Panel idea | Example PromQL |
 |-------|-------------|
@@ -117,11 +117,11 @@ A pre-built, importable dashboard JSON is planned but not yet bundled with sorok
 | Remaining TTL per entry | `sorokeep_entry_ttl_remaining_ledgers` |
 | Remaining budget | `sorokeep_budget_remaining_xlm` |
 
-Once a bundled dashboard ships, this section will be updated with the import steps.
-
 ## 4. Alerting with Alertmanager
 
 ### Example Alert Rules
+
+A ready-to-use rules file with these examples (plus a couple more) lives at [`devops/prometheus/sorokeep-alerts.yml`](../devops/prometheus/sorokeep-alerts.yml) — copy it directly or use it as a starting point.
 
 Create `sorokeep_alerts.yml`:
 
@@ -265,6 +265,9 @@ scrape_configs:
     scrape_timeout: 15s
 ```
 
-### No Bundled Grafana Dashboard Yet
+### Grafana Panels Show "No Data"
 
-There's no pre-built dashboard JSON to import yet (see [§3](#3-build-a-grafana-dashboard)) — build panels manually against the metric names and example PromQL queries above in the meantime.
+**Symptom:** The imported dashboard (see [§3](#3-build-a-grafana-dashboard)) loads, but panels are empty.
+
+- Confirm the dashboard's Prometheus datasource variable points at the same Prometheus instance scraping sorokeep — it's prompted for on import.
+- Check the `$network` and `$contract` template variables at the top of the dashboard aren't filtered to a value with no matching series.

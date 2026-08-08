@@ -3,16 +3,21 @@ export interface KeychainStore {
   listKeys(): Promise<string[]>;
 }
 
+interface KeytarLike {
+  setPassword(service: string, account: string, password: string): Promise<null | void>;
+  findCredentials(service: string): Promise<Array<{ account: string; password: string }>>;
+}
+
 /**
  * Keytar-backed system credential manager layer
  */
 export class SecureKeypairStore implements KeychainStore {
   private serviceName = "sorokeep-keys";
-  private keytar: any;
+  private keytar: KeytarLike;
 
-  constructor(keytarMock?: any) {
+  constructor(keytarMock?: KeytarLike) {
     // Fallback to allow mock injection during test environments safely
-    this.keytar = keytarMock;
+    this.keytar = keytarMock as KeytarLike;
   }
 
   async saveKey(name: string, secret: string): Promise<boolean> {
@@ -27,7 +32,7 @@ export class SecureKeypairStore implements KeychainStore {
   async listKeys(): Promise<string[]> {
     // Retrieve all account entries linked under our application signature service tag
     const credentials = await this.keytar.findCredentials(this.serviceName);
-    return credentials.map((cred: { account: string }) => cred.account);
+    return credentials.map((cred) => cred.account);
   }
 }
 

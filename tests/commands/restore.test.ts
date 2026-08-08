@@ -39,7 +39,7 @@ describe("Restore Command CLI", () => {
     it("exits with 1 if contract is not found", async () => {
         vi.mocked(repos.getContract).mockReturnValue(undefined as any);
 
-        await actionFn("MISSING_ID", {});
+        await actionFn("CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ", {});
         expect(mockExit).toHaveBeenCalledWith(1);
         expect(mockError).toHaveBeenCalledWith(expect.stringContaining("not found"));
     });
@@ -47,7 +47,7 @@ describe("Restore Command CLI", () => {
     it("exits with 1 if no keypair provided", async () => {
         vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
 
-        await actionFn("VALID_ID", {});
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", {});
         expect(mockExit).toHaveBeenCalledWith(1);
         expect(mockError).toHaveBeenCalledWith(expect.stringContaining("--keypair or --keypair-env is required"));
     });
@@ -56,7 +56,7 @@ describe("Restore Command CLI", () => {
         vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
         delete process.env["NONEXISTENT_VAR_FOR_TEST"];
 
-        await actionFn("VALID_ID", { keypairEnv: "NONEXISTENT_VAR_FOR_TEST" });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { keypairEnv: "NONEXISTENT_VAR_FOR_TEST" });
         expect(mockExit).toHaveBeenCalledWith(1);
         expect(mockError).toHaveBeenCalledWith(expect.stringContaining("is not set"));
     });
@@ -64,7 +64,7 @@ describe("Restore Command CLI", () => {
     it("exits with 1 if both --entry and --all are provided", async () => {
         vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
 
-        await actionFn("VALID_ID", { keypair: "SKEY", all: true, entry: ["AAAA"] });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { keypair: "SKEY", all: true, entry: ["AAAA"] });
         expect(mockExit).toHaveBeenCalledWith(1);
         expect(mockError).toHaveBeenCalledWith(expect.stringContaining("Use either --entry"));
     });
@@ -72,7 +72,7 @@ describe("Restore Command CLI", () => {
     it("exits with 1 if neither --entry nor --all is provided", async () => {
         vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
 
-        await actionFn("VALID_ID", { keypair: "SKEY", entry: [] });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { keypair: "SKEY", entry: [] });
         expect(mockExit).toHaveBeenCalledWith(1);
         expect(mockError).toHaveBeenCalledWith(expect.stringContaining("Specify --entry"));
     });
@@ -81,7 +81,7 @@ describe("Restore Command CLI", () => {
         vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
         vi.mocked(repos.getEntriesForContract).mockReturnValue([]);
 
-        await actionFn("VALID_ID", { keypair: "SKEY", all: true });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { keypair: "SKEY", all: true });
         expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("No entries to restore"));
     });
 
@@ -98,7 +98,7 @@ describe("Restore Command CLI", () => {
             feeCharged: 500,
         } as any);
 
-        await actionFn("VALID_ID", { keypair: "SKEY", all: true });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { keypair: "SKEY", all: true });
         expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("abcd1234"));
         expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("500 stroops"));
     });
@@ -113,7 +113,7 @@ describe("Restore Command CLI", () => {
             error: "Insufficient funds",
         } as any);
 
-        await actionFn("VALID_ID", { keypair: "SKEY", all: true });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { keypair: "SKEY", all: true });
         expect(mockExit).toHaveBeenCalledWith(1);
     });
 
@@ -126,10 +126,10 @@ describe("Restore Command CLI", () => {
             ledger: 6000,
         } as any);
 
-        await actionFn("VALID_ID", { keypair: "SKEY", entry: ["KEY1", "KEY2"] });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { keypair: "SKEY", entry: ["KEY1", "KEY2"] });
         expect(extensionLib.restoreEntries).toHaveBeenCalledWith(
             expect.anything(),
-            "VALID_ID",
+            "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
             ["KEY1", "KEY2"],
             "SKEY"
         );

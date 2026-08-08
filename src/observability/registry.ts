@@ -21,6 +21,9 @@ import { contractsTrackedGauge, entriesTrackedGauge, collectFleetMetrics } from 
 register.registerMetric(contractsTrackedGauge);
 register.registerMetric(entriesTrackedGauge);
 
+import { mcpToolInvocationsCounter } from "./metrics/mcp.js";
+register.registerMetric(mcpToolInvocationsCounter);
+
 /**
  * Recompute every DB-backed metric from the live database. Called once per
  * `/metrics` scrape (see `observability/server.ts`) so gauges never emit

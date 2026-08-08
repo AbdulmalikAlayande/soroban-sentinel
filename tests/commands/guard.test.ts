@@ -20,7 +20,7 @@ vi.mock("ora", () => ({
 }));
 
 import { getDatabaseForTesting } from "../../src/db/database";
-import { insertContract, getExtensionPolicy } from "../../src/db/repositories";
+import { insertContract, getExtensionPolicy, upsertEntry, recordExtension } from "../../src/db/repositories";
 
 // A genuine Stellar secret key used across all tests (safe — only for testing)
 const VALID_TEST_SECRET = "SCG2IACKCYEUMINFHVGAOB3UFDVSVRACCZJH4K3R6WVC2OTRDQPK2GWG";
@@ -88,7 +88,7 @@ describe("Guard Command CLI", () => {
     it("exits with code 1 if contract is not found in DB", async () => {
         vi.mocked(repos.getContract).mockReturnValue(undefined as any);
 
-        await actionFn("MISSING_ID", { targetTtl: "100000", threshold: "20000" });
+        await actionFn("CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ", { targetTtl: "100000", threshold: "20000" });
         expect(mockExit).toHaveBeenCalledWith(1);
         expect(mockError).toHaveBeenCalledWith(expect.stringContaining("not found"));
     });
@@ -96,7 +96,7 @@ describe("Guard Command CLI", () => {
     it("exits with code 1 if --target-ttl is not a positive number", async () => {
         vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
 
-        await actionFn("VALID_ID", { targetTtl: "abc", threshold: "20000" });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { targetTtl: "abc", threshold: "20000" });
         expect(mockExit).toHaveBeenCalledWith(1);
         expect(mockError).toHaveBeenCalledWith(expect.stringContaining("--target-ttl must be a positive number"));
     });
@@ -104,7 +104,7 @@ describe("Guard Command CLI", () => {
     it("exits with code 1 if --threshold is not a positive number", async () => {
         vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
 
-        await actionFn("VALID_ID", { targetTtl: "100000", threshold: "abc" });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { targetTtl: "100000", threshold: "abc" });
         expect(mockExit).toHaveBeenCalledWith(1);
         expect(mockError).toHaveBeenCalledWith(expect.stringContaining("--threshold must be a positive number"));
     });
@@ -112,7 +112,7 @@ describe("Guard Command CLI", () => {
     it("exits with code 1 if threshold >= targetTTL", async () => {
         vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
 
-        await actionFn("VALID_ID", { targetTtl: "100000", threshold: "100000" });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { targetTtl: "100000", threshold: "100000" });
         expect(mockExit).toHaveBeenCalledWith(1);
         expect(mockError).toHaveBeenCalledWith(expect.stringContaining("--threshold must be less than --target-ttl"));
     });
@@ -121,10 +121,10 @@ describe("Guard Command CLI", () => {
         vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
         vi.mocked(repos.upsertExtensionPolicy).mockImplementation(() => {});
 
-        await actionFn("VALID_ID", { targetTtl: "100000", threshold: "20000", disable: true });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { targetTtl: "100000", threshold: "20000", disable: true });
         expect(repos.upsertExtensionPolicy).toHaveBeenCalledWith(
             expect.anything(),
-            expect.objectContaining({ contract_id: "VALID_ID", enabled: false })
+            expect.objectContaining({ contract_id: "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", enabled: false })
         );
         expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("disabled"));
     });
@@ -132,7 +132,7 @@ describe("Guard Command CLI", () => {
     it("requires --keypair-env for --auto-extend", async () => {
         vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
 
-        await actionFn("VALID_ID", { targetTtl: "100000", threshold: "20000", autoExtend: true, keypair: "SKEY" });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { targetTtl: "100000", threshold: "20000", autoExtend: true, keypair: "SKEY" });
         expect(mockExit).toHaveBeenCalledWith(1);
         expect(mockError).toHaveBeenCalledWith(expect.stringContaining("--auto-extend requires --keypair-env or --keypair-vault"));
     });
@@ -141,21 +141,21 @@ describe("Guard Command CLI", () => {
         vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
         vi.mocked(repos.getExtensionPolicy).mockReturnValue(undefined as any);
 
-        await actionFn("VALID_ID", { targetTtl: "100000", threshold: "20000" });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { targetTtl: "100000", threshold: "20000" });
         expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("No extension policy"));
     });
 
     it("displays existing policy when no keypair provided", async () => {
         vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet", name: "MyContract" } as any);
         vi.mocked(repos.getExtensionPolicy).mockReturnValue({
-            contract_id: "VALID_ID",
+            contract_id: "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
             enabled: true,
             target_ttl_ledgers: 100000,
             extend_when_below_ledgers: 20000,
             keypair_public: "GABCDEF1234"
         } as any);
 
-        await actionFn("VALID_ID", { targetTtl: "100000", threshold: "20000" });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { targetTtl: "100000", threshold: "20000" });
         expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("ENABLED"));
     });
 
@@ -164,7 +164,7 @@ describe("Guard Command CLI", () => {
         vi.mocked(repos.getEntriesForContract).mockReturnValue([{ entry_key_xdr: "AAAA" } as any]);
 
         // Invalid key → Keypair.fromSecret throws → guard catches it and exits 1
-        await actionFn("VALID_ID", { targetTtl: "100000", threshold: "20000", dryRun: true, keypair: "INVALID_KEY" });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { targetTtl: "100000", threshold: "20000", dryRun: true, keypair: "INVALID_KEY" });
         expect(mockExit).toHaveBeenCalledWith(1);
         expect(mockError).toHaveBeenCalledWith(expect.stringContaining("Error:"));
     });
@@ -172,7 +172,7 @@ describe("Guard Command CLI", () => {
     it("dry-run exits 1 if no keypair provided", async () => {
         vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
 
-        await actionFn("VALID_ID", { targetTtl: "100000", threshold: "20000", dryRun: true });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { targetTtl: "100000", threshold: "20000", dryRun: true });
         expect(mockExit).toHaveBeenCalledWith(1);
         expect(mockError).toHaveBeenCalledWith(expect.stringContaining("--keypair, --keypair-env, or --keypair-vault required"));
     });
@@ -181,7 +181,7 @@ describe("Guard Command CLI", () => {
         vi.mocked(repos.getContract).mockReturnValue({ id: "X", network: "testnet" } as any);
         vi.mocked(repos.getEntriesForContract).mockReturnValue([]);
 
-        await actionFn("VALID_ID", { targetTtl: "100000", threshold: "20000", dryRun: true, keypair: "SCZZ" });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { targetTtl: "100000", threshold: "20000", dryRun: true, keypair: "SCZZ" });
         expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("No entries to extend"));
     });
 
@@ -192,7 +192,7 @@ describe("Guard Command CLI", () => {
             success: true, entriesExtended: 1, txHash: "abcd1234", ledger: 5000
         } as any);
 
-        await actionFn("VALID_ID", { targetTtl: "100000", threshold: "20000", keypair: "SCZZ" });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { targetTtl: "100000", threshold: "20000", keypair: "SCZZ" });
         expect(extensionLib.extendEntries).toHaveBeenCalled();
     });
 
@@ -215,7 +215,7 @@ describe("Guard Command CLI", () => {
         // Use a valid looking secret key to avoid Keypair.fromSecret throwing
         const { Keypair } = await import("@stellar/stellar-sdk");
         const validSecret = Keypair.random().secret();
-        await actionFn("VALID_ID", { targetTtl: "100000", threshold: "20000", dryRun: true, keypair: validSecret });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { targetTtl: "100000", threshold: "20000", dryRun: true, keypair: validSecret });
         
         expect(mockSpinner.succeed).toHaveBeenCalled();
         expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("Entries:       1"));
@@ -302,5 +302,120 @@ describe("Guard Command --auto-extend integration", () => {
 
         delete process.env.STELLAR_TEST_KEY;
 
+    });
+});
+
+// ─── guard cost-estimate (#508) ─────────────────────────────────────────────
+
+describe("guard cost-estimate", () => {
+    function seedExtensionHistory(contractId: string, costs: number[]): void {
+        upsertEntry(sharedDb, {
+            contract_id: contractId,
+            entry_key_xdr: "AAAA",
+            entry_type: "instance",
+            live_until_ledger: 500_000,
+        });
+        const entry = sharedDb
+            .prepare("SELECT id FROM contract_entries WHERE contract_id = ?")
+            .get(contractId) as { id: number };
+
+        costs.forEach((cost, i) => {
+            recordExtension(sharedDb, {
+                contract_id: contractId,
+                contract_entry_id: entry.id,
+                old_ttl_ledgers: 1_000,
+                new_ttl_ledgers: 100_000,
+                tx_hash: `TX${i}`,
+                cost_xlm: cost,
+                executed_at_ledger: 400_000 + i,
+            });
+        });
+    }
+
+    beforeEach(() => {
+        vi.restoreAllMocks();
+        sharedDb = getDatabaseForTesting();
+        insertContract(sharedDb, {
+            id: TEST_CONTRACT_ID,
+            name: "Cost Estimate Contract",
+            network: "testnet",
+        });
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        vi.spyOn(console, "error").mockImplementation(() => {});
+        vi.spyOn(process, "exit").mockImplementation((() => {}) as any);
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it("a higher target TTL produces a lower estimated extensions/month than a lower target TTL", async () => {
+        seedExtensionHistory(TEST_CONTRACT_ID, [0.1, 0.1, 0.1]);
+        const logSpy = vi.spyOn(console, "log");
+
+        const program = new Command();
+        registerGuardCommand(program);
+        await program.parseAsync([
+            "node", "sorokeep",
+            "guard", "cost-estimate", TEST_CONTRACT_ID,
+            "--target-ttl", "50000,500000",
+        ]);
+
+        const output = logSpy.mock.calls.map((args) => args.join(" ")).join("\n");
+        const rowFor = (ttl: string) => output.split("\n").find((line) => line.trim().startsWith(ttl));
+        const lowTtlRow = rowFor("50000")!;
+        const highTtlRow = rowFor("500000")!;
+        expect(lowTtlRow).toBeDefined();
+        expect(highTtlRow).toBeDefined();
+
+        const extractExtensionsPerMonth = (line: string) => parseFloat(line.trim().split(/\s+/)[1]);
+        expect(extractExtensionsPerMonth(highTtlRow)).toBeLessThan(extractExtensionsPerMonth(lowTtlRow));
+    });
+
+    it("handles a contract with no extension history gracefully", async () => {
+        const logSpy = vi.spyOn(console, "log");
+        const exitSpy = vi.spyOn(process, "exit");
+
+        const program = new Command();
+        registerGuardCommand(program);
+        await program.parseAsync([
+            "node", "sorokeep",
+            "guard", "cost-estimate", TEST_CONTRACT_ID,
+            "--target-ttl", "100000",
+        ]);
+
+        expect(exitSpy).not.toHaveBeenCalled();
+        const output = logSpy.mock.calls.map((args) => args.join(" ")).join("\n");
+        expect(output).toContain("No extension history found");
+    });
+
+    it("rejects a non-numeric --target-ttl", async () => {
+        seedExtensionHistory(TEST_CONTRACT_ID, [0.1]);
+        const exitSpy = vi.spyOn(process, "exit");
+
+        const program = new Command();
+        registerGuardCommand(program);
+        await program.parseAsync([
+            "node", "sorokeep",
+            "guard", "cost-estimate", TEST_CONTRACT_ID,
+            "--target-ttl", "not-a-number",
+        ]);
+
+        expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it("rejects a contract that isn't registered", async () => {
+        const exitSpy = vi.spyOn(process, "exit");
+        const UNREGISTERED = "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526";
+
+        const program = new Command();
+        registerGuardCommand(program);
+        await program.parseAsync([
+            "node", "sorokeep",
+            "guard", "cost-estimate", UNREGISTERED,
+            "--target-ttl", "100000",
+        ]);
+
+        expect(exitSpy).toHaveBeenCalledWith(1);
     });
 });

@@ -4,6 +4,7 @@ import path from "node:path";
 import { loadConfig } from "../utils/config.js";
 import { getLogger } from "../logging/index.js";
 import type { AlertEvent } from "./types.js";
+import { getStellarExpertContractUrl } from "./links.js";
 
 const logger = getLogger().child({ component: "AlertTemplates" });
 
@@ -30,7 +31,7 @@ export function getTemplateContext(event: AlertEvent) {
     if (isResourceAlert) {
         resourceLabel = event.resource.type === "cpu" ? "CPU" : "Memory";
         resourceUnit = event.resource.type === "cpu" ? "instructions" : "bytes";
-    } else {
+    } else if ("entry" in event) {
         entryLabel = event.entry.label ?? event.entry.type;
     }
 
@@ -108,6 +109,7 @@ export function getTemplateContext(event: AlertEvent) {
         configuredLedgersFormatted: "threshold" in event ? event.threshold.configuredLedgers.toLocaleString() : "",
         dedupKey,
         customDetails,
+        stellarExpertUrl: getStellarExpertContractUrl(event),
     };
 }
 
