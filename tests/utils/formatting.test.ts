@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { convertLedgerCloseTimeToSeconds, formatTimeToCloseLedger, classifyTTL, statusIndicator, formatContractID, formatSecretKey, validateContractId, paginateList, formatPaginationFooter } from "../../src/utils/formatting";
+import { convertLedgerCloseTimeToSeconds, formatTimeToCloseLedger, classifyTTL, statusIndicator, formatContractID, formatSecretKey, validateContractId, paginateList, formatPaginationFooter, formatBytes } from "../../src/utils/formatting";
 
 describe("convertLedgerCloseTimeToSeconds", () => {
     it("should convert ledger close time to seconds using 5.5s average", () => {
@@ -63,6 +63,21 @@ describe("statusIndicator", () => {
     expect(statusIndicator("warning")).toContain("WARNING");
     expect(statusIndicator("critical")).toContain("CRITICAL");
     expect(statusIndicator("expired")).toContain("EXPIRED");
+  });
+});
+
+describe("formatBytes", () => {
+  it("formats 0 bytes", () => {
+    expect(formatBytes(0)).toBe("0 B");
+  });
+  it("formats positive bytes", () => {
+    expect(formatBytes(1024)).toBe("1 KB");
+    expect(formatBytes(1536)).toBe("1.5 KB");
+    expect(formatBytes(1048576)).toBe("1 MB");
+  });
+  it("formats negative bytes", () => {
+    expect(formatBytes(-1024)).toBe("-1 KB");
+    expect(formatBytes(-1536)).toBe("-1.5 KB");
   });
 });
 

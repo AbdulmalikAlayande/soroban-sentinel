@@ -2,6 +2,7 @@
 import type { AlertEvent } from "./types.js";
 import { getLogger } from "../logging/index.js";
 import { renderAlertTemplate } from "./templates.js";
+import { getStellarExpertContractUrl } from "./links.js";
 
 const logger = getLogger().child({ component: "PagerDutyHandler" });
 const PAGERDUTY_EVENTS_URL = "https://events.pagerduty.com/v2/enqueue";
@@ -108,11 +109,17 @@ function buildCustomDetails(event: AlertEvent): Record<string, unknown> {
     };
 }
 
+function buildLinks(event: AlertEvent): Array<{ href: string; text: string }> | undefined {
+    const url = getStellarExpertContractUrl(event);
+    return url ? [{ href: url, text: "View on Stellar.expert" }] : undefined;
+}
+
 function buildPayload(event: AlertEvent): unknown {
     return {
         routing_key: "",
         event_action: event.type === "threshold_crossed" || event.type === "resource_alert" || event.type === "state_changed" || event.type === "budget_exhausted" ? "trigger" : "resolve",
         dedup_key: buildDedupKey(event),
+        links: buildLinks(event),
         payload: {
             summary: buildSummary(event),
             source: event.contractId,

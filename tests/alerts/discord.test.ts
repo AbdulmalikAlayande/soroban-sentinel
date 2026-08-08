@@ -159,6 +159,17 @@ describe("sendDiscordAlert", () => {
             expect(JSON.stringify(body.embeds[0])).toContain("mainnet");
         });
 
+        it("sets the embed url to a Stellar.expert contract link", async () => {
+            mockFetch.mockResolvedValue(makeDiscordOkResponse());
+            const event = makeAlertEvent({ contractId: "CDEF1234ABCD5678", network: "mainnet" });
+
+            await sendDiscordAlert(VALID_WEBHOOK_URL, event);
+
+            const [, options] = mockFetch.mock.calls[0]!;
+            const body = JSON.parse(options.body as string);
+            expect(body.embeds[0].url).toBe("https://stellar.expert/explorer/public/contract/CDEF1234ABCD5678");
+        });
+
         it("includes the remaining TTL in the embed", async () => {
             mockFetch.mockResolvedValue(makeDiscordOkResponse());
             const event = makeAlertEvent({
