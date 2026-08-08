@@ -262,6 +262,7 @@ Significant design decisions are documented as Architecture Decision Records (AD
 | [ADR-004](docs/adr/ADR-004-polling-daemon-architecture.md) | Polling Daemon Architecture | Why polling over event-driven |
 | [ADR-005](docs/adr/ADR-005-use-typescript-over-rust.md) | Use TypeScript (Not Rust) | Why TypeScript over Rust for this tool |
 | [ADR-006](docs/adr/ADR-006-in-memory-sqlite-for-testing.md) | In-Memory SQLite for Testing | Why tests use in-memory databases |
+| [ADR-007](docs/adr/ADR-007-use-a-plugin-registry-for-alert-channels.md) | Use a Plugin Registry for Alert Channels | Why a Map-based registry over hardcoded channel maps or dynamic plugins |
 | [ADR-008](docs/adr/ADR-008-application-layer-channel-type-validation.md) | Application-Layer Channel Type Validation | Why channel_type CHECK was relaxed from a fixed SQL enum to a non-empty-string guard, validated by the alert channel registry |
 
 Before making a significant new design decision, write an ADR. This helps future contributors understand why things are the way they are.
