@@ -19,6 +19,9 @@ dist/
 build/
 node_modules/
 
+# Generated API docs
+docs-api/
+
 # Database files
 *.db
 *.sqlite

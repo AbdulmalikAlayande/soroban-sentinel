@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Command } from "commander";
+import stripAnsi from "strip-ansi";
 import type Database from "better-sqlite3";
 import { getDatabaseForTesting } from "../../src/db/database.js";
 import { registerCostsCommand } from "../../src/commands/costs.js";
@@ -8,6 +9,11 @@ import {
     upsertEntry,
     recordExtension,
 } from "../../src/db/repositories.js";
+
+const SNAPSHOT_TIMESTAMP = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/g;
+function normalizeOutput(output: string): string {
+    return stripAnsi(output).replace(SNAPSHOT_TIMESTAMP, "YYYY-MM-DD HH:MM:SS");
+}
 
 // ─── Shared mock state ────────────────────────────────────────────────────────
 
@@ -276,4 +282,304 @@ describe("costs command — Forecasted Rent section", () => {
         expect(allOutput).not.toMatch(/exceed|over|breach/i);
     });
 
+});
+
+// ─── Snapshot tests ────────────────────────────────────────────────────────
+
+describe("costs command — snapshot tests", () => {
+    let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+    let exitSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+        mockDb = getDatabaseForTesting();
+        consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+        exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+            throw new Error("process.exit called");
+        });
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    function seedOneExtension(costXlm = 0.001) {
+        insertContract(mockDb, {
+            id: CONTRACT_ID,
+            name: "test-contract",
+            network: "testnet",
+        });
+
+        upsertEntry(mockDb, {
+            contract_id: CONTRACT_ID,
+            entry_key_xdr: "AAAAA",
+            entry_type: "instance",
+            label: "instance",
+            live_until_ledger: 500000,
+            last_modified_ledger: 400000,
+            discovery_source: "deterministic",
+        });
+
+        const entryRow = mockDb
+            .prepare("SELECT id FROM contract_entries WHERE contract_id = ? LIMIT 1")
+            .get(CONTRACT_ID) as { id: number };
+
+        mockDb.prepare(`
+            INSERT INTO extension_history (contract_id, contract_entry_id, old_ttl_ledgers, new_ttl_ledgers, tx_hash, cost_xlm, mem_bytes, executed_at_ledger, executed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        `).run(CONTRACT_ID, entryRow.id, 10000, 20000, "abc123def456abc123def456abc123de", costXlm, 2048, 400001);
+
+        return entryRow.id;
+    }
+
+    it("matches snapshot for full output with extension history", async () => {
+        seedOneExtension();
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", CONTRACT_ID]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(normalizeOutput(allOutput)).toMatchSnapshot();
+    });
+
+    it("matches snapshot when no extensions exist", async () => {
+        insertContract(mockDb, {
+            id: CONTRACT_ID,
+            name: "empty-contract",
+            network: "testnet",
+        });
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", CONTRACT_ID]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(normalizeOutput(allOutput)).toMatchSnapshot();
+    });
+
+    it("matches snapshot with budget warning when forecast exceeds budget", async () => {
+        seedOneExtension(999);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync([
+            "node", "sorokeep", "costs", CONTRACT_ID,
+            "--monthly-budget", "0.001",
+        ]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(normalizeOutput(allOutput)).toMatchSnapshot();
+    });
+
+    it("matches snapshot with extension costs table (multi-period)", async () => {
+        seedOneExtension(0.001);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", CONTRACT_ID]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        const normalized = normalizeOutput(allOutput);
+
+        // Verify Extension Costs table structure
+        expect(normalized).toContain("Extension Costs");
+        expect(normalized).toContain("Period");
+        expect(normalized).toContain("Extensions");
+        expect(normalized).toContain("Total XLM");
+        expect(normalized).toContain("7 days");
+        expect(normalized).toContain("30 days");
+        expect(normalized).toContain("90 days");
+
+        expect(normalized).toMatchSnapshot();
+    });
+});
+
+// ─── Fleet flag tests ─────────────────────────────────────────────────────────
+
+const CONTRACT_A = "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6";
+const CONTRACT_B = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
+
+/**
+ * Seed a contract with a single instance extension recorded `daysAgo` days
+ * ago, so aggregateDailyCostSnapshots will capture it.
+ */
+function seedFleetContract(
+    database: ReturnType<typeof getDatabaseForTesting>,
+    contractId: string,
+    name: string,
+    tags: string | null,
+    costXlm: number,
+    daysAgo: number,
+) {
+    insertContract(database, { id: contractId, name, network: "testnet", tags: tags ?? undefined });
+    upsertEntry(database, {
+        contract_id: contractId,
+        entry_key_xdr: `xdr-fleet-${contractId}`,
+        entry_type: "instance",
+        label: "instance",
+        live_until_ledger: 500000,
+        last_modified_ledger: 400000,
+        discovery_source: "deterministic",
+    });
+    const entryRow = database
+        .prepare("SELECT id FROM contract_entries WHERE contract_id = ? LIMIT 1")
+        .get(contractId) as { id: number };
+
+    database.prepare(`
+        INSERT INTO extension_history
+            (contract_id, contract_entry_id, old_ttl_ledgers, new_ttl_ledgers,
+             tx_hash, cost_xlm, cpu_insns, mem_bytes, is_anomaly,
+             executed_at_ledger, executed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?))
+    `).run(
+        contractId,
+        entryRow.id,
+        10000,
+        20000,
+        `tx-fleet-${contractId}`,
+        costXlm,
+        0,
+        1024,
+        0,
+        400001,
+        `-${daysAgo} days`,
+    );
+}
+
+describe("costs command — --fleet flag", () => {
+    let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+    let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+    let exitSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+        mockDb = getDatabaseForTesting();
+        consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+        consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+            throw new Error("process.exit called");
+        });
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it("prints fleet cost rollup header when --fleet is passed", async () => {
+        seedFleetContract(mockDb, CONTRACT_A, "Contract A", null, 1.0, 1);
+        seedFleetContract(mockDb, CONTRACT_B, "Contract B", null, 2.0, 1);
+
+        const { aggregateDailyCostSnapshots } = await import("../../src/db/repositories.js");
+        aggregateDailyCostSnapshots(mockDb);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", "--fleet"]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(allOutput).toMatch(/fleet/i);
+    });
+
+    it("fleet total XLM equals sum of all individual contract costs (AC1)", async () => {
+        seedFleetContract(mockDb, CONTRACT_A, "Contract A", null, 1.5, 1);
+        seedFleetContract(mockDb, CONTRACT_B, "Contract B", null, 2.5, 1);
+
+        const { aggregateDailyCostSnapshots } = await import("../../src/db/repositories.js");
+        aggregateDailyCostSnapshots(mockDb);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", "--fleet"]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(allOutput).toMatch(/4\.0000000|4\.00000/);
+    });
+
+    it("outputs JSON when --fleet and --json are both passed", async () => {
+        seedFleetContract(mockDb, CONTRACT_A, "Contract A", null, 1.0, 1);
+
+        const { aggregateDailyCostSnapshots } = await import("../../src/db/repositories.js");
+        aggregateDailyCostSnapshots(mockDb);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", "--fleet", "--json"]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        let parsed: Record<string, unknown>;
+        expect(() => { parsed = JSON.parse(allOutput); }).not.toThrow();
+        expect(allOutput).toMatch(/total_cost_xlm/);
+    });
+
+    it("filters fleet rollup to a specific tag when --tag is passed (AC2)", async () => {
+        seedFleetContract(mockDb, CONTRACT_A, "Contract A", "defi", 1.0, 1);
+        seedFleetContract(mockDb, CONTRACT_B, "Contract B", "infra", 5.0, 1);
+
+        const { aggregateDailyCostSnapshots } = await import("../../src/db/repositories.js");
+        aggregateDailyCostSnapshots(mockDb);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", "--fleet", "--tag", "defi"]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(allOutput).toMatch(/1\.0000000|1\.00000/);
+        expect(allOutput).not.toMatch(/5\.0000000|6\.0000000/);
+    });
+
+    it("respects --period when used with --fleet", async () => {
+        seedFleetContract(mockDb, CONTRACT_A, "Contract A", null, 1.0, 1);
+
+        const { aggregateDailyCostSnapshots } = await import("../../src/db/repositories.js");
+        aggregateDailyCostSnapshots(mockDb);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", "--fleet", "--period", "7"]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(allOutput).toMatch(/fleet/i);
+    });
+
+    it("does not require a contractId argument when --fleet is passed", async () => {
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await expect(
+            program.parseAsync(["node", "sorokeep", "costs", "--fleet"])
+        ).resolves.toBeDefined();
+    });
+
+    it("shows per-entry-type breakdown in fleet output", async () => {
+        seedFleetContract(mockDb, CONTRACT_A, "Contract A", null, 1.0, 1);
+
+        const { aggregateDailyCostSnapshots } = await import("../../src/db/repositories.js");
+        aggregateDailyCostSnapshots(mockDb);
+
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", "--fleet"]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(allOutput).toMatch(/instance|wasm|persistent|temporary/i);
+    });
+
+    it("shows a friendly message when no contracts have cost data", async () => {
+        const program = new Command();
+        registerCostsCommand(program);
+
+        await program.parseAsync(["node", "sorokeep", "costs", "--fleet"]);
+
+        const allOutput = consoleLogSpy.mock.calls.flat().join("\n");
+        expect(allOutput).toMatch(/0\.0000000|no data|no extensions|0 extensions/i);
+    });
 });

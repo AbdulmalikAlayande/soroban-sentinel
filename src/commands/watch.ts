@@ -1,6 +1,5 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import readline from "node:readline";
 import ora from "ora";
 import { getDatabase } from "../db/database.js";
 import { deleteContract, getContract } from "../db/repositories.js";
@@ -9,10 +8,14 @@ import {
   classifyTTL,
   formatContractID,
   formatTimeToCloseLedger,
+  printOutput,
   statusIndicator,
+  validateContractId,
 } from "../utils/formatting.js";
-import { watchContract } from "../core/watch.js";
+import { watchContract, type WatchResult } from "../core/watch.js";
 import { loadWatchContractsFile } from "../utils/watch-config.js";
+import { handleRpcUnreachableError } from "../rpc/client.js";
+import { confirmPrompt } from "../utils/prompt.js";
 
 const logger = getLogger().child({ component: "WatchCommand" });
 
@@ -39,19 +42,21 @@ export const registerWatchCommand = (program: Command): void => {
       "--from-file <path>",
       "Load multiple contract registrations from a YAML or JSON file",
     )
+    .option("--json", "Output machine-readable JSON")
     .action(async (contractId, options) => {
       try {
         const db = getDatabase();
 
         if (options.fromFile) {
           const configs = loadWatchContractsFile(options.fromFile);
-          const results = [] as Array<{
-            contractId: string;
-            name?: string;
-            network: string;
-            status: "SUCCESS" | "FAILED";
-            message: string;
-          }>;
+          const results = [] as Array<
+            WatchResult & {
+              name?: string;
+              network: string;
+              status: "SUCCESS" | "FAILED";
+              message: string;
+            }
+          >;
 
           for (const config of configs) {
             const watchResult = await watchContract(db, {
@@ -64,6 +69,7 @@ export const registerWatchCommand = (program: Command): void => {
             });
 
             results.push({
+              ...watchResult,
               contractId: config.contractId,
               name: config.name,
               network: config.network,
@@ -74,15 +80,53 @@ export const registerWatchCommand = (program: Command): void => {
             });
           }
 
+          if (results.length === 0) {
+            const errorMessage = "No contracts found in the watch config file.";
+            if (options.json) {
+              printOutput({ success: false, error: errorMessage }, true);
+              process.exitCode = 1;
+              return;
+            }
+            console.error(chalk.red(errorMessage));
+            process.exit(1);
+            return;
+          }
+
+          if (options.json) {
+            printOutput({
+              success: results.every((result) => result.status === "SUCCESS"),
+              results,
+            }, true);
+            if (results.some((result) => result.status === "FAILED")) {
+              process.exitCode = 1;
+            }
+            return;
+          }
+
           printBatchSummary(results);
 
           if (results.some((result) => result.status === "FAILED")) {
+            for (const result of results) {
+              if (result.status === "FAILED" && handleRpcUnreachableError(result.message)) {
+                break;
+              }
+            }
             process.exit(1);
           }
           return;
         }
 
         if (!contractId) {
+          if (options.json) {
+            printOutput({
+              success: false,
+              error: "contract_id_required",
+              message: "A contract ID is required unless --from-file is provided.",
+            }, true);
+            process.exitCode = 1;
+            return;
+          }
+
           console.log(
             chalk.red(
               "A contract ID is required unless --from-file is provided.",
@@ -92,10 +136,24 @@ export const registerWatchCommand = (program: Command): void => {
           return;
         }
 
+        const contractIdValidation = validateContractId(contractId);
+        if (!contractIdValidation.valid) {
+          if (options.json) {
+            printOutput({ success: false, error: "invalid_contract_id", contractId, message: contractIdValidation.reason }, true);
+            process.exitCode = 1;
+            return;
+          }
+          console.log(chalk.red(`Invalid contract ID: ${contractIdValidation.reason}`));
+          process.exit(1);
+          return;
+        }
+
         const displayId = formatContractID(contractId);
-        const spinner = ora(
-          `Registering contract ${formatContractID(contractId)} and discovering entries...`,
-        ).start();
+        const spinner = !options.json
+          ? ora(
+              `Registering contract ${formatContractID(contractId)} and discovering entries...`,
+            ).start()
+          : undefined;
         const watchResult = await watchContract(db, {
           contractId,
           network: options.network,
@@ -105,11 +163,27 @@ export const registerWatchCommand = (program: Command): void => {
           noIntrospection: options.noIntrospection,
         });
         if (!watchResult.success) {
-          spinner.fail(chalk.red(watchResult.error));
+          if (options.json) {
+            printOutput({ success: false, error: watchResult.error, contractId, network: options.network }, true);
+            process.exitCode = 1;
+            return;
+          }
+
+          spinner?.fail(chalk.red(watchResult.error));
+          handleRpcUnreachableError(watchResult.error);
           process.exit(1);
           return;
         }
-        spinner.succeed(
+        if (options.json) {
+          printOutput({
+            ...watchResult,
+            contractId,
+            network: options.network,
+            name: options.name,
+          }, true);
+          return;
+        }
+        spinner?.succeed(
           chalk.green(
             `Contract ${options.name || displayId} registered successfully.`,
           ),
@@ -157,11 +231,18 @@ export const registerWatchCommand = (program: Command): void => {
               "' to enable auto-extension.",
           ),
         );
-      } catch (error: any) {
+      } catch (error: unknown) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
+        if (options.json) {
+          printOutput({ success: false, error: errorMessage, message: "Failed to watch contract" }, true);
+          process.exitCode = 1;
+          return;
+        }
         logger.error("Watch command failed", { error: errorMessage });
-        console.log(chalk.red(`Failed to watch contract: ${errorMessage}`));
+        if (!handleRpcUnreachableError(error)) {
+          console.log(chalk.red(`Failed to watch contract: ${errorMessage}`));
+        }
         process.exit(1);
       }
     });
@@ -169,9 +250,15 @@ export const registerWatchCommand = (program: Command): void => {
   program
     .command("unwatch <contract-id>")
     .description("Remove a registered contract and clean up associated logs")
-    .option("-y, --yes", "Skip confirmation prompt")
-    .action(async (contractId: string, options: { yes?: boolean }) => {
+    .action(async (contractId: string) => {
       try {
+        const unwatchValidation = validateContractId(contractId);
+        if (!unwatchValidation.valid) {
+          console.log(chalk.red(`Invalid contract ID: ${unwatchValidation.reason}`));
+          process.exit(1);
+          return;
+        }
+
         const db = getDatabase();
         const contract = getContract(db, contractId);
 
@@ -186,27 +273,16 @@ export const registerWatchCommand = (program: Command): void => {
           console.log(chalk.green(`Successfully unwatched contract ${formatContractID(contractId)}.`));
         };
 
-        if (options.yes) {
+        const confirmed = await confirmPrompt(
+          chalk.yellow(`Are you sure you want to unwatch ${formatContractID(contractId)}? All associated logs, alerts, and policies will be permanently deleted. (y/N): `),
+        );
+
+        if (confirmed) {
           await proceedWithDeletion();
         } else {
-          const rl = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout,
-          });
-
-          rl.question(
-            chalk.yellow(`Are you sure you want to unwatch ${formatContractID(contractId)}? All associated logs, alerts, and policies will be permanently deleted. (y/N): `),
-            async (answer) => {
-              rl.close();
-              if (answer.toLowerCase() === "y" || answer.toLowerCase() === "yes") {
-                await proceedWithDeletion();
-              } else {
-                console.log("Unwatch cancelled.");
-              }
-            }
-          );
+          console.log("Unwatch cancelled.");
         }
-      } catch (error: any) {
+      } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         logger.error("Unwatch command failed", { error: errorMessage });
         console.log(chalk.red(`Failed to unwatch contract: ${errorMessage}`));

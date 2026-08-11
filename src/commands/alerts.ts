@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { getDatabase } from "../db/database.js";
 import {
     insertAlertConfig,
+    insertAlertConfigBulk,
     getAlertConfigsForContract,
     getAlertConfigById,
     deleteAlertConfig,
@@ -47,7 +48,8 @@ export function registerAlertsCommand(program: Command): void {
     alerts
         .command("add")
         .description("Add a new alert configuration (TTL-based or resource-based)")
-        .requiredOption("--contract <id>", "The contract ID to alert on")
+        .option("--contract <id>", "The contract ID to alert on (mutually exclusive with --tag)")
+        .option("--tag <tag>", "Apply a TTL alert config to all contracts with this tag (mutually exclusive with --contract)")
         .option("--type <type>", "The notification channel type ('webhook', 'slack', 'discord', 'telegram', or 'pagerduty')")
         .option("--url <url>", "Webhook URL (required if --type is webhook or discord)")
         .option("--channel <channel>", "Slack channel (required if --type is slack)")
@@ -66,7 +68,17 @@ export function registerAlertsCommand(program: Command): void {
             "IANA timezone name for --quiet-hours interpretation, e.g. 'America/New_York' or 'UTC'.",
         )
         .action((options) => {
-            const contractId = options.contract;
+            const contractId: string | undefined = options.contract;
+            const tag: string | undefined = options.tag;
+
+            if (!contractId && !tag) {
+                console.error(chalk.red("Error: You must specify either --contract <id> or --tag <tag>."));
+                process.exit(1);
+            }
+            if (contractId && tag) {
+                console.error(chalk.red("Error: --contract and --tag are mutually exclusive."));
+                process.exit(1);
+            }
 
             // Determine if this is a TTL alert or resource alert
             const isTTLAlert = typeof options.threshold !== "undefined";
@@ -83,9 +95,70 @@ export function registerAlertsCommand(program: Command): void {
             }
 
             const db = getDatabase();
-            const contract = getContract(db, contractId);
+
+            // ── --tag bulk path ────────────────────────────────────────────────
+            if (tag) {
+                if (!isTTLAlert) {
+                    console.error(chalk.red("Error: --tag only supports TTL alerts (--threshold). Use --contract for resource alerts."));
+                    process.exit(1);
+                }
+
+                const primaryType = options.type;
+                const channelDef = getAlertChannel(primaryType);
+                if (!channelDef) {
+                    const known = listAlertChannels().map((d) => d.name).join(", ");
+                    console.error(chalk.red(`Error: --type must be one of: ${known}.`));
+                    process.exit(1);
+                    return;
+                }
+
+                const targetValue = (options as Record<string, string | undefined>)[channelDef.targetOption];
+                if (!targetValue) {
+                    console.error(chalk.red(channelDef.missingTargetError));
+                    process.exit(1);
+                    return;
+                }
+
+                const threshold = options.threshold;
+                if (isNaN(threshold) || threshold <= 0) {
+                    console.error(chalk.red("Error: --threshold must be a positive integer."));
+                    process.exit(1);
+                    return;
+                }
+
+                const webhookSecret = channelDef.supportsSigning
+                    ? (options.secret ?? randomBytes(32).toString("hex"))
+                    : undefined;
+
+                const count = insertAlertConfigBulk(db, tag, {
+                    channel_type: primaryType,
+                    channel_target: targetValue,
+                    threshold_ledgers: threshold,
+                    webhook_secret: webhookSecret,
+                });
+
+                if (count === 0) {
+                    console.log(chalk.yellow(`No contracts found with tag "${tag}". No alert configs created.`));
+                    return;
+                }
+
+                console.log(
+                    chalk.green(
+                        `Successfully added alert config to ${count} contract(s) with tag "${tag}": type=${primaryType}, target=${targetValue}, threshold=${threshold} ledgers`,
+                    ),
+                );
+
+                if (webhookSecret) {
+                    console.log(`  ${chalk.bold("Webhook secret:")} ${webhookSecret}`);
+                    console.log(chalk.dim("  Save this secret — it signs payloads via X-Sorokeep-Signature header."));
+                }
+                return;
+            }
+
+            // ── --contract single path ─────────────────────────────────────────
+            const contract = getContract(db, contractId!);
             if (!contract) {
-                console.error(chalk.red(`Error: Contract ${formatContractID(contractId)} is not registered.`));
+                console.error(chalk.red(`Error: Contract ${formatContractID(contractId!)} is not registered.`));
                 console.error(chalk.dim("Run 'sorokeep watch <contractId>' first."));
                 process.exit(1);
             }
@@ -188,7 +261,7 @@ export function registerAlertsCommand(program: Command): void {
                 }
 
                 const alertConfigId = insertAlertConfig(db, {
-                    contract_id: contractId,
+                    contract_id: contractId!,
                     channel_type: primaryType,
                     channel_target: primaryTarget,
                     threshold_ledgers: threshold,
@@ -226,7 +299,7 @@ export function registerAlertsCommand(program: Command): void {
                 }
 
                 insertResourceAlertConfig(db, {
-                    contract_id: contractId,
+                    contract_id: contractId!,
                     channel_type: primaryType,
                     channel_target: primaryTarget,
                     cpu_limit: cpuLimit,

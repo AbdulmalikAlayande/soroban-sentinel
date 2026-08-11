@@ -37,9 +37,15 @@ export class InMemorySorobanSandbox {
 
     latestLedger: number;
     rpcUrl = "";
+    private failureRate = 0;
 
     private constructor(initialLedger: number) {
         this.latestLedger = initialLedger;
+    }
+
+    /** Sets the probability (0-1) that the next getLedgerEntries call fails, for chaos testing. */
+    setFailureRate(rate: number): void {
+        this.failureRate = Math.max(0, Math.min(1, rate));
     }
 
     static async start(options?: { initialLedger?: number }): Promise<InMemorySorobanSandbox> {
@@ -131,7 +137,7 @@ export class InMemorySorobanSandbox {
         }
 
         const body = await this.readBody(request);
-        let payload: { id?: unknown; method?: string; params?: any };
+        let payload: { id?: unknown; method?: string; params?: Record<string, unknown> };
         try {
             payload = JSON.parse(body);
         } catch {
@@ -151,7 +157,7 @@ export class InMemorySorobanSandbox {
         }
     }
 
-    private dispatch(method: string | undefined, params: any): unknown {
+    private dispatch(method: string | undefined, params: Record<string, unknown>): unknown {
         switch (method) {
             case "getHealth":
                 return {
@@ -166,19 +172,22 @@ export class InMemorySorobanSandbox {
                     protocolVersion: "23",
                 };
             case "getLedgerEntries":
-                return this.getLedgerEntries(params.keys ?? []);
+                return this.getLedgerEntries((params.keys ?? []) as unknown as string[]);
             case "simulateTransaction":
-                return this.simulateTransaction(params.transaction);
+                return this.simulateTransaction(params.transaction as unknown as string);
             case "sendTransaction":
-                return this.sendTransaction(params.transaction);
+                return this.sendTransaction(params.transaction as unknown as string);
             case "getTransaction":
-                return this.getTransaction(params.hash);
+                return this.getTransaction(params.hash as unknown as string);
             default:
                 throw new Error(`Unsupported sandbox RPC method: ${method}`);
         }
     }
 
     private getLedgerEntries(keyXdrs: string[]): unknown {
+        if (Math.random() < this.failureRate) {
+            throw new Error("Injected RPC failure (chaos test)");
+        }
         const entries = keyXdrs.flatMap((keyXdr) => {
             const key = xdr.LedgerKey.fromXDR(keyXdr, "base64");
 
@@ -205,7 +214,7 @@ export class InMemorySorobanSandbox {
         const account = new xdr.AccountEntry({
             accountId,
             balance: xdr.Int64.fromString("100000000000"),
-            seqNum: xdr.Int64.fromString("123456789") as any,
+            seqNum: xdr.Int64.fromString("123456789"),
             numSubEntries: 0,
             inflationDest: null,
             flags: 0,
@@ -244,7 +253,7 @@ export class InMemorySorobanSandbox {
         if (operation.body().switch().name === "extendFootprintTtl") {
             const extendTo = operation.body().extendFootprintTtlOp().extendTo();
             const sorobanData = tx.ext().value();
-            if (!sorobanData || typeof (sorobanData as any).resources !== "function") {
+            if (!sorobanData || typeof (sorobanData as unknown as xdr.SorobanTransactionData).resources !== "function") {
                 throw new Error("Missing Soroban transaction data");
             }
             const footprint = (sorobanData as xdr.SorobanTransactionData).resources().footprint();

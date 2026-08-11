@@ -81,6 +81,19 @@ describe("sendPagerDutyAlert", () => {
         expect(body.payload.severity).toBe("info");
     });
 
+    it("includes a Stellar.expert contract link", async () => {
+        mockFetch.mockResolvedValue(makeOkResponse());
+        const event = makeAlertEvent({ contractId: "CABC1234", network: "testnet" });
+
+        await sendPagerDutyAlert("test-routing-key", event);
+
+        const [, options] = mockFetch.mock.calls[0]!;
+        const body = JSON.parse(options.body as string);
+        expect(body.links).toEqual([
+            { href: "https://testnet.stellar.expert/explorer/testnet/contract/CABC1234", text: "View on Stellar.expert" },
+        ]);
+    });
+
     it("throws when the PagerDuty API responds with a non-2xx status", async () => {
         mockFetch.mockResolvedValue(makeErrorResponse(500));
 

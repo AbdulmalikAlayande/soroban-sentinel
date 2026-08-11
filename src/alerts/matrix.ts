@@ -79,6 +79,21 @@ function buildMessage(event: AlertEvent): string {
         ].join("\n");
     }
 
+    if (event.type === "budget_exhausted") {
+        return [
+            `${icon} Budget Exhausted — ${contractDisplay}`,
+            ``,
+            `Network: ${event.network}`,
+            `Billing Cycle: ${event.budget.billingCycle}`,
+            `Spent: ${event.budget.spentXlm.toFixed(7)} / ${event.budget.limitXlm.toFixed(7)} XLM`,
+            `Blocked Extension Cost: ${event.budget.estimatedFeeXlm.toFixed(7)} XLM`,
+            ``,
+            event.message,
+            ``,
+            `Contract: ${event.contractId}`,
+        ].join("\n");
+    }
+
     const status = event.type === "threshold_crossed"
         ? `TTL ${event.severity === "critical" ? "CRITICAL" : "Warning"}`
         : "Alert Resolved";

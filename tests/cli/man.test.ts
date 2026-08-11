@@ -26,7 +26,7 @@ describe("CLI man page generation", () => {
       ["resources", "Show historical resource usage trends for a contract"],
       ["restore", "Restore archived entries for a contract"],
       ["resume", "Resume daemon polling and alerting for a paused contract"],
-      ["status", "Show TTL and storage health for a watched contract"],
+      ["status", "Show TTL and storage health for watched contracts"],
       ["watch", "Register and start watching a contract"],
     ];
 

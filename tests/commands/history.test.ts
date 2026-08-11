@@ -223,7 +223,7 @@ describe("history command", () => {
                 "node",
                 "sorokeep",
                 "history",
-                "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+                "CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ",
             ]);
         }).toThrow("process.exit called");
 
