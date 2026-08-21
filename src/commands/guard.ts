@@ -124,6 +124,7 @@ export function registerGuardCommand(program: Command): void {
         .command("apply [contractId]", { isDefault: true, hidden: true })
         .description("Configure auto-extension policy for a contract, or in bulk via --tag")
         .option("--tag <tag>", "Apply policy to all contracts matching this tag instead of a single contract")
+        .option("--entry-type <type>", "Apply policy only to entries of this type (instance|wasm|persistent|temporary), or omit for contract-level default")
         .option("--target-ttl <ledgers>", "Target TTL in ledgers after extension", "100000")
         .option("--threshold <ledgers>", "Extend when TTL drops below this many ledgers", "20000")
         .option("--keypair <secret>", "Stellar secret key for signing extension transactions")
@@ -133,7 +134,7 @@ export function registerGuardCommand(program: Command): void {
         .option("--dry-run", "Simulate the extension without submitting")
         .option("--disable", "Disable auto-extension for this contract")
         .option("--json", "Output machine-readable JSON")
-        .action(async (contractId: string | undefined, options: { json?: boolean; tag?: string; targetTtl?: string; threshold?: string; keypair?: string; keypairEnv?: string; keypairVault?: string; autoExtend?: boolean; dryRun?: boolean; disable?: boolean } = {}) => {
+        .action(async (contractId: string | undefined, options: { json?: boolean; tag?: string; entryType?: string; targetTtl?: string; threshold?: string; keypair?: string; keypairEnv?: string; keypairVault?: string; autoExtend?: boolean; dryRun?: boolean; disable?: boolean } = {}) => {
             try {
                 if (contractId && options.tag) {
                     if (options.json) {
@@ -195,6 +196,18 @@ export function registerGuardCommand(program: Command): void {
                 const isValidLedgerCount = (raw: string, value: number): boolean =>
                     /^\d+$/.test(raw) && Number.isSafeInteger(value) && value > 0;
 
+                // Validate entry_type if provided
+                const validEntryTypes = ["instance", "wasm", "persistent", "temporary"];
+                if (options.entryType && !validEntryTypes.includes(options.entryType)) {
+                    if (options.json) {
+                        printOutput({ success: false, error: "invalid_entry_type", contractId, entryType: options.entryType, validTypes: validEntryTypes }, true);
+                        process.exitCode = 1;
+                        return;
+                    }
+                    console.error(chalk.red(`--entry-type must be one of: ${validEntryTypes.join(", ")}`));
+                    process.exit(1);
+                }
+
                 if (!isValidLedgerCount(targetTtlRaw, targetTTL)) {
                     if (options.json) {
                         printOutput({ success: false, error: "invalid_target_ttl", contractId, targetTtl: options.targetTtl }, true);
@@ -230,15 +243,17 @@ export function registerGuardCommand(program: Command): void {
                 if (options.disable) {
                     upsertExtensionPolicy(db, {
                         contract_id: contractId!,
+                        entry_type: options.entryType ?? null,
                         enabled: false,
                         target_ttl_ledgers: targetTTL,
                         extend_when_below_ledgers: threshold,
                     });
                     if (options.json) {
-                        printOutput({ success: true, contractId, mode: "disabled", policy: { enabled: false, target_ttl_ledgers: targetTTL, extend_when_below_ledgers: threshold } }, true);
+                        printOutput({ success: true, contractId, entryType: options.entryType ?? "contract-level", mode: "disabled", policy: { enabled: false, target_ttl_ledgers: targetTTL, extend_when_below_ledgers: threshold } }, true);
                         return;
                     }
-                    console.log(chalk.yellow(`Auto-extension disabled for ${contract.name ?? formatContractID(contractId!)}`));
+                    const typeLabel = options.entryType ? ` (${options.entryType})` : " (contract-level)";
+                    console.log(chalk.yellow(`Auto-extension disabled for ${contract.name ?? formatContractID(contractId!)}${typeLabel}`));
                     return;
                 }
 
@@ -285,6 +300,7 @@ export function registerGuardCommand(program: Command): void {
 
                     upsertExtensionPolicy(db, {
                         contract_id: contractId!,
+                        entry_type: options.entryType ?? null,
                         enabled: true,
                         target_ttl_ledgers: targetTTL,
                         extend_when_below_ledgers: threshold,
@@ -293,11 +309,12 @@ export function registerGuardCommand(program: Command): void {
                     });
 
                     if (options.json) {
-                        printOutput({ success: true, contractId, mode: "auto-extend", policy: { enabled: true, target_ttl_ledgers: targetTTL, extend_when_below_ledgers: threshold, keypair_source: keypairSource, keypair_public: kp.publicKey() } }, true);
+                        printOutput({ success: true, contractId, entryType: options.entryType ?? "contract-level", mode: "auto-extend", policy: { enabled: true, target_ttl_ledgers: targetTTL, extend_when_below_ledgers: threshold, keypair_source: keypairSource, keypair_public: kp.publicKey() } }, true);
                         return;
                     }
 
-                    console.log(chalk.green(`\nAuto-extension enabled for ${contract.name ?? formatContractID(contractId!)}`));
+                    const typeLabel = options.entryType ? ` (${options.entryType})` : " (contract-level)";
+                    console.log(chalk.green(`\nAuto-extension enabled for ${contract.name ?? formatContractID(contractId!)}${typeLabel}`));
                     console.log(`  Target TTL:  ${targetTTL.toLocaleString()} ledgers (${formatTimeToCloseLedger(targetTTL)})`);
                     console.log(`  Threshold:   ${threshold.toLocaleString()} ledgers (${formatTimeToCloseLedger(threshold)})`);
                     console.log(`  Funded by:   ${kp.publicKey().slice(0, 8)}...${kp.publicKey().slice(-4)}`);
@@ -452,6 +469,7 @@ export function registerGuardCommand(program: Command): void {
 
 interface TagPolicyOptions {
     json?: boolean;
+    entryType?: string;
     targetTtl?: string;
     threshold?: string;
     keypair?: string;
@@ -472,6 +490,19 @@ async function applyGuardPolicyToTag(
     const threshold = Number(thresholdRaw);
     const isValidLedgerCount = (raw: string, value: number): boolean =>
         /^\d+$/.test(raw) && Number.isSafeInteger(value) && value > 0;
+
+    // Validate entry_type if provided
+    const validEntryTypes = ["instance", "wasm", "persistent", "temporary"];
+    if (options.entryType && !validEntryTypes.includes(options.entryType)) {
+        if (options.json) {
+            printOutput({ success: false, error: "invalid_entry_type", tag, entryType: options.entryType, validTypes: validEntryTypes }, true);
+            process.exitCode = 1;
+            return;
+        }
+        console.error(chalk.red(`--entry-type must be one of: ${validEntryTypes.join(", ")}`));
+        process.exit(1);
+        return;
+    }
 
     if (!isValidLedgerCount(targetTtlRaw, targetTTL)) {
         if (options.json) {
@@ -553,6 +584,7 @@ async function applyGuardPolicyToTag(
 
     const results = applyGuardPolicyByTag(db, tag, {
         enabled: options.disable ? false : true,
+        entry_type: options.entryType ?? null,
         target_ttl_ledgers: targetTTL,
         extend_when_below_ledgers: threshold,
         keypair_public: keypairPublic,

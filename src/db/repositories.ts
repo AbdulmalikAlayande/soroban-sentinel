@@ -30,6 +30,7 @@ export interface ContractEntry {
 export interface ExtensionPolicy {
     id: number;
     contract_id: string;
+    entry_type: string | null; // null = contract-level default, or 'instance' | 'wasm' | 'persistent' | 'temporary'
     enabled: boolean;
     target_ttl_ledgers: number;
     extend_when_below_ledgers: number;
@@ -334,16 +335,19 @@ export function getEntriesForContract(db: Database.Database, contractId: string)
 // ---------------------------- Database Access Functions For Other Schema: ExtensionPolicy----------------------------
 export function upsertExtensionPolicy(db: Database.Database, policy: {
   contract_id: string;
+  entry_type?: string | null; // null or undefined = contract-level, or 'instance' | 'wasm' | 'persistent' | 'temporary'
   enabled?: boolean;
   target_ttl_ledgers: number;
   extend_when_below_ledgers: number;
   keypair_public?: string;
   keypair_source?: string;
 }): void {
+  const entryType = policy.entry_type ?? null;
+  
   db.prepare(`
-    INSERT INTO extension_policies (contract_id, enabled, target_ttl_ledgers, extend_when_below_ledgers, keypair_public, keypair_source)
-    VALUES (@contract_id, @enabled, @target_ttl_ledgers, @extend_when_below_ledgers, @keypair_public, @keypair_source)
-    ON CONFLICT(contract_id) DO UPDATE SET
+    INSERT INTO extension_policies (contract_id, entry_type, enabled, target_ttl_ledgers, extend_when_below_ledgers, keypair_public, keypair_source)
+    VALUES (@contract_id, @entry_type, @enabled, @target_ttl_ledgers, @extend_when_below_ledgers, @keypair_public, @keypair_source)
+    ON CONFLICT(contract_id, entry_type) DO UPDATE SET
       enabled = @enabled,
       target_ttl_ledgers = @target_ttl_ledgers,
       extend_when_below_ledgers = @extend_when_below_ledgers,
@@ -351,6 +355,7 @@ export function upsertExtensionPolicy(db: Database.Database, policy: {
       keypair_source = @keypair_source
   `).run({
     contract_id: policy.contract_id,
+    entry_type: entryType,
     enabled: policy.enabled !== false ? 1 : 0,
     target_ttl_ledgers: policy.target_ttl_ledgers,
     extend_when_below_ledgers: policy.extend_when_below_ledgers,
@@ -359,8 +364,14 @@ export function upsertExtensionPolicy(db: Database.Database, policy: {
   });
 }
 
-export function getExtensionPolicy(db: Database.Database, contractId: string): ExtensionPolicy | undefined {
-  return db.prepare("SELECT * FROM extension_policies WHERE contract_id = ?").get(contractId) as ExtensionPolicy | undefined;
+export function getExtensionPolicy(db: Database.Database, contractId: string, entryType?: string | null): ExtensionPolicy | undefined {
+  if (entryType) {
+    // Query for per-entry-type policy
+    return db.prepare("SELECT * FROM extension_policies WHERE contract_id = ? AND entry_type = ?").get(contractId, entryType) as ExtensionPolicy | undefined;
+  } else {
+    // Query for contract-level policy (entry_type IS NULL)
+    return db.prepare("SELECT * FROM extension_policies WHERE contract_id = ? AND entry_type IS NULL").get(contractId) as ExtensionPolicy | undefined;
+  }
 }
 
 // ---------------------------- Database Access Functions For Other Schema: AlertConfig----------------------------

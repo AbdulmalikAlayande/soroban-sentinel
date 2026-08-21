@@ -10,6 +10,7 @@ export interface BulkPolicyResult {
 
 export interface GuardPolicyInput {
     enabled?: boolean;
+    entry_type?: string | null;
     target_ttl_ledgers: number;
     extend_when_below_ledgers: number;
     keypair_public?: string;
@@ -45,6 +46,7 @@ export function applyGuardPolicyByTag(
         try {
             upsertExtensionPolicy(db, {
                 contract_id: contract.id,
+                entry_type: policy.entry_type ?? null,
                 enabled: policy.enabled,
                 target_ttl_ledgers: policy.target_ttl_ledgers,
                 extend_when_below_ledgers: policy.extend_when_below_ledgers,

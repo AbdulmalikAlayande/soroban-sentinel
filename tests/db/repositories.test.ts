@@ -179,6 +179,154 @@ describe("Database Repositories", () => {
             expect(p?.target_ttl_ledgers).toBe(20000);
             expect(p?.enabled).toBe(0);
         });
+
+        // Per-Entry-Type Policies (NEW FEATURE #491)
+        it("upserts and gets per-entry-type policy override", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            
+            // Create contract-level policy
+            repo.upsertExtensionPolicy(db, {
+                contract_id: "C1",
+                enabled: true,
+                target_ttl_ledgers: 10000,
+                extend_when_below_ledgers: 5000,
+            });
+
+            // Create per-entry-type override for "instance"
+            repo.upsertExtensionPolicy(db, {
+                contract_id: "C1",
+                entry_type: "instance",
+                enabled: true,
+                target_ttl_ledgers: 20000,
+                extend_when_below_ledgers: 3000,
+            });
+
+            // Get contract-level policy (no entry_type)
+            let p = repo.getExtensionPolicy(db, "C1");
+            expect(p?.target_ttl_ledgers).toBe(10000);
+            expect(p?.extend_when_below_ledgers).toBe(5000);
+
+            // Get per-entry-type policy for "instance"
+            let pInstance = repo.getExtensionPolicy(db, "C1", "instance");
+            expect(pInstance?.target_ttl_ledgers).toBe(20000);
+            expect(pInstance?.extend_when_below_ledgers).toBe(3000);
+
+            // Per-entry-type policy for "wasm" should not exist, return undefined
+            let pWasm = repo.getExtensionPolicy(db, "C1", "wasm");
+            expect(pWasm).toBeUndefined();
+        });
+
+        it("falls back to contract-level policy when no per-entry-type override exists", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            
+            // Create only contract-level policy
+            repo.upsertExtensionPolicy(db, {
+                contract_id: "C1",
+                enabled: true,
+                target_ttl_ledgers: 10000,
+                extend_when_below_ledgers: 5000,
+            });
+
+            // Querying with entry_type but no override should return undefined
+            let pInstance = repo.getExtensionPolicy(db, "C1", "instance");
+            expect(pInstance).toBeUndefined();
+
+            // Contract-level policy still exists
+            let pContract = repo.getExtensionPolicy(db, "C1");
+            expect(pContract?.target_ttl_ledgers).toBe(10000);
+        });
+
+        it("allows disabling per-entry-type override while keeping contract-level enabled", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            
+            // Create contract-level policy (enabled)
+            repo.upsertExtensionPolicy(db, {
+                contract_id: "C1",
+                enabled: true,
+                target_ttl_ledgers: 10000,
+                extend_when_below_ledgers: 5000,
+            });
+
+            // Create disabled per-entry-type override for "persistent"
+            repo.upsertExtensionPolicy(db, {
+                contract_id: "C1",
+                entry_type: "persistent",
+                enabled: false,
+                target_ttl_ledgers: 20000,
+                extend_when_below_ledgers: 3000,
+            });
+
+            // Contract-level is still enabled
+            let pContract = repo.getExtensionPolicy(db, "C1");
+            expect(pContract?.enabled).toBe(1);
+
+            // Per-entry-type for persistent is disabled
+            let pPersistent = repo.getExtensionPolicy(db, "C1", "persistent");
+            expect(pPersistent?.enabled).toBe(0);
+        });
+
+        it("supports all four entry types independently", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            
+            // Create contract-level policy
+            repo.upsertExtensionPolicy(db, {
+                contract_id: "C1",
+                enabled: true,
+                target_ttl_ledgers: 10000,
+                extend_when_below_ledgers: 5000,
+            });
+
+            // Create per-entry-type overrides for all four types with unique values
+            const types = ["instance", "wasm", "persistent", "temporary"] as const;
+            for (let i = 0; i < types.length; i++) {
+                const type = types[i];
+                repo.upsertExtensionPolicy(db, {
+                    contract_id: "C1",
+                    entry_type: type,
+                    enabled: true,
+                    target_ttl_ledgers: 10000 + (i + 1) * 1000,
+                    extend_when_below_ledgers: 5000 + (i + 1) * 500,
+                });
+            }
+
+            // Verify each type has its own policy with distinct values
+            for (let i = 0; i < types.length; i++) {
+                const type = types[i];
+                const p = repo.getExtensionPolicy(db, "C1", type);
+                expect(p?.target_ttl_ledgers).toBe(10000 + (i + 1) * 1000);
+                expect(p?.extend_when_below_ledgers).toBe(5000 + (i + 1) * 500);
+            }
+        });
+
+        it("upserts per-entry-type policy to update existing override", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            
+            // Create initial per-entry-type policy for "wasm"
+            repo.upsertExtensionPolicy(db, {
+                contract_id: "C1",
+                entry_type: "wasm",
+                enabled: true,
+                target_ttl_ledgers: 15000,
+                extend_when_below_ledgers: 4000,
+            });
+
+            let p = repo.getExtensionPolicy(db, "C1", "wasm");
+            expect(p?.target_ttl_ledgers).toBe(15000);
+
+            // Update the same policy
+            repo.upsertExtensionPolicy(db, {
+                contract_id: "C1",
+                entry_type: "wasm",
+                enabled: false,
+                target_ttl_ledgers: 25000,
+                extend_when_below_ledgers: 7000,
+            });
+
+            p = repo.getExtensionPolicy(db, "C1", "wasm");
+            expect(p?.target_ttl_ledgers).toBe(25000);
+            expect(p?.extend_when_below_ledgers).toBe(7000);
+            expect(p?.enabled).toBe(0);
+        });
     });
 
     describe("AlertConfig and Fired Alerts", () => {

@@ -880,3 +880,398 @@ describe("Core Extension Logic", () => {
         });
     });
 });
+
+    // =========================================================================
+    // 5. Per-Entry-Type Policies (NEW FEATURE #491)
+    // =========================================================================
+    describe("Per-Entry-Type Extension Policies", () => {
+        it("per-entry-type policy overrides contract-level default for instance entries only", async () => {
+            const contractId = seedContract(db);
+
+            // Create contract-level policy: extend_when_below = 20000
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            // Create per-entry-type policy for "instance": extend_when_below = 5000
+            // This should override the contract default (20000) for instance entries only
+            // NOTE: This test will fail until upsertExtensionPolicy supports entry_type parameter
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                entry_type: "instance",
+                enabled: true,
+                target_ttl_ledgers: 150000,
+                extend_when_below_ledgers: 5000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            // Set entries with TTL slightly above contract-level threshold but below instance override
+            // instance: remaining = 10000 (above 5000, below 20000)
+            // wasm:     remaining = 15000 (above 5000, above 10000)
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "instance-key-xdr",
+                entry_type: "instance",
+                live_until_ledger: 2410000,
+                discovery_source: "deterministic",
+            });
+
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "wasm-key-xdr",
+                entry_type: "wasm",
+                live_until_ledger: 2415000,
+                discovery_source: "deterministic",
+            });
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+
+            mockSubmitExtension.mockResolvedValue({
+                success: true,
+                txHash: "per-type-tx",
+                ledger: 2400100,
+            });
+
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2400100,
+                entries: [
+                    {
+                        entryKeyXdr: "instance-key-xdr",
+                        latestLedger: 2400100,
+                        liveUntilLedgerSeq: 2500100,
+                        lastModifiedLedgerSeq: 2400100,
+                        remainingTTL: 100000,
+                    },
+                    {
+                        entryKeyXdr: "wasm-key-xdr",
+                        latestLedger: 2400100,
+                        liveUntilLedgerSeq: 2515100,
+                        lastModifiedLedgerSeq: 2400100,
+                        remainingTTL: 115000,
+                    },
+                ],
+            });
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            // Only instance entry should be extended (using per-type threshold of 5000)
+            // wasm entry remains above contract default threshold (20000), so not extended
+            expect(result.contractsChecked).toBe(1);
+            expect(result.contractsExtended).toBe(1);
+            // Verify that only instance entry was included in extension
+            expect(mockSubmitExtension).toHaveBeenCalled();
+            const callArgs = mockSubmitExtension.mock.calls[0];
+            expect(callArgs[0]).toContain("instance-key-xdr");
+            expect(callArgs[0]).not.toContain("wasm-key-xdr");
+        });
+
+        it("entry types without override fall back to contract-level policy", async () => {
+            const contractId = seedContract(db);
+
+            // Create contract-level policy
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            // Create per-entry-type policy ONLY for "instance" (not for "wasm")
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                entry_type: "instance",
+                enabled: true,
+                target_ttl_ledgers: 150000,
+                extend_when_below_ledgers: 5000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            // Both entries have remaining TTL of 15000
+            // instance: 15000 > 5000 (per-type override) → should NOT extend
+            // wasm:     15000 < 20000 (contract default) → should extend
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "instance-key-xdr",
+                entry_type: "instance",
+                live_until_ledger: 2415000,
+                discovery_source: "deterministic",
+            });
+
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "wasm-key-xdr",
+                entry_type: "wasm",
+                live_until_ledger: 2415000,
+                discovery_source: "deterministic",
+            });
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+
+            mockSubmitExtension.mockResolvedValue({
+                success: true,
+                txHash: "fallback-tx",
+                ledger: 2400100,
+            });
+
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2400100,
+                entries: [
+                    {
+                        entryKeyXdr: "instance-key-xdr",
+                        latestLedger: 2400100,
+                        liveUntilLedgerSeq: 2500100,
+                        lastModifiedLedgerSeq: 2400100,
+                        remainingTTL: 100000,
+                    },
+                    {
+                        entryKeyXdr: "wasm-key-xdr",
+                        latestLedger: 2400100,
+                        liveUntilLedgerSeq: 2500100,
+                        lastModifiedLedgerSeq: 2400100,
+                        remainingTTL: 100000,
+                    },
+                ],
+            });
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            // Only wasm should be extended (using contract default of 20000)
+            expect(result.contractsChecked).toBe(1);
+            expect(result.contractsExtended).toBe(1);
+            const callArgs = mockSubmitExtension.mock.calls[0];
+            expect(callArgs[0]).not.toContain("instance-key-xdr");
+            expect(callArgs[0]).toContain("wasm-key-xdr");
+        });
+
+        it("disabled per-entry-type policy falls back to contract-level policy", async () => {
+            const contractId = seedContract(db);
+
+            // Create contract-level policy: enabled
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            // Create disabled per-entry-type policy for "persistent"
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                entry_type: "persistent",
+                enabled: false, // Disabled
+                target_ttl_ledgers: 200000,
+                extend_when_below_ledgers: 1000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            // Entry has remaining TTL of 10000
+            // persistent: disabled per-type, falls back to contract default (20000) → should extend
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "persistent-key-xdr",
+                entry_type: "persistent",
+                live_until_ledger: 2410000,
+                discovery_source: "deterministic",
+            });
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+
+            mockSubmitExtension.mockResolvedValue({
+                success: true,
+                txHash: "disabled-fallback-tx",
+                ledger: 2400100,
+            });
+
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2400100,
+                entries: [
+                    {
+                        entryKeyXdr: "persistent-key-xdr",
+                        latestLedger: 2400100,
+                        liveUntilLedgerSeq: 2500100,
+                        lastModifiedLedgerSeq: 2400100,
+                        remainingTTL: 100000,
+                    },
+                ],
+            });
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            // persistent entry should be extended using contract default policy
+            expect(result.contractsChecked).toBe(1);
+            expect(result.contractsExtended).toBe(1);
+            expect(mockSubmitExtension).toHaveBeenCalled();
+        });
+
+        it("all four entry types can have independent policies", async () => {
+            const contractId = seedContract(db);
+
+            // Contract-level default
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            // Per-type overrides for each entry type with different thresholds
+            for (const [entryType, threshold] of [
+                ["instance", 3000],
+                ["wasm", 5000],
+                ["persistent", 15000],
+                ["temporary", 8000],
+            ] as const) {
+                upsertExtensionPolicy(db, {
+                    contract_id: contractId,
+                    entry_type: entryType,
+                    enabled: true,
+                    target_ttl_ledgers: 100000 + (threshold * 10),
+                    extend_when_below_ledgers: threshold,
+                    keypair_source: "env:TEST_SECRET_KEY",
+                });
+            }
+
+            // Create entries with TTL remaining = 10000
+            // instance:   10000 > 3000 → NO extend
+            // wasm:       10000 > 5000 → NO extend
+            // persistent: 10000 < 15000 → extend
+            // temporary:  10000 > 8000 → NO extend
+            for (const entryType of ["instance", "wasm", "persistent", "temporary"] as const) {
+                upsertEntry(db, {
+                    contract_id: contractId,
+                    entry_key_xdr: `${entryType}-key-xdr`,
+                    entry_type: entryType,
+                    live_until_ledger: 2410000,
+                    discovery_source: "deterministic",
+                });
+            }
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+
+            mockSubmitExtension.mockResolvedValue({
+                success: true,
+                txHash: "multi-type-tx",
+                ledger: 2400100,
+            });
+
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2400100,
+                entries: [
+                    {
+                        entryKeyXdr: "instance-key-xdr",
+                        latestLedger: 2400100,
+                        liveUntilLedgerSeq: 2500100,
+                        lastModifiedLedgerSeq: 2400100,
+                        remainingTTL: 100000,
+                    },
+                    {
+                        entryKeyXdr: "wasm-key-xdr",
+                        latestLedger: 2400100,
+                        liveUntilLedgerSeq: 2500100,
+                        lastModifiedLedgerSeq: 2400100,
+                        remainingTTL: 100000,
+                    },
+                    {
+                        entryKeyXdr: "persistent-key-xdr",
+                        latestLedger: 2400100,
+                        liveUntilLedgerSeq: 2500100,
+                        lastModifiedLedgerSeq: 2400100,
+                        remainingTTL: 100000,
+                    },
+                    {
+                        entryKeyXdr: "temporary-key-xdr",
+                        latestLedger: 2400100,
+                        liveUntilLedgerSeq: 2500100,
+                        lastModifiedLedgerSeq: 2400100,
+                        remainingTTL: 100000,
+                    },
+                ],
+            });
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            // Only persistent should be extended
+            expect(result.contractsChecked).toBe(1);
+            expect(result.contractsExtended).toBe(1);
+            const callArgs = mockSubmitExtension.mock.calls[0];
+            expect(callArgs[0]).toContain("persistent-key-xdr");
+            expect(callArgs[0]).not.toContain("instance-key-xdr");
+            expect(callArgs[0]).not.toContain("wasm-key-xdr");
+            expect(callArgs[0]).not.toContain("temporary-key-xdr");
+        });
+
+        it("per-entry-type target_ttl_ledgers is used when extending", async () => {
+            const contractId = seedContract(db);
+
+            // Contract-level: target_ttl = 100000
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            // Per-type override for instance: target_ttl = 250000 (much higher)
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                entry_type: "instance",
+                enabled: true,
+                target_ttl_ledgers: 250000,
+                extend_when_below_ledgers: 5000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "instance-key-xdr",
+                entry_type: "instance",
+                live_until_ledger: 2410000,
+                discovery_source: "deterministic",
+            });
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+
+            mockSubmitExtension.mockResolvedValue({
+                success: true,
+                txHash: "target-ttl-tx",
+                ledger: 2400100,
+            });
+
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2400100,
+                entries: [
+                    {
+                        entryKeyXdr: "instance-key-xdr",
+                        latestLedger: 2400100,
+                        liveUntilLedgerSeq: 2650100,
+                        lastModifiedLedgerSeq: 2400100,
+                        remainingTTL: 250000,
+                    },
+                ],
+            });
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            // Should use per-type target_ttl of 250000, not contract default of 100000
+            expect(result.contractsExtended).toBe(1);
+            // Verify the per-type target was passed to extendEntries
+            const callArgs = mockSubmitExtension.mock.calls[0];
+            // The second argument to extendEntries is target_ttl_ledgers
+            // We expect 250000 (per-type) not 100000 (contract default)
+            expect(callArgs[1]).toBe(250000);
+        });
+    });
+});
