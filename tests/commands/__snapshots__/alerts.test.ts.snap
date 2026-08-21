@@ -1,0 +1,18 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`alerts command > snapshot tests > matches snapshot for alerts history table 1`] = `
+"
+Alert History — sample-contract
+
+  ● YYYY-MM-DD HH:MM:SS | instance | TTL: 200 (~18m 20s) | webhook→✗ | retries: 2
+  ● YYYY-MM-DD HH:MM:SS | instance | TTL: 800 (~1h 13m) | webhook→✓ | retries: 0"
+`;
+
+exports[`alerts command > snapshot tests > matches snapshot for alerts list table 1`] = `
+"  Alert Configurations for sample-contract
+  ID: 1    | Type: webhook  | Target: https://example.com/webhook    | Threshold: 1,000 ledgers
+  ID: 2    | Type: slack    | Target: #ops-alerts                    | Threshold: 2,000 ledgers
+  ID: 3    | Type: discord  | Target: https://discord.com/api/webhooks/123/abc | Threshold: 500 ledgers [signed]"
+`;
+
+exports[`alerts command > snapshot tests > matches snapshot when no alerts configured 1`] = `"No alert configurations found for contract CBEOJUP5...KZW6."`;

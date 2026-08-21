@@ -1,6 +1,7 @@
 import type { AlertEvent, AlertSeverity } from "./types.js";
 import { getLogger } from "../logging/index.js";
 import { renderAlertTemplate } from "./templates.js";
+import { getStellarExpertContractUrl } from "./links.js";
 
 const logger = getLogger().child({ component: "DiscordHandler" });
 const TIMEOUT_MS = 10_000;
@@ -23,6 +24,7 @@ interface DiscordField {
 
 interface DiscordEmbed {
     title: string;
+    url?: string;
     color: number;
     fields: DiscordField[];
     footer: { text: string };
@@ -47,6 +49,10 @@ function buildTitle(event: AlertEvent): string {
     if (event.type === "state_changed") {
         const diffLabel = event.diff.diffType.charAt(0).toUpperCase() + event.diff.diffType.slice(1);
         return `${icon} State ${diffLabel} — ${contractDisplay}`;
+    }
+
+    if (event.type === "budget_exhausted") {
+        return `${icon} Budget Exhausted — ${contractDisplay}`;
     }
 
     const level = event.severity === "critical" ? "CRITICAL" : "Warning";
@@ -110,6 +116,24 @@ function buildEmbed(event: AlertEvent): DiscordEmbed {
                 inline: false,
             }
         );
+    } else if (event.type === "budget_exhausted") {
+        fields.push(
+            {
+                name: "Billing Cycle",
+                value: event.budget.billingCycle,
+                inline: true,
+            },
+            {
+                name: "Budget",
+                value: `${event.budget.spentXlm.toFixed(7)} / ${event.budget.limitXlm.toFixed(7)} XLM spent`,
+                inline: true,
+            },
+            {
+                name: "Blocked Extension Cost",
+                value: `${event.budget.estimatedFeeXlm.toFixed(7)} XLM`,
+                inline: true,
+            }
+        );
     } else {
         fields.push(
             {
@@ -137,6 +161,7 @@ function buildEmbed(event: AlertEvent): DiscordEmbed {
 
     return {
         title: buildTitle(event),
+        url: getStellarExpertContractUrl(event),
         color: SEVERITY_COLORS[event.severity],
         fields,
         footer: {
@@ -186,7 +211,7 @@ export async function sendDiscordAlert(webhookUrl: string, event: AlertEvent): P
     });
 
     const customMessage = renderAlertTemplate("discord", event);
-    let payload: any;
+    let payload: Record<string, unknown>;
 
     if (customMessage !== null) {
         try {

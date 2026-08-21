@@ -5,6 +5,11 @@ export default defineConfig({
     globals: true,
     environment: "node",
     include: ["tests/**/*.test.ts"],
+    server: {
+      deps: {
+        inline: ["./scripts/generate-man.ts"],
+      },
+    },
     typecheck: {
       tsconfig: "./tsconfig.test.json",
     },

@@ -2,6 +2,7 @@ import {
     Contract,
     rpc,
     xdr,
+    Transaction,
     TransactionBuilder,
     Networks,
     Account,
@@ -11,8 +12,172 @@ import {
     FeeBumpTransaction,
     Asset,
 } from "@stellar/stellar-sdk";
+import chalk from "chalk";
 import { getLogger } from "../logging/index.js";
 // CostSummary removed — no longer exported from costs.js
+
+// ── Local helper types to replace `any` casts ──────────────────────────────
+
+/** Error-like shape accessed in catch blocks. */
+interface ErrorLike {
+    code?: string;
+    message?: string;
+    response?: { status?: number };
+    cause?: unknown;
+}
+
+/** Thrown when a network-level failure (connection refused, timeout, DNS, etc.)
+ * is detected talking to the configured RPC endpoint, so callers can print an
+ * actionable message instead of a raw fetch/SDK error. */
+export class RpcUnreachableError extends Error {
+    public readonly url: string;
+
+    constructor(url: string, options?: { cause?: unknown }) {
+        super(`RPC endpoint at ${url} is unreachable`, options);
+        this.name = "RpcUnreachableError";
+        this.url = url;
+    }
+}
+
+const NETWORK_ERROR_CODES = new Set([
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "ETIMEDOUT",
+    "EADDRNOTAVAIL",
+    "ECONNRESET",
+    "EPIPE",
+    "EHOSTUNREACH",
+    "ENETUNREACH",
+]);
+
+const NETWORK_ERROR_MESSAGE_PATTERNS = [
+    "fetch failed",
+    "econnrefused",
+    "enotfound",
+    "etimedout",
+    "econnreset",
+    "timeout",
+    "unreachable",
+    "network error",
+];
+
+/** Detects whether an error (or its cause chain) looks like a network-level failure. */
+export function isNetworkError(error: unknown, seen = new Set<unknown>()): boolean {
+    if (!error || typeof error !== "object" || seen.has(error)) return false;
+    seen.add(error);
+
+    const err = error as ErrorLike;
+    if (typeof err.code === "string" && NETWORK_ERROR_CODES.has(err.code)) return true;
+
+    const message = typeof err.message === "string" ? err.message.toLowerCase() : "";
+    if (NETWORK_ERROR_MESSAGE_PATTERNS.some((pattern) => message.includes(pattern))) return true;
+
+    return isNetworkError(err.cause, seen);
+}
+
+const RPC_UNREACHABLE_MESSAGE_PATTERN = /RPC endpoint at (https?:\/\/\S+) is unreachable/;
+
+/**
+ * Prints an actionable message for an unreachable-RPC failure and returns
+ * true if it recognized one. Accepts a plain string as well as an Error,
+ * since some call sites (e.g. core/watch.ts's structured WatchResult) already
+ * stringify errors to `.message` before returning, losing the original type.
+ */
+export function handleRpcUnreachableError(error: unknown): boolean {
+    let url: string | undefined;
+
+    if (error instanceof RpcUnreachableError) {
+        url = error.url;
+    } else if (typeof error === "string") {
+        url = error.match(RPC_UNREACHABLE_MESSAGE_PATTERN)?.[1];
+    } else if (error instanceof Error) {
+        url = error.message.match(RPC_UNREACHABLE_MESSAGE_PATTERN)?.[1];
+    }
+
+    if (!url) return false;
+
+    console.error(chalk.red(`\nError: RPC endpoint is unreachable: ${url}`));
+    console.error(chalk.yellow("Suggestions:"));
+    console.error(`  - Check that the URL is correct and the endpoint is online.`);
+    console.error(`  - Use the ${chalk.bold("--rpc-url")} flag to specify a different endpoint.`);
+    console.error(`  - Verify your configuration in ${chalk.bold("~/.sorokeep/config.yaml")}.`);
+    console.error(`  - Check Stellar network status: ${chalk.cyan("https://status.stellar.org")}\n`);
+    return true;
+}
+
+/**
+ * Wraps every method on an `rpc.Server` instance so a network-level failure
+ * (connection refused, timeout, DNS, etc.) surfaces as a `RpcUnreachableError`
+ * carrying the endpoint URL, with the original error preserved as `.cause`.
+ *
+ * A Proxy is used rather than editing each `StellarRpcClient` method
+ * individually, since callers reach the SDK server both directly
+ * (`this.server.getLedgerEntries(...)`) and via `withRateLimit`, and every
+ * path needs the same detection without duplicating it at each call site.
+ */
+function wrapServerWithUnreachableDetection(server: rpc.Server, url: string): rpc.Server {
+    return new Proxy(server, {
+        get(target, prop, receiver) {
+            const value: unknown = Reflect.get(target, prop, receiver);
+            if (typeof value !== "function") return value;
+
+            return function (this: unknown, ...args: unknown[]): unknown {
+                const toRpcError = (error: unknown): unknown =>
+                    isNetworkError(error) ? new RpcUnreachableError(url, { cause: error }) : error;
+
+                try {
+                    const result: unknown = Reflect.apply(value, target, args);
+                    if (result instanceof Promise) {
+                        return result.catch((error: unknown) => {
+                            throw toRpcError(error);
+                        });
+                    }
+                    return result;
+                } catch (error) {
+                    throw toRpcError(error);
+                }
+            };
+        },
+    });
+}
+
+/** Soroban meta with optional resource-counter accessors. */
+interface SorobanMetaLike {
+    cpuInstructions?: () => unknown;
+    memoryBytes?: () => unknown;
+}
+
+/** Cost fields present on raw (unparsed) simulation responses. */
+interface SimulateTransactionCost {
+    cpuInsns?: string | number;
+    memBytes?: string | number;
+    readBytes?: string | number;
+    writeBytes?: string | number;
+}
+
+/** Simulation success response that may carry raw cost fields. */
+interface SimulateWithCost extends rpc.Api.SimulateTransactionSuccessResponse {
+    cost?: SimulateTransactionCost;
+}
+
+/** Send-transaction error response with raw diagnostic fields. */
+interface SendTransactionErrorResult {
+    errorResult?: unknown;
+    diagnosticEventsXdr?: string;
+}
+
+/** Get-transaction response with raw (string-based) fields.
+ *
+ * The SDK types parse `resultMetaXdr` as `xdr.TransactionMeta`, but at runtime
+ * the RPC may still return a base64 string. The `as unknown as
+ * GetTransactionRawFields` casts in `pollTransaction` handle this mismatch
+ * intentionally — `extractResourceCosts` expects a raw base64 string. */
+interface GetTransactionRawFields {
+    resultMetaXdr?: string;
+    feeCharged?: string | number;
+    ledger?: number;
+    latestLedger?: number;
+}
 
 export function assertSimulationSuccess(sim: rpc.Api.SimulateTransactionResponse): asserts sim is rpc.Api.SimulateTransactionSuccessResponse {
     if (rpc.Api.isSimulationError(sim)) {
@@ -41,9 +206,11 @@ export async function executeWithRetry<T>(action: () => Promise<T>): Promise<T> 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
             return await action();
-        } catch (error: any) {
-            const isTimeout = error?.code === "ETIMEDOUT" || error?.code === "ECONNRESET" || error?.message?.includes("timeout");
-            const status = error?.response?.status;
+        } catch (error: unknown) {
+            const err = error as ErrorLike;
+            const cause = (err.cause ?? err) as ErrorLike;
+            const isTimeout = cause.code === "ETIMEDOUT" || cause.code === "ECONNRESET" || cause.message?.includes("timeout");
+            const status = cause.response?.status ?? err.response?.status ?? 0;
             const isRetryableHttp = status === 429 || (status >= 500 && status < 600);
 
             if ((isTimeout || isRetryableHttp) && attempt < MAX_RETRIES) {
@@ -201,9 +368,9 @@ export function extractResourceCosts(resultMetaXdrBase64: string): { cpuInstruct
         if (v3) {
             const sorobanMeta = typeof v3.sorobanMeta === 'function' ? v3.sorobanMeta() : undefined;
             if (sorobanMeta) {
-                const anyMeta = sorobanMeta as any;
-                const cpuInstructions = typeof anyMeta.cpuInstructions === 'function' ? Number(anyMeta.cpuInstructions()) : undefined;
-                const memoryBytes = typeof anyMeta.memoryBytes === 'function' ? Number(anyMeta.memoryBytes()) : undefined;
+                const meta = sorobanMeta as SorobanMetaLike;
+                const cpuInstructions = typeof meta.cpuInstructions === 'function' ? Number(meta.cpuInstructions()) : undefined;
+                const memoryBytes = typeof meta.memoryBytes === 'function' ? Number(meta.memoryBytes()) : undefined;
 
                 if (cpuInstructions !== undefined && memoryBytes !== undefined) {
                     return { cpuInstructions, memoryBytes };
@@ -241,7 +408,10 @@ export class StellarRpcClient {
         if (!url) {
             throw new Error(`Unknown network "${network}". Use "testnet", "mainnet", or provide a custom URL.`);
         }
-        this.server = new rpc.Server(url, { allowHttp: url.startsWith("http://") });
+        this.server = wrapServerWithUnreachableDetection(
+            new rpc.Server(url, { allowHttp: url.startsWith("http://") }),
+            url,
+        );
     }
 
     getNetwork(): string {
@@ -253,11 +423,10 @@ export class StellarRpcClient {
     }
 
     async getCurrentLedger(): Promise<number> {
-        const serverAny = this.server as any;
-        if (typeof serverAny.getLatestLedger === "function") {
+        if (typeof this.server.getLatestLedger === "function") {
             try {
-                const response = await this.withRateLimit(() => serverAny.getLatestLedger());
-                const seq = (response as any)?.sequence;
+                const response = await this.withRateLimit(() => this.server.getLatestLedger());
+                const seq = response?.sequence;
                 if (typeof seq === "number" && seq > 0) return seq;
             } catch (error) {
                 logger.debug("getLatestLedger failed, falling back to getHealth", error);
@@ -265,8 +434,8 @@ export class StellarRpcClient {
         }
 
         const health = await this.withRateLimit(() => this.server.getHealth());
-        if (health && typeof (health as any).latestLedger === "number") {
-            return (health as any).latestLedger;
+        if (health && typeof health.latestLedger === "number") {
+            return health.latestLedger;
         }
 
         throw new Error("Unable to determine latest ledger from RPC server");
@@ -274,12 +443,11 @@ export class StellarRpcClient {
 
     async getFeeStats(): Promise<FeeStatsResult> {
         return await this.withRateLimit(async () => {
-            const serverAny = this.server as any;
-            if (typeof serverAny.getFeeStats !== "function") {
+            if (typeof this.server.getFeeStats !== "function") {
                 throw new Error("RPC server does not support getFeeStats");
             }
 
-            const response = await serverAny.getFeeStats();
+            const response = await this.server.getFeeStats();
             const inclusionFee = response.sorobanInclusionFee ?? response.inclusionFee;
             if (!inclusionFee) {
                 throw new Error("RPC fee stats response did not include inclusion fee data");
@@ -532,10 +700,10 @@ export class StellarRpcClient {
         return {
             success: true,
             minResourceFee: Number(successSim.minResourceFee ?? 0),
-            cpuInstructions: Number((successSim as any).cost?.cpuInsns ?? 0),
-            memoryBytes: Number((successSim as any).cost?.memBytes ?? 0),
-            readBytes: Number((successSim as any).cost?.readBytes ?? 0),
-            writeBytes: Number((successSim as any).cost?.writeBytes ?? 0),
+            cpuInstructions: Number((successSim as SimulateWithCost).cost?.cpuInsns ?? 0),
+            memoryBytes: Number((successSim as SimulateWithCost).cost?.memBytes ?? 0),
+            readBytes: Number((successSim as SimulateWithCost).cost?.readBytes ?? 0),
+            writeBytes: Number((successSim as SimulateWithCost).cost?.writeBytes ?? 0),
         };
     }
 
@@ -627,19 +795,19 @@ export class StellarRpcClient {
                 retryPrepared.sign(keypair);
                 const retrySendResult = await this.server.sendTransaction(retryPrepared);
                 if (retrySendResult.status === "ERROR") {
-                    const diagnostics = (retrySendResult as any).errorResult ?? (retrySendResult as any).diagnosticEventsXdr ?? "";
-                    return { success: false, txHash: retrySendResult.hash, ledger: 0, cpuInsns: Number((retrySim as any).cost?.cpuInsns ?? 0), memBytes: Number((retrySim as any).cost?.memBytes ?? 0), error: `Transaction send error: ${diagnostics || retrySendResult.status}` };
+                    const diagnostics = (retrySendResult as SendTransactionErrorResult).errorResult ?? (retrySendResult as SendTransactionErrorResult).diagnosticEventsXdr ?? "";
+                    return { success: false, txHash: retrySendResult.hash, ledger: 0, cpuInsns: Number((retrySim as SimulateWithCost).cost?.cpuInsns ?? 0), memBytes: Number((retrySim as SimulateWithCost).cost?.memBytes ?? 0), error: `Transaction send error: ${diagnostics || retrySendResult.status}` };
                 }
                 const txResult = await this.pollTransaction(retrySendResult.hash);
                 return txResult.success ? this.addResourcesToSuccess(txResult, retrySim as rpc.Api.SimulateTransactionSuccessResponse) : txResult;
             }
-            const diagnostics = (sendResult as any).errorResult ?? (sendResult as any).diagnosticEventsXdr ?? "";
+            const diagnostics = (sendResult as SendTransactionErrorResult).errorResult ?? (sendResult as SendTransactionErrorResult).diagnosticEventsXdr ?? "";
             return {
                 success: false,
                 txHash: sendResult.hash,
                 ledger: 0,
-                cpuInsns: Number((sim as any).cost?.cpuInsns ?? 0),
-                memBytes: Number((sim as any).cost?.memBytes ?? 0),
+                cpuInsns: Number((sim as SimulateWithCost).cost?.cpuInsns ?? 0),
+                memBytes: Number((sim as SimulateWithCost).cost?.memBytes ?? 0),
                 error: `Transaction send error: ${diagnostics || sendResult.status}`,
             };
         }
@@ -650,7 +818,7 @@ export class StellarRpcClient {
 
     // Helper to add resource usage to a successful transaction result
     private addResourcesToSuccess(result: SubmitTransactionResult, sim: rpc.Api.SimulateTransactionSuccessResponse): SubmitTransactionResult {
-        return { ...result, cpuInsns: Number((sim as any).cost?.cpuInsns ?? 0), memBytes: Number((sim as any).cost?.memBytes ?? 0) };
+        return { ...result, cpuInsns: Number((sim as SimulateWithCost).cost?.cpuInsns ?? 0), memBytes: Number((sim as SimulateWithCost).cost?.memBytes ?? 0) };
     }
 
     /**
@@ -687,7 +855,7 @@ export class StellarRpcClient {
             return { success: false, txHash: "", ledger: 0, cpuInsns: 0, memBytes: 0, error: sim.error ?? "Simulation failed" };
         }
 
-        const buildAndSignFeeBump = (innerTx: any, simResult: any) => {
+        const buildAndSignFeeBump = (innerTx: Transaction, simResult: rpc.Api.SimulateTransactionSuccessResponse) => {
             const prepared = rpc.assembleTransaction(innerTx, simResult).build();
             prepared.sign(keypair);
             const feeBump = TransactionBuilder.buildFeeBumpTransaction(
@@ -714,19 +882,19 @@ export class StellarRpcClient {
                 const retryFeeBump = buildAndSignFeeBump(retryTx, retrySim);
                 const retrySendResult = await this.server.sendTransaction(retryFeeBump);
                 if (retrySendResult.status === "ERROR") {
-                    const diagnostics = (retrySendResult as any).errorResult ?? (retrySendResult as any).diagnosticEventsXdr ?? "";
-                    return { success: false, txHash: retrySendResult.hash, ledger: 0, cpuInsns: Number((retrySim as any).cost?.cpuInsns ?? 0), memBytes: Number((retrySim as any).cost?.memBytes ?? 0), error: `Transaction send error: ${diagnostics || retrySendResult.status}` };
+                    const diagnostics = (retrySendResult as SendTransactionErrorResult).errorResult ?? (retrySendResult as SendTransactionErrorResult).diagnosticEventsXdr ?? "";
+                    return { success: false, txHash: retrySendResult.hash, ledger: 0, cpuInsns: Number((retrySim as SimulateWithCost).cost?.cpuInsns ?? 0), memBytes: Number((retrySim as SimulateWithCost).cost?.memBytes ?? 0), error: `Transaction send error: ${diagnostics || retrySendResult.status}` };
                 }
                 const txResult = await this.pollTransaction(retrySendResult.hash);
                 return txResult.success ? this.addResourcesToSuccess(txResult, retrySim as rpc.Api.SimulateTransactionSuccessResponse) : txResult;
             }
-            const diagnostics = (sendResult as any).errorResult ?? (sendResult as any).diagnosticEventsXdr ?? "";
+            const diagnostics = (sendResult as SendTransactionErrorResult).errorResult ?? (sendResult as SendTransactionErrorResult).diagnosticEventsXdr ?? "";
             return {
                 success: false,
                 txHash: sendResult.hash,
                 ledger: 0,
-                cpuInsns: Number((sim as any).cost?.cpuInsns ?? 0),
-                memBytes: Number((sim as any).cost?.memBytes ?? 0),
+                cpuInsns: Number((sim as SimulateWithCost).cost?.cpuInsns ?? 0),
+                memBytes: Number((sim as SimulateWithCost).cost?.memBytes ?? 0),
                 error: `Transaction send error: ${diagnostics || sendResult.status}`,
             };
         }
@@ -786,19 +954,19 @@ export class StellarRpcClient {
                 retryPrepared.sign(keypair);
                 const retrySendResult = await this.server.sendTransaction(retryPrepared);
                 if (retrySendResult.status === "ERROR") {
-                    const diagnostics = (retrySendResult as any).errorResult ?? (retrySendResult as any).diagnosticEventsXdr ?? "";
-                    return { success: false, txHash: retrySendResult.hash, ledger: 0, cpuInsns: Number((retrySim as any).cost?.cpuInsns ?? 0), memBytes: Number((retrySim as any).cost?.memBytes ?? 0), error: `Transaction send error: ${diagnostics || retrySendResult.status}` };
+                    const diagnostics = (retrySendResult as SendTransactionErrorResult).errorResult ?? (retrySendResult as SendTransactionErrorResult).diagnosticEventsXdr ?? "";
+                    return { success: false, txHash: retrySendResult.hash, ledger: 0, cpuInsns: Number((retrySim as SimulateWithCost).cost?.cpuInsns ?? 0), memBytes: Number((retrySim as SimulateWithCost).cost?.memBytes ?? 0), error: `Transaction send error: ${diagnostics || retrySendResult.status}` };
                 }
                 const txResult = await this.pollTransaction(retrySendResult.hash);
                 return txResult.success ? this.addResourcesToSuccess(txResult, retrySim as rpc.Api.SimulateTransactionSuccessResponse) : txResult;
             }
-            const diagnostics = (sendResult as any).errorResult ?? (sendResult as any).diagnosticEventsXdr ?? "";
+            const diagnostics = (sendResult as SendTransactionErrorResult).errorResult ?? (sendResult as SendTransactionErrorResult).diagnosticEventsXdr ?? "";
             return {
                 success: false,
                 txHash: sendResult.hash,
                 ledger: 0,
-                cpuInsns: Number((sim as any).cost?.cpuInsns ?? 0),
-                memBytes: Number((sim as any).cost?.memBytes ?? 0),
+                cpuInsns: Number((sim as SimulateWithCost).cost?.cpuInsns ?? 0),
+                memBytes: Number((sim as SimulateWithCost).cost?.memBytes ?? 0),
                 error: `Transaction send error: ${diagnostics || sendResult.status}`,
             };
         }
@@ -843,7 +1011,7 @@ export class StellarRpcClient {
         const sendResult = await this.server.sendTransaction(tx);
 
         if (sendResult.status === "ERROR") {
-            const diagnostics = (sendResult as any).errorResult ?? "";
+            const diagnostics = (sendResult as SendTransactionErrorResult).errorResult ?? "";
             return {
                 success: false,
                 txHash: sendResult.hash,
@@ -860,14 +1028,14 @@ export class StellarRpcClient {
      * Returns true if the sendTransaction ERROR response indicates a txBadSeq result code.
      * The SDK parses errorResultXdr into `errorResult` as an xdr.TransactionResult.
      */
-    private isBadSeqError(sendResult: any): boolean {
+    private isBadSeqError(sendResult: SendTransactionErrorResult): boolean {
         try {
             const errorResult = sendResult.errorResult;
             if (!errorResult) return false;
             // errorResult may be a base64 string or a pre-parsed xdr.TransactionResult
             const parsed = typeof errorResult === "string"
                 ? xdr.TransactionResult.fromXDR(errorResult, "base64")
-                : errorResult;
+                : (errorResult as xdr.TransactionResult);
             return parsed.result().switch().name === "txBadSeq";
         } catch {
             return false;
@@ -911,7 +1079,7 @@ export class StellarRpcClient {
             const txResponse = await this.withRateLimit(() => this.server.getTransaction(txHash));
 
             if (txResponse.status === "SUCCESS") {
-                const resultMetaXdr = (txResponse as any).resultMetaXdr;
+                const resultMetaXdr = (txResponse as unknown as GetTransactionRawFields).resultMetaXdr;
                 let cpuInstructions: number | undefined = undefined;
                 let memoryBytes: number | undefined = undefined;
 
@@ -928,13 +1096,13 @@ export class StellarRpcClient {
                     }
                 }
 
-                const rawFee = (txResponse as any).feeCharged;
+                const rawFee = (txResponse as unknown as GetTransactionRawFields).feeCharged;
                 const feeCharged = rawFee !== undefined ? Number(rawFee) : undefined;
 
                 return {
                     success: true,
                     txHash,
-                    ledger: (txResponse as any).ledger ?? txResponse.latestLedger,
+                    ledger: (txResponse as unknown as GetTransactionRawFields).ledger ?? txResponse.latestLedger,
                     cpuInstructions,
                     memoryBytes,
                     feeCharged,
@@ -945,7 +1113,7 @@ export class StellarRpcClient {
                 return {
                     success: false,
                     txHash,
-                    ledger: (txResponse as any).ledger ?? txResponse.latestLedger,
+                    ledger: (txResponse as unknown as GetTransactionRawFields).ledger ?? txResponse.latestLedger,
                     error: "Transaction failed on-chain",
                 };
             }

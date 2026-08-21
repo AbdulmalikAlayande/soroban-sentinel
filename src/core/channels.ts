@@ -109,9 +109,9 @@ export class ChannelAccountPool {
         await Promise.all(
             this.accounts.map(async account => {
                 try {
-                    const response = await (client as any).getAccount(account.public_key);
+                    const response = await (client as unknown as { getAccount: (pk: string) => Promise<{ balances?: Array<{ asset_type: string; balance: string }> }> }).getAccount(account.public_key);
                     const nativeBalance = response.balances?.find(
-                        (b: any) => b.asset_type === "native",
+                        (b) => b.asset_type === "native",
                     );
                     const xlm = nativeBalance ? parseFloat(nativeBalance.balance) : 0;
                     updateChannelBalance(this.db, account.public_key, xlm);

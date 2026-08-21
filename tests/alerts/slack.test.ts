@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { runChannelContractTests } from "./channel-contract.js";
 
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
@@ -99,6 +100,15 @@ describe("SlackChannel", () => {
             const body = JSON.parse(options.body as string);
             expect(JSON.stringify(body.blocks)).toContain("defi-pool-v2");
         });
+
+        it("includes a Stellar.expert contract link in the footer", async () => {
+            mockFetch.mockResolvedValue(makeSlackOkResponse());
+            const event = makeAlertEvent({ contractId: "CDEF1234ABCD5678", network: "mainnet" });
+            await channel.send(event);
+            const [, options] = mockFetch.mock.calls[0]!;
+            const body = JSON.parse(options.body as string);
+            expect(JSON.stringify(body.blocks)).toContain("https://stellar.expert/explorer/public/contract/CDEF1234ABCD5678");
+        });
     });
 
     describe("Error handling", () => {
@@ -112,4 +122,24 @@ describe("SlackChannel", () => {
             await expect(channel.send(makeAlertEvent())).rejects.toThrow("ECONNREFUSED");
         });
     });
+});
+
+// ─── Channel contract ──────────────────────────────────────────────────────
+
+describe("SlackChannel (contract)", () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        mockFetch.mockResolvedValue(makeSlackOkResponse());
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.stubGlobal("fetch", mockFetch);
+    });
+
+    runChannelContractTests(
+        "slack",
+        () => ({ send: (target, event) => new SlackChannel(target).send(event) }),
+        () => { mockFetch.mockRejectedValue(new Error("ECONNREFUSED")); },
+    );
 });

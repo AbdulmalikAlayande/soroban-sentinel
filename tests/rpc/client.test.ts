@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { StellarRpcClient, extractResourceCosts, executeWithRetry } from "../../src/rpc/client";
+import { StellarRpcClient, extractResourceCosts, executeWithRetry, RpcUnreachableError, isNetworkError, handleRpcUnreachableError } from "../../src/rpc/client";
 import { Contract, xdr, Keypair } from "@stellar/stellar-sdk";
 
 vi.mock("@stellar/stellar-sdk", async () =>  {
@@ -17,6 +17,11 @@ vi.mock("@stellar/stellar-sdk", async () =>  {
         }
 
         async getHealth() {
+            if (this.serverUrl && this.serverUrl.includes("refused")) {
+                const err = new TypeError("fetch failed");
+                (err as any).cause = { code: "ECONNREFUSED", message: "connect ECONNREFUSED" };
+                throw err;
+            }
             if (this.serverUrl && this.serverUrl.includes("timeout")) {
                 throw new Error("Timeout");
             }
@@ -655,6 +660,475 @@ describe("StellarRpcClient", () => {
 
             await expect(executeWithRetry(action)).rejects.toThrow("400 Bad Request");
             expect(action).toHaveBeenCalledTimes(1);
+        });
+
+        it("returns immediately on first success without any delay or retry", async () => {
+            const action = vi.fn().mockResolvedValue("immediate-success");
+
+            const result = await executeWithRetry(action);
+
+            expect(result).toBe("immediate-success");
+            expect(action).toHaveBeenCalledTimes(1);
+            expect(vi.getTimerCount()).toBe(0);
+        });
+
+        it("retries exactly N times with increasing exponential backoff then succeeds (increasing delay verification)", async () => {
+            let attempts = 0;
+            const callTimes: number[] = [];
+            const action = vi.fn().mockImplementation(async () => {
+                callTimes.push(Date.now());
+                attempts++;
+                if (attempts <= 2) {
+                    const err = new Error(`Transient failure ${attempts}`) as any;
+                    err.response = { status: 503 };
+                    throw err;
+                }
+                return "ok-after-retries";
+            });
+
+            const promise = executeWithRetry(action);
+
+            await vi.advanceTimersByTimeAsync(0);
+            expect(action).toHaveBeenCalledTimes(1);
+
+            await vi.advanceTimersByTimeAsync(999);
+            expect(action).toHaveBeenCalledTimes(1);
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(action).toHaveBeenCalledTimes(2);
+
+            await vi.advanceTimersByTimeAsync(1999);
+            expect(action).toHaveBeenCalledTimes(2);
+
+            await vi.advanceTimersByTimeAsync(1);
+
+            const result = await promise;
+            expect(result).toBe("ok-after-retries");
+            expect(action).toHaveBeenCalledTimes(3);
+
+            expect(callTimes.length).toBe(3);
+            const firstDelay = callTimes[1]! - callTimes[0]!;
+            const secondDelay = callTimes[2]! - callTimes[1]!;
+            expect(firstDelay).toBe(1000);
+            expect(secondDelay).toBe(2000);
+            expect(secondDelay).toBeGreaterThan(firstDelay);
+        });
+
+        it("verifies exponential backoff delays are 1000ms, 2000ms, 4000ms for 3 retries", async () => {
+            let attemptCount = 0;
+            const timestamps: number[] = [];
+            const action = vi.fn().mockImplementation(async () => {
+                timestamps.push(Date.now());
+                attemptCount++;
+                if (attemptCount < 4) {
+                    const err = new Error("500") as any;
+                    err.response = { status: 500 };
+                    throw err;
+                }
+                return "final-success";
+            });
+
+            const promise = executeWithRetry(action);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(action).toHaveBeenCalledTimes(1);
+
+            await vi.advanceTimersByTimeAsync(1000);
+            expect(action).toHaveBeenCalledTimes(2);
+            expect(timestamps[1]! - timestamps[0]!).toBe(1000);
+
+            await vi.advanceTimersByTimeAsync(2000);
+            expect(action).toHaveBeenCalledTimes(3);
+            expect(timestamps[2]! - timestamps[1]!).toBe(2000);
+
+            await vi.advanceTimersByTimeAsync(4000);
+            expect(action).toHaveBeenCalledTimes(4);
+            expect(timestamps[3]! - timestamps[2]!).toBe(4000);
+
+            const result = await promise;
+            expect(result).toBe("final-success");
+        });
+
+        it("exhausts all retries and throws with original error's context preserved", async () => {
+            const originalError = new Error("Service Unavailable - original context") as any;
+            originalError.response = { status: 503 };
+            originalError.code = "ETIMEDOUT";
+            originalError.details = "some additional context";
+
+            const action = vi.fn().mockRejectedValue(originalError);
+
+            const promise = executeWithRetry(action);
+            // Prevent unhandled rejection warning between timer advances and final assertion
+            promise.catch(() => {});
+
+            await vi.advanceTimersByTimeAsync(1000);
+            await vi.advanceTimersByTimeAsync(2000);
+            await vi.advanceTimersByTimeAsync(4000);
+
+            let caughtError: any;
+            try {
+                await promise;
+            } catch (e) {
+                caughtError = e;
+            }
+
+            expect(caughtError).toBeDefined();
+            expect(caughtError).toBe(originalError);
+            expect(caughtError.message).toBe("Service Unavailable - original context");
+            expect(caughtError.response.status).toBe(503);
+            expect(caughtError.code).toBe("ETIMEDOUT");
+            expect(caughtError.details).toBe("some additional context");
+            expect(action).toHaveBeenCalledTimes(4);
+        });
+
+        it("throws with clear message preserving original error when all retries exhausted (500 error)", async () => {
+            const action = vi.fn().mockImplementation(async () => {
+                const err = new Error("500 Internal Server Error") as any;
+                err.response = { status: 500 };
+                throw err;
+            });
+
+            const promise = executeWithRetry(action);
+            promise.catch(() => {});
+            await vi.advanceTimersByTimeAsync(7000);
+
+            await expect(promise).rejects.toThrow("500 Internal Server Error");
+            expect(action).toHaveBeenCalledTimes(4);
+        });
+
+        it("does not retry on various 4xx non-retryable errors", async () => {
+            const nonRetryableStatuses = [400, 401, 403, 404, 405, 422];
+
+            for (const status of nonRetryableStatuses) {
+                const action = vi.fn().mockImplementation(async () => {
+                    const err = new Error(`${status} error`) as any;
+                    err.response = { status };
+                    throw err;
+                });
+
+                await expect(executeWithRetry(action)).rejects.toThrow(`${status} error`);
+                expect(action).toHaveBeenCalledTimes(1);
+                vi.clearAllMocks();
+            }
+        });
+
+        it("retries on 429 Too Many Requests and eventually succeeds", async () => {
+            let attempts = 0;
+            const action = vi.fn().mockImplementation(async () => {
+                attempts++;
+                if (attempts < 2) {
+                    const err = new Error("429 Too Many Requests") as any;
+                    err.response = { status: 429 };
+                    throw err;
+                }
+                return "success-after-429";
+            });
+
+            const promise = executeWithRetry(action);
+            await vi.advanceTimersByTimeAsync(1000);
+            const result = await promise;
+
+            expect(result).toBe("success-after-429");
+            expect(action).toHaveBeenCalledTimes(2);
+        });
+
+        it("retries on 500-series server errors (500, 502, 503, 504, 599)", async () => {
+            const retryableStatuses = [500, 502, 503, 504, 599];
+
+            for (const status of retryableStatuses) {
+                let attempts = 0;
+                const action = vi.fn().mockImplementation(async () => {
+                    attempts++;
+                    if (attempts === 1) {
+                        const err = new Error(`${status} Server Error`) as any;
+                        err.response = { status };
+                        throw err;
+                    }
+                    return `success-${status}`;
+                });
+
+                const promise = executeWithRetry(action);
+                await vi.advanceTimersByTimeAsync(1000);
+                const result = await promise;
+
+                expect(result).toBe(`success-${status}`);
+                expect(action).toHaveBeenCalledTimes(2);
+                vi.clearAllMocks();
+            }
+        });
+
+        it("retries on network timeout codes ETIMEDOUT and ECONNRESET", async () => {
+            for (const code of ["ETIMEDOUT", "ECONNRESET"]) {
+                let attempts = 0;
+                const action = vi.fn().mockImplementation(async () => {
+                    attempts++;
+                    if (attempts === 1) {
+                        const err = new Error("network error") as any;
+                        err.code = code;
+                        throw err;
+                    }
+                    return `success-${code}`;
+                });
+
+                const promise = executeWithRetry(action);
+                await vi.advanceTimersByTimeAsync(1000);
+                const result = await promise;
+
+                expect(result).toBe(`success-${code}`);
+                expect(action).toHaveBeenCalledTimes(2);
+                vi.clearAllMocks();
+            }
+        });
+
+        it("retries when error message includes 'timeout'", async () => {
+            let attempts = 0;
+            const action = vi.fn().mockImplementation(async () => {
+                attempts++;
+                if (attempts === 1) {
+                    throw new Error("Request timeout after 5000ms");
+                }
+                return "success-timeout-msg";
+            });
+
+            const promise = executeWithRetry(action);
+            await vi.advanceTimersByTimeAsync(1000);
+            const result = await promise;
+
+            expect(result).toBe("success-timeout-msg");
+            expect(action).toHaveBeenCalledTimes(2);
+        });
+
+        it("short-circuits immediately on non-retryable error without waiting", async () => {
+            const action = vi.fn().mockImplementation(async () => {
+                const err = new Error("404 Not Found") as any;
+                err.response = { status: 404 };
+                throw err;
+            });
+
+            const start = Date.now();
+            await expect(executeWithRetry(action)).rejects.toThrow("404 Not Found");
+            const elapsed = Date.now() - start;
+
+            expect(action).toHaveBeenCalledTimes(1);
+            expect(elapsed).toBe(0);
+            expect(vi.getTimerCount()).toBe(0);
+        });
+
+        it("exhausting retries results in exactly MAX_RETRIES+1 attempts (4 total)", async () => {
+            const action = vi.fn().mockImplementation(async () => {
+                const err = new Error("503") as any;
+                err.response = { status: 503 };
+                throw err;
+            });
+
+            const promise = executeWithRetry(action);
+            promise.catch(() => {});
+            await vi.advanceTimersByTimeAsync(7000);
+
+            await expect(promise).rejects.toThrow();
+            expect(action).toHaveBeenCalledTimes(4);
+        });
+
+        it("succeeds after 1 failure with mocked fetch pattern (fetch fails N times then succeeds)", async () => {
+            let fetchAttempts = 0;
+            const mockFetch = vi.fn().mockImplementation(async () => {
+                fetchAttempts++;
+                if (fetchAttempts <= 1) {
+                    const err = new Error("fetch failed with 503") as any;
+                    err.response = { status: 503 };
+                    throw err;
+                }
+                return { ok: true, data: "rpc-result" };
+            });
+
+            const promise = executeWithRetry(() => mockFetch());
+            await vi.advanceTimersByTimeAsync(1000);
+            const result = await promise;
+
+            expect(result).toEqual({ ok: true, data: "rpc-result" });
+            expect(mockFetch).toHaveBeenCalledTimes(2);
+        });
+
+        it("does not wait extra after final failure (no fourth delay)", async () => {
+            const action = vi.fn().mockImplementation(async () => {
+                const err = new Error("500") as any;
+                err.response = { status: 500 };
+                throw err;
+            });
+
+            const promise = executeWithRetry(action);
+            promise.catch(() => {});
+
+            await vi.advanceTimersByTimeAsync(1000);
+            expect(action).toHaveBeenCalledTimes(2);
+            await vi.advanceTimersByTimeAsync(2000);
+            expect(action).toHaveBeenCalledTimes(3);
+            await vi.advanceTimersByTimeAsync(4000);
+            expect(action).toHaveBeenCalledTimes(4);
+
+            expect(vi.getTimerCount()).toBe(0);
+
+            await expect(promise).rejects.toThrow();
+        });
+
+        it("handles mixed retryable error types across attempts then succeeds", async () => {
+            const errors = [
+                (() => { const e = new Error("ETIMEDOUT") as any; e.code = "ETIMEDOUT"; return e; })(),
+                (() => { const e = new Error("429") as any; e.response = { status: 429 }; return e; })(),
+                (() => { const e = new Error("timeout in message") as any; e.message = "timeout in message"; return e; })(),
+            ];
+
+            let attempt = 0;
+            const action = vi.fn().mockImplementation(async () => {
+                if (attempt < errors.length) {
+                    throw errors[attempt++];
+                }
+                return "success-mixed-errors";
+            });
+
+            const promise = executeWithRetry(action);
+            await vi.advanceTimersByTimeAsync(1000);
+            await vi.advanceTimersByTimeAsync(2000);
+            await vi.advanceTimersByTimeAsync(4000);
+
+            const result = await promise;
+            expect(result).toBe("success-mixed-errors");
+            expect(action).toHaveBeenCalledTimes(4);
+        });
+
+        it("identifies configurable retry parameters: MAX_RETRIES=3, initial 1000ms, multiplier 2x, retryable vs fatal", async () => {
+            // This test documents the implementation's configurable parameters
+            // MAX_RETRIES = 3 (4 total attempts)
+            // Initial delay = 1000ms, multiplier = 2x, so delays = 1000, 2000, 4000
+            // Retryable: ETIMEDOUT, ECONNRESET, message includes 'timeout', status 429, 500-599
+            // Fatal: 4xx except 429, errors without retryable code/status/message
+
+            const retryableExamples = [
+                { code: "ETIMEDOUT" },
+                { code: "ECONNRESET" },
+                { message: "something timeout occurred" },
+                { response: { status: 429 } },
+                { response: { status: 500 } },
+                { response: { status: 503 } },
+                { response: { status: 599 } },
+            ];
+
+            for (const example of retryableExamples) {
+                const err = new Error("retryable") as any;
+                Object.assign(err, example);
+                if (example.message) err.message = example.message;
+                const action = vi.fn().mockImplementation(async () => {
+                    if (action.mock.calls.length === 1) throw err;
+                    return "ok";
+                });
+
+                // Need fresh attempt counting
+                let firstCall = true;
+                const trackingAction = vi.fn().mockImplementation(async () => {
+                    if (firstCall) {
+                        firstCall = false;
+                        throw err;
+                    }
+                    return "ok";
+                });
+
+                const promise = executeWithRetry(trackingAction);
+                await vi.advanceTimersByTimeAsync(1000);
+                const result = await promise;
+                expect(result).toBe("ok");
+                expect(trackingAction).toHaveBeenCalledTimes(2);
+                vi.clearAllMocks();
+            }
+
+            // Fatal examples should not retry
+            const fatalExample = new Error("400") as any;
+            fatalExample.response = { status: 400 };
+            const fatalAction = vi.fn().mockRejectedValue(fatalExample);
+            await expect(executeWithRetry(fatalAction)).rejects.toThrow();
+            expect(fatalAction).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    describe("RPC unreachable errors", () => {
+        it("wraps network failures in RpcUnreachableError, preserving the cause chain", async () => {
+            const unreachableClient = new StellarRpcClient("testnet", "https://refused.com");
+
+            let thrownError: any;
+            try {
+                await unreachableClient.checkHealth();
+            } catch (err) {
+                thrownError = err;
+            }
+
+            expect(thrownError).toBeInstanceOf(RpcUnreachableError);
+            expect(thrownError.url).toBe("https://refused.com");
+            expect(thrownError.cause.message).toBe("fetch failed");
+            expect(thrownError.cause.cause.code).toBe("ECONNREFUSED");
+        });
+
+        it("produces a message naming the unreachable URL", async () => {
+            const unreachableClient = new StellarRpcClient("testnet", "https://refused.com");
+            await expect(unreachableClient.checkHealth()).rejects.toThrow(
+                /RPC endpoint at https:\/\/refused\.com is unreachable/,
+            );
+        });
+
+        it("does not wrap non-network errors (e.g. an unhealthy but reachable endpoint)", async () => {
+            const unhealthyClient = new StellarRpcClient("testnet", "https://unhealthy.com");
+            const result = await unhealthyClient.checkHealth();
+            expect(result.status).toBe("offline");
+        });
+    });
+
+    describe("isNetworkError", () => {
+        it("recognizes known network error codes", () => {
+            expect(isNetworkError({ code: "ECONNREFUSED" })).toBe(true);
+            expect(isNetworkError({ code: "ETIMEDOUT" })).toBe(true);
+        });
+
+        it("recognizes network-shaped messages", () => {
+            expect(isNetworkError({ message: "fetch failed" })).toBe(true);
+            expect(isNetworkError({ message: "Connection unreachable" })).toBe(true);
+        });
+
+        it("recurses into the cause chain", () => {
+            expect(isNetworkError({ message: "wrapped", cause: { code: "ENOTFOUND" } })).toBe(true);
+        });
+
+        it("returns false for unrelated errors", () => {
+            expect(isNetworkError({ message: "Invalid Contract ID format" })).toBe(false);
+            expect(isNetworkError(null)).toBe(false);
+            expect(isNetworkError(undefined)).toBe(false);
+        });
+
+        it("does not infinite-loop on a self-referential cause chain", () => {
+            const err: any = { message: "circular" };
+            err.cause = err;
+            expect(isNetworkError(err)).toBe(false);
+        });
+    });
+
+    describe("handleRpcUnreachableError", () => {
+        it("returns true and prints suggestions for an RpcUnreachableError", () => {
+            const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+            const handled = handleRpcUnreachableError(new RpcUnreachableError("https://down.example.com"));
+            expect(handled).toBe(true);
+            expect(errorSpy.mock.calls.flat().join("\n")).toContain("https://down.example.com");
+            errorSpy.mockRestore();
+        });
+
+        it("recognizes a plain string message (structured-result error paths)", () => {
+            const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+            const handled = handleRpcUnreachableError("RPC endpoint at https://down.example.com is unreachable");
+            expect(handled).toBe(true);
+            errorSpy.mockRestore();
+        });
+
+        it("returns false for unrelated errors and prints nothing", () => {
+            const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+            const handled = handleRpcUnreachableError(new Error("Invalid Contract ID format"));
+            expect(handled).toBe(false);
+            expect(errorSpy).not.toHaveBeenCalled();
+            errorSpy.mockRestore();
         });
     });
 
