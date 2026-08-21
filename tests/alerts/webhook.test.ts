@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createHmac } from "node:crypto";
+import { runChannelContractTests } from "./channel-contract.js";
 
 // ─── Mock fetch before importing the module under test ────────────────────────
 
@@ -253,15 +254,50 @@ describe("sendWebhookAlert", () => {
                 "firedAtLedger",
                 "network",
                 "severity",
+                "stellarExpertUrl",
                 "threshold",
                 "timestamp",
                 "type",
             ]);
         });
+
+        it("body includes a Stellar.expert contract link", async () => {
+            mockFetch.mockResolvedValue(makeOkResponse());
+            const event = makeAlertEvent({ contractId: "CDEF1234ABCD5678", network: "testnet" });
+
+            await sendWebhookAlert("https://example.com/hook", event);
+
+            const [, options] = mockFetch.mock.calls[0]!;
+            const body = JSON.parse(options.body as string);
+            expect(body.stellarExpertUrl).toBe(
+                "https://testnet.stellar.expert/explorer/testnet/contract/CDEF1234ABCD5678",
+            );
+        });
     });
 
     // =========================================================================
-    // 6. TIMEOUT HANDLING
+    // 6. CHANNEL CONTRACT
+    // =========================================================================
+    describe("Channel contract", () => {
+        beforeEach(() => {
+            vi.clearAllMocks();
+            mockFetch.mockResolvedValue(makeOkResponse());
+        });
+
+        afterEach(() => {
+            vi.unstubAllGlobals();
+            vi.stubGlobal("fetch", mockFetch);
+        });
+
+        runChannelContractTests(
+            "webhook",
+            () => ({ send: (target, event, secret?) => sendWebhookAlert(target, event, secret ?? null) }),
+            () => { mockFetch.mockRejectedValue(new Error("ECONNREFUSED")); },
+        );
+    });
+
+    // =========================================================================
+    // 7. TIMEOUT HANDLING
     // =========================================================================
     describe("Timeout handling", () => {
         it("throws when fetch is aborted (AbortError propagates as delivery failure)", async () => {

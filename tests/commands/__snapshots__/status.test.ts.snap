@@ -1,0 +1,42 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`status command > matches snapshot for contracts with mixed TTL statuses 1`] = `
+"
+  sample-contract (CBEOJUP5...KZW6)
+  Network: testnet
+  Last checked: ledger 400,000
+
+  Instance   TTL:   100,000 ledgers (~1 day)  OK
+  WASM Code  TTL:    10,000 ledgers (~15 hours)  WARNING
+  Temporary  TTL:     4,000 ledgers (~6 hours)  CRITICAL
+"
+`;
+
+exports[`status command > matches snapshot for human-readable output 1`] = `
+"
+  sample-contract (CBEOJUP5...KZW6)
+  Network: testnet
+  Last checked: ledger 400,000
+
+  Instance  TTL:   100,000 ledgers (~1 day)  OK
+"
+`;
+
+exports[`status command > matches snapshot for unknown entry status 1`] = `
+"
+  sample-contract (CBEOJUP5...KZW6)
+  Network: testnet
+
+  Instance  TTL: unknown
+"
+`;
+
+exports[`status command > matches snapshot when no entries are tracked 1`] = `
+"
+  sample-contract (CBEOJUP5...KZW6)
+  Network: testnet
+  Last checked: ledger 400,000
+
+  No entries tracked for this contract.
+"
+`;

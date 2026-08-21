@@ -71,7 +71,7 @@ function applySchemaToValue(value: unknown, schema: SchemaDictionary): unknown {
   return value;
 }
 
-export function applySchema(data: any, schema: SchemaDictionary): any {
+export function applySchema(data: unknown, schema: SchemaDictionary): unknown {
   if (!schema || Object.keys(schema).length === 0) return data;
   return applySchemaToValue(data, schema);
 }
@@ -82,7 +82,7 @@ export function applySchema(data: any, schema: SchemaDictionary): any {
  * - If schemaPath is undefined, returns schema map as undefined (caller should skip transformation)
  * - If schemaPath is provided, loads+validates schema and applies translation to `data`.
  */
-export function loadAndApplySchema(data: any, schemaPath?: string): any {
+export function loadAndApplySchema(data: unknown, schemaPath?: string): unknown {
   if (!schemaPath) return data;
   const schema = loadSchema(schemaPath);
   return applySchema(data, schema);

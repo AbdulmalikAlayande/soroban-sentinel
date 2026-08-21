@@ -13,6 +13,7 @@ import {
     getBudget,
     addBudgetSpent,
     countExtensionsInLastHour,
+    getAlertConfigsForContract,
 
 } from "../db/repositories.js";
 import { ChannelAccountPool } from "./channels.js";
@@ -20,6 +21,8 @@ import { getLogger } from "../logging/index.js";
 import { formatSecretKey } from "../utils/formatting.js";
 import { VaultResolver } from "./vault.js";
 import { loadConfig } from "../utils/config.js";
+import { buildBudgetExhaustedAlertEvent } from "../alerts/types.js";
+import { deliverSingleAlert } from "../alerts/dispatcher.js";
 
 const logger = getLogger().child({ component: "Extension" });
 
@@ -322,21 +325,31 @@ export async function runAutoExtensions(
 
     result.contractsChecked = eligibleContracts.length;
 
-    await Promise.all(eligibleContracts.map(async contract => {
+    const extJitterStr = process.env.EXTENSION_JITTER_MS;
+    const extensionJitterMs = extJitterStr ? parseInt(extJitterStr, 10) : 0;
+    
+    const eligibleTasks = [];
+    for (const contract of eligibleContracts) {
         const policy = getExtensionPolicy(db, contract.id)!;
+        const entries = getEntriesForContract(db, contract.id);
+        const needsExtension = entries.filter(e => {
+            if (!e.live_until_ledger) return false;
+            const remaining = e.live_until_ledger - latestLedger;
+            return remaining >= 0 && remaining < policy.extend_when_below_ledgers;
+        });
+
+        if (needsExtension.length > 0) {
+            eligibleTasks.push({ contract, policy, needsExtension });
+        }
+    }
+
+    await Promise.all(eligibleTasks.map(async ({ contract, policy, needsExtension }) => {
+        if (extensionJitterMs > 0 && eligibleTasks.length > 1) {
+            const delay = Math.floor(Math.random() * extensionJitterMs);
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
 
         try {
-            const entries = getEntriesForContract(db, contract.id);
-
-            const needsExtension = entries.filter(e => {
-                if (!e.live_until_ledger) return false;
-                const remaining = e.live_until_ledger - latestLedger;
-                return remaining >= 0 && remaining < policy.extend_when_below_ledgers;
-            });
-
-            if (needsExtension.length === 0) return;
-
-
             // ── Rate limit check (issue #142) ────────────────────────────────
             // Block auto-extension if the contract has already hit the maximum
             // number of extension transactions allowed per hour.
@@ -381,20 +394,102 @@ export async function runAutoExtensions(
 
             try {
                 const billingCycle = new Date().toISOString().slice(0, 7);
-                const budget = getBudget(db, contract.id, billingCycle);
-                let estimatedFeeXlm = 0;
 
-                if (budget) {
+                // Pool membership takes precedence over the contract's individual
+                // budget (issue #407). Roll the pool over to the current billing
+                // cycle if it's stale, atomically with the membership lookup.
+                const sharedBudget = db.transaction(() => {
+                    const assigned = db.prepare(`
+                        SELECT p.id, p.name, p.monthly_limit_xlm, p.billing_cycle, p.spent_xlm
+                        FROM shared_budget_pools p
+                        JOIN shared_budget_pool_contracts pc ON pc.pool_id = p.id
+                        WHERE pc.contract_id = ?
+                    `).get(contract.id) as {
+                        id: number;
+                        name: string;
+                        monthly_limit_xlm: number;
+                        billing_cycle: string;
+                        spent_xlm: number;
+                    } | undefined;
+                    if (assigned && assigned.billing_cycle !== billingCycle) {
+                        db.prepare(`
+                            UPDATE shared_budget_pools
+                            SET billing_cycle = ?, spent_xlm = 0, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        `).run(billingCycle, assigned.id);
+                        assigned.billing_cycle = billingCycle;
+                        assigned.spent_xlm = 0;
+                    }
+                    return assigned;
+                })();
+                const budget = sharedBudget ? undefined : getBudget(db, contract.id, billingCycle);
+                let estimatedFeeXlm = 0;
+                let reservedPoolSpend = 0;
+
+                if (sharedBudget || budget) {
                     const { Keypair } = await import("@stellar/stellar-sdk");
                     const pubKey = Keypair.fromSecret(secretKey).publicKey();
                     const simResult = await simulateExtension(db, contract.id, entryKeys, policy.target_ttl_ledgers, pubKey, rpcUrl);
-                    
+
                     if (!simResult.success) {
                         throw new Error(`Simulation failed: ${simResult.error}`);
                     }
-                    
+
                     estimatedFeeXlm = (simResult.estimatedFee || 0) / 10000000;
-                    if (budget.spent_xlm + estimatedFeeXlm > budget.limit_xlm) {
+
+                    if (sharedBudget) {
+                        // Atomic reserve-if-under-limit: the WHERE clause re-checks
+                        // spent_xlm against monthly_limit_xlm in the same statement,
+                        // so concurrent contracts sharing a pool can't both slip
+                        // past the cap between check and increment.
+                        const reservation = db.prepare(`
+                            UPDATE shared_budget_pools
+                            SET spent_xlm = spent_xlm + ?, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ? AND billing_cycle = ?
+                              AND spent_xlm + ? <= monthly_limit_xlm
+                        `).run(estimatedFeeXlm, sharedBudget.id, billingCycle, estimatedFeeXlm);
+
+                        if (reservation.changes === 0) {
+                            const current = db.prepare(`SELECT spent_xlm FROM shared_budget_pools WHERE id = ?`)
+                                .get(sharedBudget.id) as { spent_xlm: number };
+                            const budgetEvent = buildBudgetExhaustedAlertEvent({
+                                contractId: contract.id,
+                                contractName: contract.name,
+                                network,
+                                billingCycle,
+                                limitXlm: sharedBudget.monthly_limit_xlm,
+                                spentXlm: current.spent_xlm,
+                                estimatedFeeXlm,
+                            });
+                            for (const cfg of getAlertConfigsForContract(db, contract.id)) {
+                                deliverSingleAlert(cfg.channel_type, cfg.channel_target, budgetEvent, cfg.webhook_secret)
+                                    .catch((err: unknown) => {
+                                        logger.warn(
+                                            `Budget-exhausted alert delivery failed for config ${cfg.id}: ${err instanceof Error ? err.message : String(err)}`,
+                                        );
+                                    });
+                            }
+                            throw new Error(`shared budget pool "${sharedBudget.name}" limit exceeded. Estimated cost: ${estimatedFeeXlm} XLM, Remaining: ${sharedBudget.monthly_limit_xlm - current.spent_xlm} XLM`);
+                        }
+                        reservedPoolSpend = estimatedFeeXlm;
+                    } else if (budget && budget.spent_xlm + estimatedFeeXlm > budget.limit_xlm) {
+                        const budgetEvent = buildBudgetExhaustedAlertEvent({
+                            contractId: contract.id,
+                            contractName: contract.name,
+                            network,
+                            billingCycle,
+                            limitXlm: budget.limit_xlm,
+                            spentXlm: budget.spent_xlm,
+                            estimatedFeeXlm,
+                        });
+                        for (const cfg of getAlertConfigsForContract(db, contract.id)) {
+                            deliverSingleAlert(cfg.channel_type, cfg.channel_target, budgetEvent, cfg.webhook_secret)
+                                .catch((err: unknown) => {
+                                    logger.warn(
+                                        `Budget-exhausted alert delivery failed for config ${cfg.id}: ${err instanceof Error ? err.message : String(err)}`,
+                                    );
+                                });
+                        }
                         throw new Error(`budget limit exceeded. Estimated cost: ${estimatedFeeXlm} XLM, Remaining: ${budget.limit_xlm - budget.spent_xlm} XLM`);
                     }
                 }
@@ -410,8 +505,17 @@ export async function runAutoExtensions(
                 );
 
                 if (extResult.success) {
-                    if (budget && estimatedFeeXlm > 0) {
-                        const actualFeeXlm = extResult.feeCharged !== undefined ? extResult.feeCharged / 10000000 : estimatedFeeXlm;
+                    const actualFeeXlm = extResult.feeCharged !== undefined ? extResult.feeCharged / 10000000 : estimatedFeeXlm;
+
+                    if (sharedBudget && reservedPoolSpend > 0) {
+                        // True up the reservation to the actual charged fee.
+                        db.prepare(`
+                            UPDATE shared_budget_pools
+                            SET spent_xlm = spent_xlm + ?, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ? AND billing_cycle = ?
+                        `).run(actualFeeXlm - reservedPoolSpend, sharedBudget.id, billingCycle);
+                        reservedPoolSpend = 0;
+                    } else if (budget && estimatedFeeXlm > 0) {
                         addBudgetSpent(db, contract.id, billingCycle, actualFeeXlm);
                     }
 
@@ -432,6 +536,14 @@ export async function runAutoExtensions(
                         });
                     }
                 } else {
+                    if (sharedBudget && reservedPoolSpend > 0) {
+                        // Extension failed after the fee was reserved — give it back.
+                        db.prepare(`
+                            UPDATE shared_budget_pools
+                            SET spent_xlm = MAX(0, spent_xlm - ?), updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ? AND billing_cycle = ?
+                        `).run(reservedPoolSpend, sharedBudget.id, billingCycle);
+                    }
                     result.errors.push(
                         `Contract ${contract.id}: Extension failed — ${extResult.error}`,
                     );

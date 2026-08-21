@@ -1,9 +1,22 @@
 import chalk from "chalk";
+import { StrKey } from "@stellar/stellar-sdk";
 
-const AVG_LEDGER_CLOSE_TIME_IN_SECONDS = 5.5; // in seconds
+const AVG_LEDGER_CLOSE_TIME_IN_SECONDS = 5.5;
 
 export function convertLedgerCloseTimeToSeconds(ledgerCloseTime: number): number {
     return ledgerCloseTime * AVG_LEDGER_CLOSE_TIME_IN_SECONDS;
+}
+
+export function printOutput(data: unknown, jsonFlag = false): void {
+    if (!jsonFlag) {
+        return;
+    }
+    console.log(JSON.stringify(data, (_key, value) => {
+        if (typeof value === "bigint") {
+            return value.toString();
+        }
+        return value;
+    }, 2));
 }
 
 export function formatTimeToCloseLedger(ledgers: number): string {
@@ -43,10 +56,13 @@ export function statusIndicator(status: TTLStatus): string {
 
 export function formatBytes(bytes: number): string {
     if (bytes === 0) return "0 B";
+    const isNegative = bytes < 0;
+    const absBytes = Math.abs(bytes);
     const k = 1024;
     const sizes = ["B", "KB", "MB", "GB", "TB"];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+    const i = Math.floor(Math.log(absBytes) / Math.log(k));
+    const result = parseFloat((absBytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+    return isNegative ? "-" + result : result;
 }
 
 export function formatCpuInsns(insns: number): string {
@@ -65,4 +81,93 @@ export function formatSecretKey(key: string | null): string | null {
         return `${key.slice(0, 4)}...${key.slice(-4)}`;
     }
     return key;
+}
+
+// ── Contract ID Validation ──────────────────────────────────────────────────
+
+export type ValidationResult =
+    | { valid: true }
+    | { valid: false; reason: string };
+
+/**
+ * Validate a Stellar contract ID string before any RPC/DB work.
+ *
+ * Checks performed (in order):
+ * 1. Must be a non-empty string starting with 'C'
+ * 2. Must be exactly 56 characters (base32-encoded 32-byte hash with checksum)
+ * 3. Must pass Stellar SDK StrKey checksum validation
+ *
+ * Returns a specific reason on failure so CLI commands can surface
+ * actionable error messages.
+ */
+export function validateContractId(id: string): ValidationResult {
+    if (!id || typeof id !== "string") {
+        return { valid: false, reason: "Contract ID is empty or missing" };
+    }
+
+    if (!id.startsWith("C")) {
+        return {
+            valid: false,
+            reason: `Contract ID must start with 'C' — got "${id.slice(0, 1)}" instead. Did you paste an account address (starts with 'G') by mistake?`,
+        };
+    }
+
+    if (id.length !== 56) {
+        return {
+            valid: false,
+            reason: `Contract ID must be 56 characters (base32-encoded 32 bytes + checksum), but got ${id.length} characters`,
+        };
+    }
+
+    if (!StrKey.isValidContract(id)) {
+        return {
+            valid: false,
+            reason: `Contract ID "${id.slice(0, 8)}...${id.slice(-4)}" has an invalid Stellar checksum — check for typos`,
+        };
+    }
+
+    return { valid: true };
+}
+
+export interface PaginationMeta {
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    totalPages: number;
+}
+
+export interface PaginationResult<T> {
+    items: T[];
+    meta: PaginationMeta;
+}
+
+/**
+ * Paginate an already-fetched, in-memory list. Out-of-range page numbers are
+ * clamped to the nearest valid page rather than returning an empty slice —
+ * callers get valid, non-empty output instead of having to special-case
+ * out-of-range requests.
+ */
+export function paginateList<T>(
+    items: T[],
+    page: number,
+    pageSize: number = 25,
+): PaginationResult<T> {
+    const totalItems = items.length;
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+    const safePage = Math.max(1, Math.min(page, totalPages));
+    const start = (safePage - 1) * pageSize;
+
+    return {
+        items: items.slice(start, start + pageSize),
+        meta: {
+            page: safePage,
+            pageSize,
+            totalItems,
+            totalPages,
+        },
+    };
+}
+
+export function formatPaginationFooter(meta: PaginationMeta): string {
+    return `Page ${meta.page} of ${meta.totalPages} (${meta.totalItems} total)`;
 }
