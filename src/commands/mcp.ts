@@ -2,6 +2,8 @@ import { Command } from "commander";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { getDatabase } from "../db/database.js";
 import { createMcpServer } from "../mcp/server.js";
+import { loadConfig } from "../utils/config.js";
+import { resolveMcpAuthToken } from "../mcp/auth.js";
 
 export function registerMcpCommand(program: Command): void {
   program
@@ -9,7 +11,10 @@ export function registerMcpCommand(program: Command): void {
     .description("Start the Model Context Protocol (MCP) server on stdio transport")
     .action(async () => {
       try {
-        const server = createMcpServer(() => getDatabase());
+        const config = loadConfig();
+        const mcpAuthToken = resolveMcpAuthToken(config);
+        
+        const server = createMcpServer(() => getDatabase(), mcpAuthToken);
         const transport = new StdioServerTransport();
         await server.connect(transport);
       } catch (error: unknown) {
@@ -18,3 +23,4 @@ export function registerMcpCommand(program: Command): void {
       }
     });
 }
+

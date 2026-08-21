@@ -55,6 +55,14 @@ export interface SorokeepConfig {
         pass: string;
     };
 
+    /**
+     * Authentication token for MCP server access.
+     * When configured, all MCP clients must provide this token to access tools.
+     * Can be overridden by SOROKEEP_MCP_TOKEN environment variable.
+     * When not configured, MCP server is open to all clients (backward compatible).
+     */
+    mcpAuthToken?: string;
+
 }
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -113,6 +121,7 @@ export function loadConfig(customPath?: string): SorokeepConfig {
             vault,
             feeSponsorSecret: typeof parsed.feeSponsorSecret === "string" ? parsed.feeSponsorSecret : undefined,
             smtp: parseSmtpConfig(parsed.smtp),
+            mcpAuthToken: typeof parsed.mcpAuthToken === "string" ? parsed.mcpAuthToken : undefined,
 
         };
     } catch (err: unknown) {
