@@ -150,6 +150,77 @@ export function getContract(db: Database.Database, id: string): Contract | undef
   return db.prepare("SELECT * FROM contracts WHERE id = ?").get(id) as Contract | undefined;
 }
 
+/**
+ * Parse the comma-separated `tags` column into a list of trimmed, non-empty
+ * tags. The format matches the one used by the exact-match `--tag` filter:
+ * comma-separated values with surrounding whitespace trimmed.
+ */
+function parseTags(tags: string | null): string[] {
+  if (!tags) return [];
+  return tags
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter((tag) => tag.length > 0);
+}
+
+/**
+ * Persist the given tag list using the canonical comma-separated format.
+ * An empty list is stored as NULL.
+ */
+function writeTags(db: Database.Database, contractId: string, tags: string[]): void {
+  const value = tags.length > 0 ? tags.join(",") : null;
+  db.prepare("UPDATE contracts SET tags = ? WHERE id = ?").run(value, contractId);
+}
+
+/**
+ * Add a tag to a contract's tag list. Adding a tag that already exists is a
+ * no-op (exact, trimmed match — same semantics as the `--tag` filter).
+ *
+ * @returns The resulting tag list after the mutation.
+ * @throws If no contract is registered under `contractId`.
+ */
+export function addContractTag(db: Database.Database, contractId: string, tag: string): string[] {
+  const contract = getContract(db, contractId);
+  if (!contract) {
+    throw new Error(`Contract ${contractId} is not registered.`);
+  }
+
+  const normalizedTag = tag.trim();
+  if (!normalizedTag) {
+    return parseTags(contract.tags);
+  }
+
+  const tags = parseTags(contract.tags);
+  if (!tags.includes(normalizedTag)) {
+    tags.push(normalizedTag);
+    writeTags(db, contractId, tags);
+  }
+  return tags;
+}
+
+/**
+ * Remove a tag from a contract's tag list. Removing a tag that is not present
+ * is a no-op. When the last tag is removed the tags column is reset to NULL.
+ *
+ * @returns The resulting tag list after the mutation.
+ * @throws If no contract is registered under `contractId`.
+ */
+export function removeContractTag(db: Database.Database, contractId: string, tag: string): string[] {
+  const contract = getContract(db, contractId);
+  if (!contract) {
+    throw new Error(`Contract ${contractId} is not registered.`);
+  }
+
+  const normalizedTag = tag.trim();
+  const tags = parseTags(contract.tags);
+  const updated = tags.filter((existing) => existing !== normalizedTag);
+
+  if (updated.length !== tags.length) {
+    writeTags(db, contractId, updated);
+  }
+  return updated;
+}
+
 export function getAllContracts(db: Database.Database): Contract[] {
   return db.prepare("SELECT * FROM contracts").all() as Contract[];
 }
@@ -667,6 +738,198 @@ export function getContractCostSummary(db: Database.Database, contractId: string
             temporary: {
                 count: Number((snapshotRow.temporary_extensions ?? 0) + (currentDayRow.temporary_extensions ?? 0)),
                 cost_xlm: Number((snapshotRow.temporary_cost_xlm ?? 0) + (currentDayRow.temporary_cost_xlm ?? 0)),
+            },
+        },
+    };
+}
+
+// ─── Fleet Cost Rollup ────────────────────────────────────────────────────────
+
+/**
+ * Aggregated cost data for an entire fleet of contracts.
+ */
+export interface FleetCostRollup {
+    /** Total number of extension operations across the fleet in the period. */
+    total_extensions: number;
+    /** Total XLM spent on extensions across the fleet in the period. */
+    total_cost_xlm: number;
+    /** Number of distinct contracts contributing to this rollup. */
+    contract_count: number;
+    /** Per-entry-type breakdown at the fleet level. */
+    byType: {
+        instance: { count: number; cost_xlm: number };
+        wasm: { count: number; cost_xlm: number };
+        persistent: { count: number; cost_xlm: number };
+        temporary: { count: number; cost_xlm: number };
+    };
+}
+
+/**
+ * Return a single aggregated cost row that sums `cost_daily_snapshots` across
+ * ALL registered contracts, optionally filtered by tag and/or time window.
+ *
+ * The result mirrors the structure of {@link ContractCostSummary} but spans
+ * the entire fleet rather than a single contract. Like getContractCostSummary,
+ * it combines:
+ *  1. Daily snapshots already written to `cost_daily_snapshots` (yesterday and
+ *     earlier, within the requested window).
+ *  2. Today's live data read directly from `extension_history`.
+ *
+ * Tag filtering uses a simple `LIKE '%<tag>%'` pattern against the
+ * `contracts.tags` TEXT column (comma-separated). This is intentionally
+ * liberal — "defi" will match "defi", "defi,bridge", and "bridge,defi".
+ *
+ * @param db      - The SQLite database connection.
+ * @param options - Optional filters:
+ *   - `tag`  — Restrict rollup to contracts whose `tags` field contains this
+ *               value.
+ *   - `days` — Restrict rollup to the last N days (inclusive of today's live
+ *               data). Omit for all-time.
+ */
+export function getFleetCostRollup(
+    db: Database.Database,
+    options?: { tag?: string; days?: number },
+): FleetCostRollup {
+    interface AggregateRow {
+        total_extensions: number;
+        total_cost_xlm: number;
+        instance_extensions: number;
+        instance_cost_xlm: number;
+        wasm_extensions: number;
+        wasm_cost_xlm: number;
+        persistent_extensions: number;
+        persistent_cost_xlm: number;
+        temporary_extensions: number;
+        temporary_cost_xlm: number;
+        contract_count: number;
+    }
+
+    const tag = options?.tag;
+    const days = options?.days;
+
+    // ── 1. Aggregate from cost_daily_snapshots (historical, before today) ──
+    const snapshotConditions: string[] = [];
+    const snapshotParams: (string | number)[] = [];
+
+    if (tag) {
+        snapshotConditions.push(`c.tags LIKE ?`);
+        snapshotParams.push(`%${tag}%`);
+    }
+    if (days !== undefined) {
+        snapshotConditions.push(`cds.snapshot_date >= date('now', ?)`);
+        snapshotParams.push(`-${Math.max(days - 1, 0)} days`);
+    }
+
+    const snapshotWhere =
+        snapshotConditions.length > 0
+            ? `WHERE ${snapshotConditions.join(" AND ")}`
+            : "";
+
+    const snapshotRow = db.prepare(`
+        SELECT
+            COALESCE(SUM(cds.total_extensions), 0)     AS total_extensions,
+            COALESCE(SUM(cds.total_cost_xlm), 0.0)     AS total_cost_xlm,
+            COALESCE(SUM(cds.instance_extensions), 0)  AS instance_extensions,
+            COALESCE(SUM(cds.instance_cost_xlm), 0.0)  AS instance_cost_xlm,
+            COALESCE(SUM(cds.wasm_extensions), 0)      AS wasm_extensions,
+            COALESCE(SUM(cds.wasm_cost_xlm), 0.0)      AS wasm_cost_xlm,
+            COALESCE(SUM(cds.persistent_extensions), 0) AS persistent_extensions,
+            COALESCE(SUM(cds.persistent_cost_xlm), 0.0) AS persistent_cost_xlm,
+            COALESCE(SUM(cds.temporary_extensions), 0) AS temporary_extensions,
+            COALESCE(SUM(cds.temporary_cost_xlm), 0.0) AS temporary_cost_xlm,
+            COUNT(DISTINCT cds.contract_id)             AS contract_count
+        FROM cost_daily_snapshots cds
+        JOIN contracts c ON c.id = cds.contract_id
+        ${snapshotWhere}
+    `).get(...snapshotParams) as AggregateRow;
+
+    // ── 2. Aggregate today's live data from extension_history ──────────────
+    const liveConditions: string[] = [`date(eh.executed_at) = date('now')`];
+    const liveParams: (string | number)[] = [];
+
+    if (tag) {
+        liveConditions.push(`c.tags LIKE ?`);
+        liveParams.push(`%${tag}%`);
+    }
+
+    const liveRow = db.prepare(`
+        SELECT
+            COUNT(*)                                        AS total_extensions,
+            COALESCE(SUM(COALESCE(eh.cost_xlm, 0.0)), 0.0) AS total_cost_xlm,
+            COALESCE(SUM(CASE WHEN ce.entry_type = 'instance'   THEN 1    ELSE 0   END), 0) AS instance_extensions,
+            COALESCE(SUM(CASE WHEN ce.entry_type = 'instance'   THEN COALESCE(eh.cost_xlm, 0.0) ELSE 0 END), 0.0) AS instance_cost_xlm,
+            COALESCE(SUM(CASE WHEN ce.entry_type = 'wasm'       THEN 1    ELSE 0   END), 0) AS wasm_extensions,
+            COALESCE(SUM(CASE WHEN ce.entry_type = 'wasm'       THEN COALESCE(eh.cost_xlm, 0.0) ELSE 0 END), 0.0) AS wasm_cost_xlm,
+            COALESCE(SUM(CASE WHEN ce.entry_type = 'persistent' THEN 1    ELSE 0   END), 0) AS persistent_extensions,
+            COALESCE(SUM(CASE WHEN ce.entry_type = 'persistent' THEN COALESCE(eh.cost_xlm, 0.0) ELSE 0 END), 0.0) AS persistent_cost_xlm,
+            COALESCE(SUM(CASE WHEN ce.entry_type = 'temporary'  THEN 1    ELSE 0   END), 0) AS temporary_extensions,
+            COALESCE(SUM(CASE WHEN ce.entry_type = 'temporary'  THEN COALESCE(eh.cost_xlm, 0.0) ELSE 0 END), 0.0) AS temporary_cost_xlm,
+            COUNT(DISTINCT eh.contract_id)                  AS contract_count
+        FROM extension_history eh
+        JOIN contract_entries ce ON ce.id = eh.contract_entry_id
+        JOIN contracts c ON c.id = eh.contract_id
+        WHERE ${liveConditions.join(" AND ")}
+    `).get(...liveParams) as AggregateRow;
+
+    // ── 3. Merge snapshot + live ─────────────────────────────────────────
+    // contract_count needs a UNION over both sources so a contract present in
+    // both isn't double-counted.
+    const contractCountRow = db.prepare(`
+        SELECT COUNT(DISTINCT contract_id) AS n
+        FROM (
+            SELECT DISTINCT cds.contract_id
+            FROM cost_daily_snapshots cds
+            JOIN contracts c ON c.id = cds.contract_id
+            ${tag ? `WHERE c.tags LIKE ?` : ""}
+            UNION
+            SELECT DISTINCT eh.contract_id
+            FROM extension_history eh
+            JOIN contracts c ON c.id = eh.contract_id
+            WHERE date(eh.executed_at) = date('now')
+            ${tag ? `AND c.tags LIKE ?` : ""}
+        ) combined
+    `).get(...(tag ? [`%${tag}%`, `%${tag}%`] : [])) as { n: number };
+
+    return {
+        total_extensions: Number(
+            (snapshotRow.total_extensions ?? 0) + (liveRow.total_extensions ?? 0),
+        ),
+        total_cost_xlm: Number(
+            (snapshotRow.total_cost_xlm ?? 0) + (liveRow.total_cost_xlm ?? 0),
+        ),
+        contract_count: contractCountRow.n ?? 0,
+        byType: {
+            instance: {
+                count: Number(
+                    (snapshotRow.instance_extensions ?? 0) + (liveRow.instance_extensions ?? 0),
+                ),
+                cost_xlm: Number(
+                    (snapshotRow.instance_cost_xlm ?? 0) + (liveRow.instance_cost_xlm ?? 0),
+                ),
+            },
+            wasm: {
+                count: Number(
+                    (snapshotRow.wasm_extensions ?? 0) + (liveRow.wasm_extensions ?? 0),
+                ),
+                cost_xlm: Number(
+                    (snapshotRow.wasm_cost_xlm ?? 0) + (liveRow.wasm_cost_xlm ?? 0),
+                ),
+            },
+            persistent: {
+                count: Number(
+                    (snapshotRow.persistent_extensions ?? 0) + (liveRow.persistent_extensions ?? 0),
+                ),
+                cost_xlm: Number(
+                    (snapshotRow.persistent_cost_xlm ?? 0) + (liveRow.persistent_cost_xlm ?? 0),
+                ),
+            },
+            temporary: {
+                count: Number(
+                    (snapshotRow.temporary_extensions ?? 0) + (liveRow.temporary_extensions ?? 0),
+                ),
+                cost_xlm: Number(
+                    (snapshotRow.temporary_cost_xlm ?? 0) + (liveRow.temporary_cost_xlm ?? 0),
+                ),
             },
         },
     };
@@ -1568,3 +1831,135 @@ export function getGroupsForContract(
     `).all(contractId) as ContractGroup[];
 }
 
+/**
+ * Look up a group by its unique name.
+ */
+export function getGroupByName(db: Database.Database, name: string): ContractGroup | undefined {
+    return db.prepare("SELECT * FROM contract_groups WHERE name = ?").get(name) as ContractGroup | undefined;
+}
+
+/**
+ * Return every contract group, ordered by name.
+ */
+export function getAllGroups(db: Database.Database): ContractGroup[] {
+    return db.prepare("SELECT * FROM contract_groups ORDER BY name ASC").all() as ContractGroup[];
+}
+
+/**
+ * Insert an alert config for every contract whose `tags` column contains the
+ * given tag (comma-separated list). A tag match is performed as an exact
+ * word match — splitting on commas and trimming whitespace — so `"defi"` does
+ * not accidentally match `"defi-pro"`.
+ *
+ * All inserts are wrapped in a single SQLite transaction: either every row is
+ * written or none are (atomic bulk operation).
+ *
+ * @param db       - The SQLite database connection.
+ * @param tag      - The tag string to match against `contracts.tags`.
+ * @param config   - Alert channel/threshold settings applied to each matching contract.
+ * @returns        The number of alert_configs rows inserted.
+ */
+export function insertAlertConfigBulk(
+    db: Database.Database,
+    tag: string,
+    config: {
+        channel_type: string;
+        channel_target: string;
+        threshold_ledgers: number;
+        webhook_secret?: string;
+    },
+): number {
+    const contracts = (
+        db.prepare("SELECT id, tags FROM contracts").all() as Array<{
+            id: string;
+            tags: string | null;
+        }>
+    ).filter((c) => {
+        if (!c.tags) return false;
+        return c.tags
+            .split(",")
+            .map((t) => t.trim())
+            .includes(tag);
+    });
+
+    if (contracts.length === 0) return 0;
+
+    const insert = db.prepare(`
+        INSERT INTO alert_configs (contract_id, channel_type, channel_target, threshold_ledgers, webhook_secret)
+        VALUES (@contract_id, @channel_type, @channel_target, @threshold_ledgers, @webhook_secret)
+    `);
+
+    const runAll = db.transaction((rows: Array<{ id: string }>) => {
+        for (const row of rows) {
+            insert.run({
+                contract_id: row.id,
+                channel_type: config.channel_type,
+                channel_target: config.channel_target,
+                threshold_ledgers: config.threshold_ledgers,
+                webhook_secret: config.webhook_secret ?? null,
+            });
+        }
+    });
+
+    runAll(contracts);
+    return contracts.length;
+}
+
+// ─── Digest Configs (issue #399) ─────────────────────────────────────────────
+
+export interface DigestConfig {
+    id: number;
+    network: string;
+    /** Any registered alert channel name (see src/alerts/registry.ts) — not a fixed enum. */
+    channel_type: string;
+    channel_target: string;
+    /** Delivery interval in milliseconds. */
+    interval_ms: number;
+    webhook_secret: string | null;
+    /** 1 = enabled, 0 = disabled. */
+    enabled: number;
+    created_at: string;
+}
+
+/**
+ * Insert a new digest configuration row.
+ * Returns the auto-generated row id.
+ */
+export function insertDigestConfig(
+    db: Database.Database,
+    config: {
+        network: string;
+        channel_type: string;
+        channel_target: string;
+        interval_ms: number;
+        webhook_secret?: string | null;
+    },
+): number {
+    const info = db
+        .prepare(
+            `INSERT INTO digest_configs (network, channel_type, channel_target, interval_ms, webhook_secret)
+             VALUES (@network, @channel_type, @channel_target, @interval_ms, @webhook_secret)`,
+        )
+        .run({
+            network: config.network,
+            channel_type: config.channel_type,
+            channel_target: config.channel_target,
+            interval_ms: config.interval_ms,
+            webhook_secret: config.webhook_secret ?? null,
+        });
+    return info.lastInsertRowid as number;
+}
+
+/**
+ * Return all enabled digest configs for the given network.
+ */
+export function getDigestConfigs(
+    db: Database.Database,
+    network: string,
+): DigestConfig[] {
+    return db
+        .prepare(
+            `SELECT * FROM digest_configs WHERE network = ? AND enabled = 1 ORDER BY id ASC`,
+        )
+        .all(network) as DigestConfig[];
+}

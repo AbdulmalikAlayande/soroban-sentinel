@@ -1,0 +1,227 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "Prometheus scraping sorokeep's /metrics endpoint",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "9.5.3" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "5.0.0" },
+    { "type": "panel", "id": "timeseries", "name": "Time series", "version": "" },
+    { "type": "panel", "id": "stat", "name": "Stat", "version": "" },
+    { "type": "panel", "id": "row", "name": "Row", "version": "" }
+  ],
+  "title": "Sorokeep — Contract TTL & Alerting",
+  "description": "Example dashboard for sorokeep's /metrics endpoint. Every panel below queries one of the metrics documented in docs/observability.md — cross-check src/observability/metrics/*.ts if you add panels of your own.",
+  "tags": ["sorokeep", "soroban", "stellar"],
+  "schemaVersion": 38,
+  "version": 1,
+  "id": null,
+  "uid": "sorokeep-ttl-alerting",
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "editable": true,
+  "graphTooltip": 1,
+  "links": [],
+  "annotations": { "list": [] },
+  "templating": {
+    "list": [
+      {
+        "id": "network",
+        "name": "network",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "query": "label_values(sorokeep_contracts_tracked, network)",
+        "refresh": 1,
+        "sort": 1,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "hide": 0,
+        "description": "Filter by network"
+      },
+      {
+        "id": "contract",
+        "name": "contract",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "query": "label_values(sorokeep_entry_ttl_remaining_ledgers, contract_id)",
+        "refresh": 1,
+        "sort": 1,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "hide": 0,
+        "description": "Filter by contract ID"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "panels": [],
+      "title": "Fleet Overview",
+      "type": "row"
+    },
+    {
+      "id": 2,
+      "title": "Contracts Tracked",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        { "expr": "sorokeep_contracts_tracked{network=~\"$network\"}", "legendFormat": "{{network}}", "refId": "A" }
+      ],
+      "description": "Number of contracts currently being watched (sorokeep_contracts_tracked)."
+    },
+    {
+      "id": 3,
+      "title": "Entries Tracked",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        { "expr": "sorokeep_entries_tracked{network=~\"$network\"}", "legendFormat": "{{network}}", "refId": "A" }
+      ],
+      "description": "Number of contract entries currently being tracked (sorokeep_entries_tracked)."
+    },
+    {
+      "id": 4,
+      "title": "Minimum TTL Remaining",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 17280 },
+            { "color": "green", "value": 86400 }
+          ] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        { "expr": "min(sorokeep_entry_ttl_remaining_ledgers{contract_id=~\"$contract\"})", "legendFormat": "min TTL (ledgers)", "refId": "A" }
+      ],
+      "description": "Lowest remaining TTL, in ledgers, across all tracked entries. Thresholds are illustrative — adjust to your poll interval and risk tolerance."
+    },
+    {
+      "id": 5,
+      "title": "Remaining Budget (XLM)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 2 }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        { "expr": "sorokeep_budget_remaining_xlm{contract_id=~\"$contract\"}", "legendFormat": "{{contract_id}}", "refId": "A" }
+      ],
+      "description": "Remaining XLM budget headroom per contract (sorokeep_budget_remaining_xlm)."
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 },
+      "id": 6,
+      "panels": [],
+      "title": "TTL Over Time",
+      "type": "row"
+    },
+    {
+      "id": 7,
+      "title": "TTL Remaining per Entry",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "min"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "sorokeep_entry_ttl_remaining_ledgers{contract_id=~\"$contract\",network=~\"$network\"}", "legendFormat": "{{contract_name}} / {{entry_type}}", "refId": "A" }
+      ],
+      "description": "Remaining TTL, in ledgers, per tracked entry over time (sorokeep_entry_ttl_remaining_ledgers)."
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 },
+      "id": 8,
+      "panels": [],
+      "title": "Extension Activity & Cost",
+      "type": "row"
+    },
+    {
+      "id": 9,
+      "title": "Extensions Performed (1h rate)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "rate(sorokeep_extensions_total{contract_id=~\"$contract\"}[1h])", "legendFormat": "{{contract_id}} / {{entry_type}}", "refId": "A" }
+      ],
+      "description": "Rate of TTL-extension transactions per hour (sorokeep_extensions_total)."
+    },
+    {
+      "id": 10,
+      "title": "Extension Cost Rate (1h)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 4 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "rate(sorokeep_extension_cost_xlm_total{contract_id=~\"$contract\"}[1h])", "legendFormat": "{{contract_id}} / {{entry_type}} (XLM/hr)", "refId": "A" }
+      ],
+      "description": "XLM extension cost rate per hour, per contract/entry type (sorokeep_extension_cost_xlm_total)."
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
+      "id": 11,
+      "panels": [],
+      "title": "Daemon Health",
+      "type": "row"
+    },
+    {
+      "id": 12,
+      "title": "Daemon Cycle Duration (p95)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, rate(sorokeep_daemon_cycle_duration_seconds_bucket{network=~\"$network\"}[5m]))", "legendFormat": "{{network}} p95", "refId": "A" }
+      ],
+      "description": "p95 duration of completed daemon monitor cycles (sorokeep_daemon_cycle_duration_seconds, a Histogram)."
+    },
+    {
+      "id": 13,
+      "title": "Daemon Cycles Skipped (10m)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "increase(sorokeep_daemon_cycles_skipped_total{network=~\"$network\"}[10m])", "legendFormat": "{{network}}", "refId": "A" }
+      ],
+      "description": "Scheduled ticks skipped in the last 10 minutes because the previous cycle was still in flight (sorokeep_daemon_cycles_skipped_total)."
+    }
+  ]
+}

@@ -5,6 +5,7 @@ import { registerGetExtensionCostsTool } from "./tools/get-extension-costs.js";
 import { getAllContracts, getEntriesForContract } from "../db/repositories.js";
 import { classifyTTL } from "../utils/formatting.js";
 import type { TTLStatus } from "../utils/formatting.js";
+import { instrumentMcpToolInvocations } from "../observability/metrics/mcp.js";
 
 export async function invokeListWatchedContracts(db: Database.Database) {
     const contracts = getAllContracts(db);
@@ -52,6 +53,8 @@ export function createMcpServer(getDb: () => Database.Database): McpServer {
                 "Sorokeep MCP server exposes Soroban contract operations data for AI-assisted development.",
         },
     );
+
+    instrumentMcpToolInvocations(server);
 
     registerGetContractStatusTool(server, getDb);
     registerGetExtensionCostsTool(server);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { convertLedgerCloseTimeToSeconds, formatTimeToCloseLedger, classifyTTL, statusIndicator, formatContractID, formatSecretKey } from "../../src/utils/formatting";
+import { convertLedgerCloseTimeToSeconds, formatTimeToCloseLedger, classifyTTL, statusIndicator, formatContractID, formatSecretKey, validateContractId, paginateList, formatPaginationFooter, formatBytes } from "../../src/utils/formatting";
 
 describe("convertLedgerCloseTimeToSeconds", () => {
     it("should convert ledger close time to seconds using 5.5s average", () => {
@@ -63,6 +63,21 @@ describe("statusIndicator", () => {
     expect(statusIndicator("warning")).toContain("WARNING");
     expect(statusIndicator("critical")).toContain("CRITICAL");
     expect(statusIndicator("expired")).toContain("EXPIRED");
+  });
+});
+
+describe("formatBytes", () => {
+  it("formats 0 bytes", () => {
+    expect(formatBytes(0)).toBe("0 B");
+  });
+  it("formats positive bytes", () => {
+    expect(formatBytes(1024)).toBe("1 KB");
+    expect(formatBytes(1536)).toBe("1.5 KB");
+    expect(formatBytes(1048576)).toBe("1 MB");
+  });
+  it("formats negative bytes", () => {
+    expect(formatBytes(-1024)).toBe("-1 KB");
+    expect(formatBytes(-1536)).toBe("-1.5 KB");
   });
 });
 
@@ -131,5 +146,129 @@ describe("formatSecretKey", () => {
   it("produces exactly 11 characters for a 56-char Stellar secret key", () => {
     const key = "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     expect(formatSecretKey(key).length).toBe(11);
+  });
+});
+
+describe("validateContractId", () => {
+  const VALID_CONTRACT_ID = "CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ";
+  const ACCOUNT_ADDRESS = "GABCDEF123456789012345678901234567890123456789012345678";
+
+  it("accepts a valid contract ID", () => {
+    expect(validateContractId(VALID_CONTRACT_ID)).toEqual({ valid: true });
+  });
+
+  it("rejects an empty or missing ID", () => {
+    const result = validateContractId("");
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toMatch(/empty or missing/);
+  });
+
+  it("rejects a wrong-prefix ID with a distinct reason (account address)", () => {
+    const result = validateContractId(ACCOUNT_ADDRESS);
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.reason).toMatch(/must start with 'C'/);
+      expect(result.reason).toMatch(/account address/);
+    }
+  });
+
+  it("rejects a too-short ID with a distinct reason", () => {
+    const result = validateContractId("CSHORT");
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toMatch(/56 characters/);
+  });
+
+  it("rejects a checksum-invalid ID with a distinct reason", () => {
+    const badChecksum = VALID_CONTRACT_ID.slice(0, -1) + (VALID_CONTRACT_ID.endsWith("A") ? "B" : "A");
+    const result = validateContractId(badChecksum);
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toMatch(/invalid Stellar checksum/);
+  });
+
+  it("produces distinct reasons across all failure modes", () => {
+    const reasons = [
+      validateContractId(""),
+      validateContractId(ACCOUNT_ADDRESS),
+      validateContractId("CSHORT"),
+      validateContractId(VALID_CONTRACT_ID.slice(0, -1) + (VALID_CONTRACT_ID.endsWith("A") ? "B" : "A")),
+    ].map((r) => (r.valid ? null : r.reason));
+
+    expect(new Set(reasons).size).toBe(reasons.length);
+  });
+});
+
+describe("paginateList", () => {
+  it("returns the first page with the correct slice when page-size is smaller than total", () => {
+    const items = Array.from({ length: 60 }, (_, i) => `item-${i + 1}`);
+    const result = paginateList(items, 1, 25);
+
+    expect(result.items).toHaveLength(25);
+    expect(result.items[0]).toBe("item-1");
+    expect(result.items[24]).toBe("item-25");
+    expect(result.meta).toEqual({ page: 1, pageSize: 25, totalItems: 60, totalPages: 3 });
+  });
+
+  it("returns the second page with items 26-50", () => {
+    const items = Array.from({ length: 60 }, (_, i) => `item-${i + 1}`);
+    const result = paginateList(items, 2, 25);
+
+    expect(result.items).toHaveLength(25);
+    expect(result.items[0]).toBe("item-26");
+    expect(result.items[24]).toBe("item-50");
+    expect(result.meta.page).toBe(2);
+  });
+
+  it("returns the third page with the remaining 10 items", () => {
+    const items = Array.from({ length: 60 }, (_, i) => `item-${i + 1}`);
+    const result = paginateList(items, 3, 25);
+
+    expect(result.items).toHaveLength(10);
+    expect(result.items[0]).toBe("item-51");
+    expect(result.items[9]).toBe("item-60");
+    expect(result.meta.page).toBe(3);
+  });
+
+  it("clamps an out-of-range page number to the last page", () => {
+    const items = Array.from({ length: 60 }, (_, i) => `item-${i + 1}`);
+    const result = paginateList(items, 99, 25);
+
+    expect(result.items).toHaveLength(10);
+    expect(result.items[0]).toBe("item-51");
+    expect(result.meta.page).toBe(3);
+  });
+
+  it("clamps a page number below 1 up to the first page", () => {
+    const items = Array.from({ length: 60 }, (_, i) => `item-${i + 1}`);
+    const result = paginateList(items, 0, 25);
+
+    expect(result.meta.page).toBe(1);
+    expect(result.items[0]).toBe("item-1");
+  });
+
+  it("returns empty items with a single total page for empty input", () => {
+    const result = paginateList([], 1, 25);
+
+    expect(result.items).toHaveLength(0);
+    expect(result.meta).toEqual({ page: 1, pageSize: 25, totalItems: 0, totalPages: 1 });
+  });
+
+  it("defaults pageSize to 25 when not provided", () => {
+    const items = Array.from({ length: 30 }, (_, i) => i);
+    const result = paginateList(items, 1);
+
+    expect(result.items).toHaveLength(25);
+    expect(result.meta.pageSize).toBe(25);
+  });
+});
+
+describe("formatPaginationFooter", () => {
+  it("formats the footer with page, total pages, and total count", () => {
+    expect(formatPaginationFooter({ page: 1, pageSize: 25, totalItems: 60, totalPages: 3 }))
+      .toBe("Page 1 of 3 (60 total)");
+  });
+
+  it("handles a single page", () => {
+    expect(formatPaginationFooter({ page: 1, pageSize: 25, totalItems: 5, totalPages: 1 }))
+      .toBe("Page 1 of 1 (5 total)");
   });
 });

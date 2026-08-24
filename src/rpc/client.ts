@@ -12,6 +12,7 @@ import {
     FeeBumpTransaction,
     Asset,
 } from "@stellar/stellar-sdk";
+import chalk from "chalk";
 import { getLogger } from "../logging/index.js";
 // CostSummary removed — no longer exported from costs.js
 
@@ -22,6 +23,117 @@ interface ErrorLike {
     code?: string;
     message?: string;
     response?: { status?: number };
+    cause?: unknown;
+}
+
+/** Thrown when a network-level failure (connection refused, timeout, DNS, etc.)
+ * is detected talking to the configured RPC endpoint, so callers can print an
+ * actionable message instead of a raw fetch/SDK error. */
+export class RpcUnreachableError extends Error {
+    public readonly url: string;
+
+    constructor(url: string, options?: { cause?: unknown }) {
+        super(`RPC endpoint at ${url} is unreachable`, options);
+        this.name = "RpcUnreachableError";
+        this.url = url;
+    }
+}
+
+const NETWORK_ERROR_CODES = new Set([
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "ETIMEDOUT",
+    "EADDRNOTAVAIL",
+    "ECONNRESET",
+    "EPIPE",
+    "EHOSTUNREACH",
+    "ENETUNREACH",
+]);
+
+const NETWORK_ERROR_MESSAGE_PATTERNS = [
+    "fetch failed",
+    "econnrefused",
+    "enotfound",
+    "etimedout",
+    "econnreset",
+    "timeout",
+    "unreachable",
+    "network error",
+];
+
+/** Detects whether an error (or its cause chain) looks like a network-level failure. */
+export function isNetworkError(error: unknown, seen = new Set<unknown>()): boolean {
+    if (!error || typeof error !== "object" || seen.has(error)) return false;
+    seen.add(error);
+
+    const err = error as ErrorLike;
+    if (typeof err.code === "string" && NETWORK_ERROR_CODES.has(err.code)) return true;
+
+    const message = typeof err.message === "string" ? err.message.toLowerCase() : "";
+    if (NETWORK_ERROR_MESSAGE_PATTERNS.some((pattern) => message.includes(pattern))) return true;
+
+    return isNetworkError(err.cause, seen);
+}
+
+const RPC_UNREACHABLE_MESSAGE_PATTERN = /RPC endpoint at (https?:\/\/\S+) is unreachable/;
+
+/**
+ * Prints an actionable message for an unreachable-RPC failure and returns
+ * true if it recognized one. Accepts a plain string as well as an Error,
+ * since some call sites (e.g. core/watch.ts's structured WatchResult) already
+ * stringify errors to `.message` before returning, losing the original type.
+ */
+export function handleRpcUnreachableError(error: unknown): boolean {
+    let url: string | undefined;
+
+    if (error instanceof RpcUnreachableError) {
+        url = error.url;
+    } else if (typeof error === "string") {
+        url = error.match(RPC_UNREACHABLE_MESSAGE_PATTERN)?.[1];
+    } else if (error instanceof Error) {
+        url = error.message.match(RPC_UNREACHABLE_MESSAGE_PATTERN)?.[1];
+    }
+
+    if (!url) return false;
+
+    console.error(chalk.red(`\nError: RPC endpoint is unreachable: ${url}`));
+    console.error(chalk.yellow("Suggestions:"));
+    console.error(`  - Check that the URL is correct and the endpoint is online.`);
+    console.error(`  - Use the ${chalk.bold("--rpc-url")} flag to specify a different endpoint.`);
+    console.error(`  - Verify your configuration in ${chalk.bold("~/.sorokeep/config.yaml")}.`);
+    console.error(`  - Check Stellar network status: ${chalk.cyan("https://status.stellar.org")}\n`);
+    return true;
+}
+
+/**
+ * Wraps every method on an `rpc.Server` instance so a network-level failure
+ * (connection refused, timeout, DNS, etc.) surfaces as a `RpcUnreachableError`
+ * carrying the endpoint URL, with the original error preserved as `.cause`.
+ */
+function wrapServerWithUnreachableDetection(server: rpc.Server, url: string): rpc.Server {
+    return new Proxy(server, {
+        get(target, prop, receiver) {
+            const value: unknown = Reflect.get(target, prop, receiver);
+            if (typeof value !== "function") return value;
+
+            return function (this: unknown, ...args: unknown[]): unknown {
+                const toRpcError = (error: unknown): unknown =>
+                    isNetworkError(error) ? new RpcUnreachableError(url, { cause: error }) : error;
+
+                try {
+                    const result: unknown = Reflect.apply(value, target, args);
+                    if (result instanceof Promise) {
+                        return result.catch((error: unknown) => {
+                            throw toRpcError(error);
+                        });
+                    }
+                    return result;
+                } catch (error) {
+                    throw toRpcError(error);
+                }
+            };
+        },
+    });
 }
 
 /** Soroban meta with optional resource-counter accessors. */
@@ -49,12 +161,7 @@ interface SendTransactionErrorResult {
     diagnosticEventsXdr?: string;
 }
 
-/** Get-transaction response with raw (string-based) fields.
- *
- * The SDK types parse `resultMetaXdr` as `xdr.TransactionMeta`, but at runtime
- * the RPC may still return a base64 string. The `as unknown as
- * GetTransactionRawFields` casts in `pollTransaction` handle this mismatch
- * intentionally — `extractResourceCosts` expects a raw base64 string. */
+/** Get-transaction response with raw (string-based) fields. */
 interface GetTransactionRawFields {
     resultMetaXdr?: string;
     feeCharged?: string | number;
@@ -77,7 +184,6 @@ export function assertSimulationSuccess(sim: rpc.Api.SimulateTransactionResponse
     }
 }
 
-
 /**
  * Executes an RPC action with exponential backoff on network timeouts or 429/5xx errors.
  * Starts at 1 second, doubling up to 3 retries (max 4 attempts).
@@ -91,12 +197,17 @@ export async function executeWithRetry<T>(action: () => Promise<T>): Promise<T> 
             return await action();
         } catch (error: unknown) {
             const err = error as ErrorLike;
-            const isTimeout = err.code === "ETIMEDOUT" || err.code === "ECONNRESET" || (err.message || "").toLowerCase().includes("timeout");
-            const status = err.response?.status ?? 0;
+            const cause = (err.cause ?? err) as ErrorLike;
+            const isTimeout =
+                cause.code === "ETIMEDOUT" ||
+                cause.code === "ECONNRESET" ||
+                (cause.message || "").toLowerCase().includes("timeout") ||
+                isNetworkError(err);
+            const status = cause.response?.status ?? err.response?.status ?? 0;
             const isRetryableHttp = status === 429 || (status >= 500 && status < 600);
 
             if ((isTimeout || isRetryableHttp) && attempt < MAX_RETRIES) {
-                await new Promise(resolve => setTimeout(resolve, delayMs));
+                await new Promise((resolve) => setTimeout(resolve, delayMs));
                 delayMs *= 2;
                 continue;
             }
@@ -140,67 +251,35 @@ export interface SimulateExtensionResult {
     minResourceFee: number;
     success: boolean;
     error?: string;
-    /** CPU instructions consumed by the transaction. */
     cpuInstructions?: number;
-    /** Memory bytes consumed by the transaction. */
     memoryBytes?: number;
-    /** Read footprint size in bytes. */
     readBytes?: number;
-    /** Write footprint size in bytes. */
     writeBytes?: number;
 }
 
-/**
- * Structured resource usage estimate extracted from a simulateTransaction response.
- * Used for budget safety checks before executing auto-extensions (issue #133).
- */
 export interface ResourceEstimate {
-    /** CPU instructions estimated for the transaction. */
     cpuInstructions: number;
-    /** Memory bytes estimated for the transaction. */
     memoryBytes: number;
-    /** Minimum resource fee in stroops estimated by the RPC node. */
     minResourceFee: number;
 }
 
-/**
- * Parse a simulateTransaction RPC response into a structured ResourceEstimate.
- *
- * Extracts `cpuInstructions` from `response.cost.cpuInsns`,
- * `memoryBytes` from `response.cost.memBytes`, and
- * `minResourceFee` from `response.minResourceFee`.
- *
- * Returns `null` when:
- *   - The input is null, undefined, or not a plain object.
- *   - The response contains an `error` field (simulation failed).
- *   - Neither `cost` nor `minResourceFee` fields are present.
- *
- * Missing numeric fields default to `0` rather than `NaN`.
- *
- * @param response - The raw simulation response object (or null/undefined).
- * @returns A ResourceEstimate on success, or null on failure.
- */
 export function parseResourceEstimate(response: unknown): ResourceEstimate | null {
     if (response === null || response === undefined) return null;
     if (typeof response !== "object" || Array.isArray(response)) return null;
 
     const sim = response as Record<string, unknown>;
 
-    // Simulation error responses have an `error` field — always return null.
     if (typeof sim["error"] === "string" && sim["error"].length > 0) return null;
 
-    // Need at least one useful field to return a meaningful estimate.
     const hasCost = sim["cost"] !== undefined && sim["cost"] !== null;
     const hasFee = sim["minResourceFee"] !== undefined && sim["minResourceFee"] !== null;
     if (!hasCost && !hasFee) return null;
 
-    // Parse minResourceFee (may be a string or number in the Soroban RPC response)
     const rawFee = sim["minResourceFee"];
     const minResourceFee = rawFee !== undefined && rawFee !== null
         ? safeParseNumber(rawFee)
         : 0;
 
-    // Parse cost fields
     let cpuInstructions = 0;
     let memoryBytes = 0;
 
@@ -213,7 +292,6 @@ export function parseResourceEstimate(response: unknown): ResourceEstimate | nul
     return { cpuInstructions, memoryBytes, minResourceFee };
 }
 
-/** Parse a value to a non-negative finite integer, defaulting to 0. */
 function safeParseNumber(value: unknown): number {
     if (value === undefined || value === null) return 0;
     const n = typeof value === "number" ? value : Number(value);
@@ -237,22 +315,21 @@ export interface SubmitTransactionResult {
     cpuInstructions?: number;
     memoryBytes?: number;
     minResourceFee?: number;
-    /** Actual fee charged in stroops, parsed from the transaction result. */
     feeCharged?: number;
 }
 
-export function extractResourceCosts(resultMetaXdrBase64: string): { cpuInstructions: number, memoryBytes: number } | null {
+export function extractResourceCosts(resultMetaXdrBase64: string): { cpuInstructions: number; memoryBytes: number } | null {
     if (!resultMetaXdrBase64) return null;
     try {
         const meta = xdr.TransactionMeta.fromXDR(resultMetaXdrBase64, "base64");
-        const v3 = typeof meta.v3 === 'function' ? meta.v3() : undefined;
-        
+        const v3 = typeof meta.v3 === "function" ? meta.v3() : undefined;
+
         if (v3) {
-            const sorobanMeta = typeof v3.sorobanMeta === 'function' ? v3.sorobanMeta() : undefined;
+            const sorobanMeta = typeof v3.sorobanMeta === "function" ? v3.sorobanMeta() : undefined;
             if (sorobanMeta) {
                 const meta = sorobanMeta as SorobanMetaLike;
-                const cpuInstructions = typeof meta.cpuInstructions === 'function' ? Number(meta.cpuInstructions()) : undefined;
-                const memoryBytes = typeof meta.memoryBytes === 'function' ? Number(meta.memoryBytes()) : undefined;
+                const cpuInstructions = typeof meta.cpuInstructions === "function" ? Number(meta.cpuInstructions()) : undefined;
+                const memoryBytes = typeof meta.memoryBytes === "function" ? Number(meta.memoryBytes()) : undefined;
 
                 if (cpuInstructions !== undefined && memoryBytes !== undefined) {
                     return { cpuInstructions, memoryBytes };
@@ -294,13 +371,13 @@ export class StellarRpcClient {
         const configured = options.maxRequestsPerSecond ?? 5;
         this.maxRequestsPerSecond = configured > 0 ? configured : 5;
         this.requestIntervalMs = Math.ceil(1000 / this.maxRequestsPerSecond);
-        
+
         let urls: string[] = [];
         if (customUrl) {
             if (Array.isArray(customUrl)) {
                 urls = customUrl;
             } else {
-                urls = customUrl.split(",").map(u => u.trim()).filter(Boolean);
+                urls = customUrl.split(",").map((u) => u.trim()).filter(Boolean);
             }
         } else {
             const defaultUrl = RPC_URLS[network];
@@ -314,11 +391,14 @@ export class StellarRpcClient {
             throw new Error("No RPC URLs provided.");
         }
 
-        this.endpoints = urls.map(url => ({
-            url,
-            server: new rpc.Server(url, { allowHttp: url.startsWith("http://") }),
-            circuitBrokenUntil: 0
-        }));
+        this.endpoints = urls.map((url) => {
+            const rawServer = new rpc.Server(url, { allowHttp: url.startsWith("http://") });
+            return {
+                url,
+                server: wrapServerWithUnreachableDetection(rawServer, url),
+                circuitBrokenUntil: 0,
+            };
+        });
 
         this._serverProxy = new Proxy({} as rpc.Server, {
             get: (target, prop) => {
@@ -327,14 +407,14 @@ export class StellarRpcClient {
                 const value = isMocked ? (target as any)[prop] : (ep.server as any)[prop];
                 if (typeof value === "function") {
                     return (...args: any[]) => {
-                        return this.withFailover(server => {
+                        return this.withFailover((server) => {
                             const method = isMocked ? (target as any)[prop] : (server as any)[prop];
                             return method.apply(server, args);
                         });
                     };
                 }
                 return value;
-            }
+            },
         });
     }
 
@@ -354,9 +434,9 @@ export class StellarRpcClient {
     }
 
     private markEndpointFailed(url: string, error: any) {
-        const ep = this.endpoints.find(e => e.url === url);
+        const ep = this.endpoints.find((e) => e.url === url);
         if (ep) {
-            logger.warn(`RPC endpoint failed, failing over`, { url, error: error?.message || String(error) });
+            logger.warn("RPC endpoint failed, failing over", { url, error: error?.message || String(error) });
             ep.circuitBrokenUntil = Date.now() + 60000;
         }
     }
@@ -368,14 +448,20 @@ export class StellarRpcClient {
             try {
                 const result = await operation(ep.server);
                 if (lastErrorEndpoint && lastErrorEndpoint !== ep.url) {
-                    logger.info(`RPC request succeeded after failover`, { url: ep.url });
+                    logger.info("RPC request succeeded after failover", { url: ep.url });
                 }
                 return result;
             } catch (error: any) {
                 lastErrorEndpoint = ep.url;
-                const isTimeout = error?.code === "ETIMEDOUT" || error?.code === "ECONNRESET" || (error?.message || "").toLowerCase().includes("timeout");
-                const status = error?.response?.status;
+                const cause = (error?.cause ?? error) as ErrorLike;
+                const isTimeout =
+                    cause?.code === "ETIMEDOUT" ||
+                    cause?.code === "ECONNRESET" ||
+                    (cause?.message || "").toLowerCase().includes("timeout") ||
+                    isNetworkError(error);
+                const status = cause?.response?.status ?? error?.response?.status;
                 const isRetryableHttp = status === 429 || (status >= 500 && status < 600);
+
                 if (isTimeout || isRetryableHttp) {
                     this.markEndpointFailed(ep.url, error);
                 }
@@ -483,11 +569,11 @@ export class StellarRpcClient {
     }
 
     async getWasmCodeEntry(
-        wasmHashHex: string
+        wasmHashHex: string,
     ): Promise<SorokeepLedgerEntryResult | null> {
         const wasmHash = Buffer.from(wasmHashHex, "hex");
         const wasmKey = xdr.LedgerKey.contractCode(
-            new xdr.LedgerKeyContractCode({ hash: wasmHash })
+            new xdr.LedgerKeyContractCode({ hash: wasmHash }),
         );
         const entryKeyXdr = wasmKey.toXDR("base64");
 
@@ -510,7 +596,7 @@ export class StellarRpcClient {
 
     async getEntryTTLs(entryKeyXdrs: string[]): Promise<EntryTTLsResult> {
         const keys = entryKeyXdrs.map((xdrStr) =>
-            xdr.LedgerKey.fromXDR(xdrStr, "base64")
+            xdr.LedgerKey.fromXDR(xdrStr, "base64"),
         );
 
         const response = await this.server.getLedgerEntries(...keys);
@@ -534,7 +620,7 @@ export class StellarRpcClient {
     async getContractStorageEntries(entryKeyXdrs: string[]): Promise<ContractStorageEntryResult[]> {
         if (entryKeyXdrs.length === 0) return [];
         const keys = entryKeyXdrs.map((xdrStr) =>
-            xdr.LedgerKey.fromXDR(xdrStr, "base64")
+            xdr.LedgerKey.fromXDR(xdrStr, "base64"),
         );
 
         const response = await this.server.getLedgerEntries(...keys);
@@ -617,13 +703,13 @@ export class StellarRpcClient {
         assertSimulationSuccess(sim);
 
         const successSim = sim;
-        
+
         const scv = successSim.result!.retval;
         if (scv.switch().name === "scvVec") {
             const vec = scv.vec()!;
-            return vec.map(val => val.toXDR("base64"));
+            return vec.map((val) => val.toXDR("base64"));
         }
-        
+
         return [];
     }
 
@@ -637,7 +723,7 @@ export class StellarRpcClient {
         const accountResponse = await this.server.getAccount(sourcePublicKey);
         const account = new Account(sourcePublicKey, accountResponse.sequenceNumber());
 
-        const keys = entryKeyXdrs.map(k => xdr.LedgerKey.fromXDR(k, "base64"));
+        const keys = entryKeyXdrs.map((k) => xdr.LedgerKey.fromXDR(k, "base64"));
 
         const tx = new TransactionBuilder(account, {
             fee: "100",
@@ -685,7 +771,7 @@ export class StellarRpcClient {
         const accountResponse = await this.server.getAccount(sourcePublicKey);
         const account = new Account(sourcePublicKey, accountResponse.sequenceNumber());
 
-        const keys = entryKeyXdrs.map(k => xdr.LedgerKey.fromXDR(k, "base64"));
+        const keys = entryKeyXdrs.map((k) => xdr.LedgerKey.fromXDR(k, "base64"));
 
         const tx = new TransactionBuilder(account, {
             fee: "100",
@@ -717,7 +803,6 @@ export class StellarRpcClient {
         };
     }
 
-
     /**
      * Build, sign, and submit an ExtendFootprintTTLOp transaction.
      * Uses simulation to prepare the transaction with correct resource parameters.
@@ -732,7 +817,7 @@ export class StellarRpcClient {
         const keypair = Keypair.fromSecret(secretKey);
         const publicKey = keypair.publicKey();
 
-        const keys = entryKeyXdrs.map(k => xdr.LedgerKey.fromXDR(k, "base64"));
+        const keys = entryKeyXdrs.map((k) => xdr.LedgerKey.fromXDR(k, "base64"));
 
         const buildTx = async () => {
             const accountResponse = await this.server.getAccount(publicKey);
@@ -786,15 +871,13 @@ export class StellarRpcClient {
         return txResult.success ? this.addResourcesToSuccess(txResult, sim as rpc.Api.SimulateTransactionSuccessResponse) : txResult;
     }
 
-    // Helper to add resource usage to a successful transaction result
     private addResourcesToSuccess(result: SubmitTransactionResult, sim: rpc.Api.SimulateTransactionSuccessResponse): SubmitTransactionResult {
         return { ...result, cpuInsns: Number((sim as SimulateWithCost).cost?.cpuInsns ?? 0), memBytes: Number((sim as SimulateWithCost).cost?.memBytes ?? 0) };
     }
 
     /**
      * Build an ExtendFootprintTTLOp transaction, wrap it in a FeeBumpTransaction
-     * signed by the sponsor keypair, and submit. The sponsor account pays all fees
-     * while the inner transaction's source account provides the sequence number.
+     * signed by the sponsor keypair, and submit.
      */
     async submitExtensionWithFeeBump(
         entryKeyXdrs: string[],
@@ -806,7 +889,7 @@ export class StellarRpcClient {
         const keypair = Keypair.fromSecret(secretKey);
         const sponsorKeypair = Keypair.fromSecret(sponsorSecretKey);
         const publicKey = keypair.publicKey();
-        const keys = entryKeyXdrs.map(k => xdr.LedgerKey.fromXDR(k, "base64"));
+        const keys = entryKeyXdrs.map((k) => xdr.LedgerKey.fromXDR(k, "base64"));
 
         const buildTx = async () => {
             const accountResponse = await this.server.getAccount(publicKey);
@@ -832,7 +915,7 @@ export class StellarRpcClient {
                 sponsorKeypair,
                 (parseInt(prepared.fee, 10) + 10000).toString(),
                 prepared,
-                passphrase
+                passphrase,
             );
             feeBump.sign(sponsorKeypair);
             return feeBump;
@@ -884,7 +967,7 @@ export class StellarRpcClient {
         const passphrase = await this.getNetworkPassphrase();
         const keypair = Keypair.fromSecret(secretKey);
         const publicKey = keypair.publicKey();
-        const keys = entryKeyXdrs.map(k => xdr.LedgerKey.fromXDR(k, "base64"));
+        const keys = entryKeyXdrs.map((k) => xdr.LedgerKey.fromXDR(k, "base64"));
 
         const buildTx = async () => {
             const accountResponse = await this.server.getAccount(publicKey);
@@ -912,7 +995,9 @@ export class StellarRpcClient {
 
         const prepared = rpc.assembleTransaction(tx, sim).build();
         prepared.sign(keypair);
-        const sendResult = await this.server.sendTransaction(prepared);        if (sendResult.status === "ERROR") {
+        const sendResult = await this.server.sendTransaction(prepared);
+
+        if (sendResult.status === "ERROR") {
             if (this.isBadSeqError(sendResult)) {
                 logger.warn("Sequence mismatch detected on RestoreFootprint — refreshing account sequence and retrying");
                 const retryTx = await buildTx();
@@ -993,16 +1078,10 @@ export class StellarRpcClient {
         return this.pollTransaction(sendResult.hash);
     }
 
-
-    /**
-     * Returns true if the sendTransaction ERROR response indicates a txBadSeq result code.
-     * The SDK parses errorResultXdr into `errorResult` as an xdr.TransactionResult.
-     */
     private isBadSeqError(sendResult: SendTransactionErrorResult): boolean {
         try {
             const errorResult = sendResult.errorResult;
             if (!errorResult) return false;
-            // errorResult may be a base64 string or a pre-parsed xdr.TransactionResult
             const parsed = typeof errorResult === "string"
                 ? xdr.TransactionResult.fromXDR(errorResult, "base64")
                 : (errorResult as xdr.TransactionResult);
@@ -1018,7 +1097,6 @@ export class StellarRpcClient {
         if (this._cachedPassphrase) return this._cachedPassphrase;
 
         return await this.withRateLimit(async () => {
-            // Try fetching from the RPC server first
             try {
                 const networkInfo = await this.server.getNetwork();
                 if (networkInfo.passphrase) {
@@ -1061,7 +1139,7 @@ export class StellarRpcClient {
 
                         logger.info(
                             "Extracted transaction resource costs successfully",
-                            { txHash, cpuInstructions, memoryBytes }
+                            { txHash, cpuInstructions, memoryBytes },
                         );
                     }
                 }
@@ -1088,7 +1166,7 @@ export class StellarRpcClient {
                 };
             }
 
-            await new Promise(resolve => setTimeout(resolve, intervalMs));
+            await new Promise((resolve) => setTimeout(resolve, intervalMs));
         }
 
         return {
@@ -1110,14 +1188,13 @@ export class StellarRpcClient {
     private acquireSlot(): number {
         const now = Date.now();
         const windowStart = now - 1000;
-        this.recentRequestTimes = this.recentRequestTimes.filter(t => t > windowStart);
+        this.recentRequestTimes = this.recentRequestTimes.filter((t) => t > windowStart);
 
         if (this.recentRequestTimes.length < this.maxRequestsPerSecond) {
             this.recentRequestTimes.push(now);
             return 0;
         }
 
-        // Wait until the slot-blocking request in the window falls out
         const blockingRequest = this.recentRequestTimes[this.recentRequestTimes.length - this.maxRequestsPerSecond]!;
         const waitMs = blockingRequest + 1000 - now;
         this.recentRequestTimes.push(now + waitMs);
@@ -1128,7 +1205,7 @@ export class StellarRpcClient {
     private calculateWaitMs(): number {
         const now = Date.now();
         const windowStart = now - 1000;
-        const recent = this.recentRequestTimes.filter(t => t > windowStart);
+        const recent = this.recentRequestTimes.filter((t) => t > windowStart);
         if (recent.length < this.maxRequestsPerSecond) return 0;
         const oldest = recent[0]!;
         return Math.max(0, oldest + 1000 - now);

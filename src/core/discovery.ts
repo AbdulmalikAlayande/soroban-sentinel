@@ -71,7 +71,7 @@ export async function discoverStorageKeys(
 
         // Get the latest ledger to set up the event window
         const health = await server.getHealth();
-        const latestLedger = (health as any).latestLedger ?? 0;
+        const latestLedger = (health as { latestLedger?: number }).latestLedger ?? 0;
         if (latestLedger === 0) {
             result.error = "Could not determine latest ledger";
             return result;
@@ -90,21 +90,16 @@ export async function discoverStorageKeys(
         let cursor: string | undefined;
 
         while (true) {
-            const request: any = {
-                filters: [
-                    {
-                        type: "contract",
-                        contractIds: [contractId],
-                    },
-                ],
-                limit: 100,
-            };
+            const filters = [
+                {
+                    type: "contract" as const,
+                    contractIds: [contractId],
+                },
+            ];
 
-            if (cursor) {
-                request.pagination = { cursor };
-            } else {
-                request.startLedger = startLedger;
-            }
+            const request = cursor
+                ? { filters, cursor, limit: 100 }
+                : { filters, startLedger, limit: 100 };
 
             const page = await server.getEvents(request);
             if (page.events && page.events.length > 0) {
@@ -112,8 +107,8 @@ export async function discoverStorageKeys(
             }
 
             // Continue if there's a cursor for the next page
-            if ((page as any).cursor && page.events && page.events.length === 100) {
-                cursor = (page as any).cursor;
+            if (page.cursor && page.events && page.events.length === 100) {
+                cursor = page.cursor;
             } else {
                 break;
             }

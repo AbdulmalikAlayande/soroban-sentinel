@@ -40,11 +40,11 @@ describe("Inspect Command CLI", () => {
     it("fails gracefully on non-SAC contracts", async () => {
         vi.spyOn(inspectModule, "inspectContract").mockResolvedValue({
             success: false,
-            contractId: "CUSTOM_ID",
-            error: "Contract CUSTOM_ID is not a standard Stellar Asset Contract (SAC). Executable type: contractExecutableWasm",
+            contractId: "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+            error: "Contract CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526 is not a standard Stellar Asset Contract (SAC). Executable type: contractExecutableWasm",
         });
 
-        await actionFn("CUSTOM_ID", { entry: ["balance:GBEA5Z3MBTLHEQHZYU3GUZIKABRADWJSOSD62GHBIVUUAWRMXTU6U2EW"] });
+        await actionFn("CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526", { entry: ["balance:GBEA5Z3MBTLHEQHZYU3GUZIKABRADWJSOSD62GHBIVUUAWRMXTU6U2EW"] });
 
         expect(mockExit).toHaveBeenCalledWith(1);
         expect(mockErr).toHaveBeenCalledWith(expect.stringContaining("not a standard Stellar Asset Contract (SAC)"));
