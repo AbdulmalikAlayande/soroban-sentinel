@@ -66,6 +66,11 @@ export class Migrator {
     /**
      * Executes all pending migrations sequentially.
      * Each migration script is executed in its own transaction.
+     *
+     * ALTER TABLE … ADD COLUMN statements are executed outside the main
+     * transaction and tolerate "duplicate column name" errors so that
+     * migrations remain safe to replay on databases that were initialised
+     * from an up-to-date schema.sql (e.g. in-memory test databases).
      */
     public run(): void {
         this.init();
@@ -74,14 +79,54 @@ export class Migrator {
         for (const migration of pending) {
             const sql = fs.readFileSync(migration.filepath, "utf-8");
 
-            // Define transaction for the migration run
+            // Split the script into individual statements so that
+            // ALTER TABLE ADD COLUMN lines can be executed idempotently.
+            const statements = sql
+                .replace(/--[^\n]*\n/g, "\n") // strip line comments
+                .split(";")
+                .map((s) => s.trim())
+                .filter((s) => s.length > 0);
+
+            // Run the migration in a transaction.  ALTER TABLE ADD COLUMN
+            // statements are executed outside the transaction body so that a
+            // "duplicate column name" error (which happens when schema.sql
+            // already contains the column for fresh installs) can be silently
+            // swallowed without rolling back the entire migration.
+            const ddlStatements = statements.filter((s) =>
+                /^\s*ALTER\s+TABLE\s+\S+\s+ADD\s+COLUMN/i.test(s),
+            );
+            const otherStatements = statements.filter(
+                (s) => !/^\s*ALTER\s+TABLE\s+\S+\s+ADD\s+COLUMN/i.test(s),
+            );
+
+            // Execute non-ALTER statements in a transaction together with the
+            // version bookkeeping insert.
             const runMigrationTx = this.db.transaction(() => {
-                this.db.exec(sql);
+                for (const stmt of otherStatements) {
+                    this.db.exec(stmt);
+                }
                 this.db.prepare("INSERT INTO schema_migrations (version) VALUES (?);").run(migration.version);
             });
-
-            // Execute migration transaction
             runMigrationTx();
+
+            // Execute ALTER TABLE ADD COLUMN statements outside the transaction
+            // so that duplicate-column errors can be ignored individually.
+            for (const stmt of ddlStatements) {
+                try {
+                    this.db.exec(stmt);
+                } catch (err: unknown) {
+                    // Ignore "duplicate column name" — this happens on databases
+                    // where the column was already present (e.g. created from an
+                    // up-to-date schema.sql).  Any other error is re-thrown.
+                    if (
+                        err instanceof Error &&
+                        /duplicate column name/i.test(err.message)
+                    ) {
+                        continue;
+                    }
+                    throw err;
+                }
+            }
         }
     }
 }

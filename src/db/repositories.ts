@@ -7,6 +7,8 @@ export interface Contract {
     wasm_hash: string | null;
     tags: string | null;
     poll_interval_seconds?: number | null;
+    /** FK to contract_groups.id.  NULL means the contract has no group assignment. */
+    group_id?: number | null;
     active: number;
     registered_at: Date;
     last_checked_ledger?: number | null;
@@ -1327,3 +1329,139 @@ export function getLatestResourceUsageLog(
     `).get(contractId) as ResourceUsageLog | undefined;
 }
 
+
+// ─── Contract Groups ──────────────────────────────────────────────────────────
+//
+// A contract group is a named collection of contracts that share a set of
+// default settings.  The `settings` column is stored as a JSON string so that
+// new group-level knobs can be added without schema migrations.
+//
+// The only recognised setting right now is `poll_interval_seconds` (integer),
+// which provides a group-level fallback for the daemon's polling interval.
+//
+// Precedence for poll-interval resolution:
+//   per-contract override (contracts.poll_interval_seconds)
+//   > per-group default   (contract_groups.settings->>'poll_interval_seconds')
+//   > global --interval flag
+
+export interface ContractGroup {
+    id: number;
+    name: string;
+    /** JSON-encoded settings object, e.g. '{"poll_interval_seconds": 120}' */
+    settings: string;
+    created_at: string;
+}
+
+/** Parsed view of a group's settings column. */
+export interface ContractGroupSettings {
+    /** Polling interval override for all contracts in this group (seconds). */
+    poll_interval_seconds?: number;
+}
+
+/**
+ * Create a new contract group.
+ * `settings` must be a valid JSON object string; defaults to `'{}'`.
+ * Throws if a group with the same name already exists.
+ */
+export function insertContractGroup(
+    db: Database.Database,
+    group: { name: string; settings?: ContractGroupSettings },
+): number {
+    const result = db.prepare(`
+        INSERT INTO contract_groups (name, settings)
+        VALUES (@name, @settings)
+    `).run({
+        name: group.name,
+        settings: JSON.stringify(group.settings ?? {}),
+    });
+    return result.lastInsertRowid as number;
+}
+
+/**
+ * Return a contract group by its id, or `undefined` if not found.
+ */
+export function getContractGroup(
+    db: Database.Database,
+    id: number,
+): ContractGroup | undefined {
+    return db.prepare("SELECT * FROM contract_groups WHERE id = ?").get(id) as
+        | ContractGroup
+        | undefined;
+}
+
+/**
+ * Return all contract groups, ordered by id.
+ */
+export function getAllContractGroups(db: Database.Database): ContractGroup[] {
+    return db.prepare("SELECT * FROM contract_groups ORDER BY id ASC").all() as ContractGroup[];
+}
+
+/**
+ * Update the mutable settings of a contract group.
+ * Performs a full replacement of the settings column — callers must include
+ * all desired fields, not just the ones they want to change.
+ */
+export function updateContractGroupSettings(
+    db: Database.Database,
+    id: number,
+    settings: ContractGroupSettings,
+): void {
+    db.prepare("UPDATE contract_groups SET settings = ? WHERE id = ?").run(
+        JSON.stringify(settings),
+        id,
+    );
+}
+
+/**
+ * Delete a contract group.  The FK on `contracts.group_id` is set to
+ * `ON DELETE SET NULL`, so member contracts are not deleted — they simply
+ * lose their group association.
+ */
+export function deleteContractGroup(db: Database.Database, id: number): void {
+    db.prepare("DELETE FROM contract_groups WHERE id = ?").run(id);
+}
+
+/**
+ * Assign a contract to a group (or remove the assignment when `groupId` is
+ * `null`).
+ */
+export function assignContractToGroup(
+    db: Database.Database,
+    contractId: string,
+    groupId: number | null,
+): void {
+    db.prepare("UPDATE contracts SET group_id = ? WHERE id = ?").run(groupId, contractId);
+}
+
+/**
+ * Return the group that a contract belongs to, or `undefined` if the
+ * contract has no group assignment or the group does not exist.
+ */
+export function getGroupForContract(
+    db: Database.Database,
+    contractId: string,
+): ContractGroup | undefined {
+    return db.prepare(`
+        SELECT cg.*
+        FROM contract_groups cg
+        JOIN contracts c ON c.group_id = cg.id
+        WHERE c.id = ?
+    `).get(contractId) as ContractGroup | undefined;
+}
+
+/**
+ * Parse the raw JSON `settings` string from a `ContractGroup` row into a
+ * typed `ContractGroupSettings` object.  Returns an empty object on parse
+ * failure so callers always get a safe value.
+ */
+export function parseContractGroupSettings(settingsJson: string): ContractGroupSettings {
+    try {
+        const parsed = JSON.parse(settingsJson) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            return parsed as ContractGroupSettings;
+        }
+        return {};
+    } catch {
+        return {};
+    }
+}

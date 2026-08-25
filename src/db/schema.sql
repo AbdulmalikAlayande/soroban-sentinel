@@ -1,3 +1,17 @@
+-- contract_groups allows operators to organise contracts into named groups and
+-- attach group-level defaults (stored as JSON in the `settings` column).
+-- Currently the only recognised setting is `poll_interval_seconds`.
+-- Precedence for poll interval resolution:
+--   per-contract override  >  per-group default  >  global --interval flag
+CREATE TABLE IF NOT EXISTS contract_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    -- JSON object.  Recognised keys:
+    --   poll_interval_seconds  INTEGER  Group-level polling default (seconds).
+    settings TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS contracts (
     id TEXT PRIMARY KEY,
     name TEXT,
@@ -5,6 +19,8 @@ CREATE TABLE IF NOT EXISTS contracts (
     wasm_hash TEXT,
     tags TEXT,
     poll_interval_seconds INTEGER,
+    -- FK to contract_groups.  NULL means the contract belongs to no group.
+    group_id INTEGER REFERENCES contract_groups(id) ON DELETE SET NULL,
     active INTEGER NOT NULL DEFAULT 1,
     registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_checked_ledger INTEGER,
