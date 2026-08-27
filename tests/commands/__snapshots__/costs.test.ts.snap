@@ -1,0 +1,152 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`costs command — snapshot tests > matches snapshot for full output with extension history 1`] = `
+"
+Extension Costs — test-contract
+  Network: testnet
+
+  Period         Extensions        Total XLM
+  ────────────────────────────────────────
+  7 days                  1        0.0010000
+  30 days                 1        0.0010000
+  90 days                 1        0.0010000
+
+  Projection
+  Estimated 30-day cost: ~0.0010000 XLM
+  Live base fee:        100 stroops
+  Surge multiplier:     1.00x
+
+Extension History — test-contract (last 30 days)
+  Network: testnet
+
+  Summary
+  Total extensions: 1
+  Total cost:       0.0010000 XLM
+
+  By Entry Type
+    instance: 1 extensions (0.0010000 XLM)
+
+  Projection
+  Estimated 30-day cost: ~0.0010000 XLM
+  Live base fee:     100 stroops
+  Surge multiplier:  1.00x
+
+  Forecasted Rent (based on Soroban rent formula)
+    Entry type: instance
+      30-day: ~0.0448192 XLM
+      60-day: ~0.0896383 XLM
+      90-day: ~0.1344574 XLM
+
+  Recent Extensions
+    YYYY-MM-DD HH:MM:SS instance: ~15h 16m → ~1d 6h (0.0010000 XLM)
+      tx: abc123def456abc1..."
+`;
+
+exports[`costs command — snapshot tests > matches snapshot when no extensions exist 1`] = `
+"
+Extension Costs — empty-contract
+  Network: testnet
+
+  Period         Extensions        Total XLM
+  ────────────────────────────────────────
+  7 days                  0        0.0000000
+  30 days                 0        0.0000000
+  90 days                 0        0.0000000
+
+  Projection
+  Estimated 30-day cost: ~0.0000000 XLM
+  Live base fee:        100 stroops
+  Surge multiplier:     1.00x
+
+Extension History — empty-contract (last 30 days)
+  Network: testnet
+
+  No extensions recorded for this period."
+`;
+
+exports[`costs command — snapshot tests > matches snapshot with budget warning when forecast exceeds budget 1`] = `
+"
+Extension Costs — test-contract
+  Network: testnet
+
+  Period         Extensions        Total XLM
+  ────────────────────────────────────────
+  7 days                  1      999.0000000
+  30 days                 1      999.0000000
+  90 days                 1      999.0000000
+
+  Projection
+  Estimated 30-day cost: ~999.0000000 XLM
+  Live base fee:        100 stroops
+  Surge multiplier:     1.00x
+
+Extension History — test-contract (last 30 days)
+  Network: testnet
+
+  Summary
+  Total extensions: 1
+  Total cost:       999.0000000 XLM
+
+  By Entry Type
+    instance: 1 extensions (999.0000000 XLM)
+
+  Projection
+  Estimated 30-day cost: ~999.0000000 XLM
+  Live base fee:     100 stroops
+  Surge multiplier:  1.00x
+
+  Forecasted Rent (based on Soroban rent formula)
+  Monthly budget: 0.0010000 XLM
+    Entry type: instance
+      30-day: ~0.0448192 XLM ⚠ OVER BUDGET (limit: 0.0010000 XLM)
+      60-day: ~0.0896383 XLM ⚠ OVER BUDGET (limit: 0.0010000 XLM)
+      90-day: ~0.1344574 XLM ⚠ OVER BUDGET (limit: 0.0010000 XLM)
+
+  ⚠ One or more forecast windows exceed your monthly budget of 0.0010000 XLM. Consider raising TTLs or reviewing entry sizes to reduce rent costs.
+
+  Recent Extensions
+    YYYY-MM-DD HH:MM:SS instance: ~15h 16m → ~1d 6h (999.0000000 XLM)
+      tx: abc123def456abc1..."
+`;
+
+exports[`costs command — snapshot tests > matches snapshot with extension costs table (multi-period) 1`] = `
+"
+Extension Costs — test-contract
+  Network: testnet
+
+  Period         Extensions        Total XLM
+  ────────────────────────────────────────
+  7 days                  1        0.0010000
+  30 days                 1        0.0010000
+  90 days                 1        0.0010000
+
+  Projection
+  Estimated 30-day cost: ~0.0010000 XLM
+  Live base fee:        100 stroops
+  Surge multiplier:     1.00x
+
+Extension History — test-contract (last 30 days)
+  Network: testnet
+
+  Summary
+  Total extensions: 1
+  Total cost:       0.0010000 XLM
+
+  By Entry Type
+    instance: 1 extensions (0.0010000 XLM)
+
+  Projection
+  Estimated 30-day cost: ~0.0010000 XLM
+  Live base fee:     100 stroops
+  Surge multiplier:  1.00x
+
+  Forecasted Rent (based on Soroban rent formula)
+    Entry type: instance
+      30-day: ~0.0448192 XLM
+      60-day: ~0.0896383 XLM
+      90-day: ~0.1344574 XLM
+
+  Recent Extensions
+    YYYY-MM-DD HH:MM:SS instance: ~15h 16m → ~1d 6h (0.0010000 XLM)
+      tx: abc123def456abc1..."
+`;
