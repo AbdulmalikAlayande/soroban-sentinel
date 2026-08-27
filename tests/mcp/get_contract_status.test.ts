@@ -57,6 +57,19 @@ describe("get_contract_status MCP tool", () => {
         });
     });
 
+    it("returns a clear error when the database has no watched contracts", async () => {
+        const result = await invokeGetContractStatus(db, CONTRACT_ID);
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toEqual([
+            {
+                type: "text",
+                text: expect.stringContaining("not registered"),
+            },
+        ]);
+        expect(result.structuredContent).toBeUndefined();
+    });
+
     it("returns an MCP error when the contract is not registered", async () => {
         const result = await invokeGetContractStatus(db, CONTRACT_ID);
 
