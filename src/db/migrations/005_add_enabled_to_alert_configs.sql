@@ -1,0 +1,1 @@
+ALTER TABLE alert_configs ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
