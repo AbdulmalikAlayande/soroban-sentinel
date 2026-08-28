@@ -6,6 +6,11 @@ import { getAllContracts, getEntriesForContract } from "../db/repositories.js";
 import { classifyTTL } from "../utils/formatting.js";
 import type { TTLStatus } from "../utils/formatting.js";
 import { instrumentMcpToolInvocations } from "../observability/metrics/mcp.js";
+import { createIpAllowlistMiddleware } from "../core/ipAllowlist.js";
+import { loadConfig } from "../utils/config.js";
+
+// Generic middleware configured for MCP HTTP endpoints (once SSE transport is added)
+export const mcpIpAllowlistMiddleware = createIpAllowlistMiddleware(loadConfig().allowedIps);
 
 export async function invokeListWatchedContracts(db: Database.Database) {
     const contracts = getAllContracts(db);

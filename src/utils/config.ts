@@ -55,6 +55,11 @@ export interface SorokeepConfig {
         pass: string;
     };
 
+    /** 
+     * IP allowlist (supports CIDR ranges) for any exposed HTTP endpoints.
+     * When unconfigured, defaults to allowing all IPs.
+     */
+    allowedIps?: string[];
 }
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -113,6 +118,7 @@ export function loadConfig(customPath?: string): SorokeepConfig {
             vault,
             feeSponsorSecret: typeof parsed.feeSponsorSecret === "string" ? parsed.feeSponsorSecret : undefined,
             smtp: parseSmtpConfig(parsed.smtp),
+            allowedIps: Array.isArray(parsed.allowedIps) ? parsed.allowedIps.filter(ip => typeof ip === "string") : undefined,
 
         };
     } catch (err: unknown) {
