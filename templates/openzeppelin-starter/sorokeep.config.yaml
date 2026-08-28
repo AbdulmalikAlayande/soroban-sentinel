@@ -1,0 +1,12 @@
+network: testnet
+
+contracts:
+  - id: CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX # Replace with your deployed Contract ID
+    thresholds:
+      watch: 7d
+      guard: 14d
+
+# Optionally configure identity for guarding
+# identity:
+#   source: env
+#   env_var: SOROKEEP_SECRET_KEY
