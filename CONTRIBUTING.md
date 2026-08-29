@@ -107,6 +107,35 @@ If you're adding a new feature, the logic goes in `core/`, the CLI wiring goes i
 
 ## Development Workflow
 
+### Docker Vulnerability Scanning
+
+
+
+We use [Trivy](https://aquasecurity.github.io/trivy/) to scan our Docker images for OS and library vulnerabilities. The CI pipeline will automatically fail if any `HIGH` or `CRITICAL` vulnerabilities are detected.
+
+
+
+To run this scan locally before opening a PR:
+
+
+
+```bash
+
+# 1. Build the image locally
+
+docker build -t sorokeep:local .
+
+
+
+# 2. Run the Trivy scan (requires Trivy to be installed on your machine)
+
+trivy image --severity HIGH,CRITICAL --ignore-unfixed sorokeep:local
+
+```
+
+
+
+
 ### Test-Driven Development
 
 We enforce strict test-driven development. Your PR will not be accepted without comprehensive tests.
