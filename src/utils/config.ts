@@ -47,7 +47,6 @@ export interface SorokeepConfig {
      */
     feeSponsorSecret?: string;
 
-    /** SMTP configuration for email alert delivery. */
     smtp?: {
         host: string;
         port: number;
@@ -55,6 +54,12 @@ export interface SorokeepConfig {
         pass: string;
     };
 
+    /**
+     * Optional SHA-256 fingerprint (hex) of the RPC server's TLS certificate.
+     * When configured, the RPC connection will fail if the presented certificate
+     * does not match this fingerprint.
+     */
+    rpcCertificateFingerprint?: string;
 }
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -113,7 +118,7 @@ export function loadConfig(customPath?: string): SorokeepConfig {
             vault,
             feeSponsorSecret: typeof parsed.feeSponsorSecret === "string" ? parsed.feeSponsorSecret : undefined,
             smtp: parseSmtpConfig(parsed.smtp),
-
+            rpcCertificateFingerprint: typeof parsed.rpcCertificateFingerprint === "string" ? parsed.rpcCertificateFingerprint : undefined,
         };
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);

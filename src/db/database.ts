@@ -74,6 +74,7 @@ export function getDatabase(customPath?: string): Database.Database {
         `ALTER TABLE alert_configs ADD COLUMN quiet_hours_start TEXT`,
         `ALTER TABLE alert_configs ADD COLUMN quiet_hours_end TEXT`,
         `ALTER TABLE alert_configs ADD COLUMN quiet_hours_timezone TEXT`,
+        `ALTER TABLE extension_policies ADD COLUMN max_fee_stroops INTEGER`,
     ];
     for (const sql of migrations) {
         try { db.exec(sql); } catch { /* column already exists — no-op */ }

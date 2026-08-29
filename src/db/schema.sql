@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS extension_policies (
     extend_when_below_ledgers INTEGER NOT NULL,
     keypair_public TEXT,
     keypair_source TEXT,
+    max_fee_stroops INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(contract_id)
 );

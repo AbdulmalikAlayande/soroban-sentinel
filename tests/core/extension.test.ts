@@ -878,5 +878,153 @@ describe("Core Extension Logic", () => {
 
             randomSpy.mockRestore();
         });
+        it("blocks submission when estimated fee exceeds configured max_fee_stroops ceiling", async () => {
+            const contractId = seedContract(db);
+
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "instance-key-xdr",
+                entry_type: "instance",
+                live_until_ledger: 2410000,
+                discovery_source: "deterministic",
+            });
+
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+                max_fee_stroops: 50000,
+            });
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+
+            // Simulation returns fee higher than max_fee_stroops
+            mockSimulateExtension.mockResolvedValue({
+                success: true,
+                minResourceFee: 60000,
+            });
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.contractsChecked).toBe(1);
+            expect(result.contractsExtended).toBe(0);
+            expect(result.errors.length).toBe(1);
+            expect(result.errors[0]).toContain("exceeds max fee ceiling");
+            expect(mockSubmitExtension).not.toHaveBeenCalled();
+        });
+
+        it("proceeds normally when estimated fee is at or below max_fee_stroops ceiling", async () => {
+            const contractId = seedContract(db);
+
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "instance-key-xdr",
+                entry_type: "instance",
+                live_until_ledger: 2410000,
+                discovery_source: "deterministic",
+            });
+
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+                max_fee_stroops: 50000,
+            });
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+
+            mockSimulateExtension.mockResolvedValue({
+                success: true,
+                minResourceFee: 50000,
+            });
+
+            mockSubmitExtension.mockResolvedValue({
+                success: true,
+                txHash: "auto-ext-tx",
+                ledger: 2400100,
+            });
+
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2400100,
+                entries: [
+                    {
+                        entryKeyXdr: "instance-key-xdr",
+                        latestLedger: 2400100,
+                        liveUntilLedgerSeq: 2500100,
+                        lastModifiedLedgerSeq: 2400100,
+                        remainingTTL: 100000,
+                    },
+                ],
+            });
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.contractsChecked).toBe(1);
+            expect(result.contractsExtended).toBe(1);
+            expect(result.errors.length).toBe(0);
+            expect(mockSubmitExtension).toHaveBeenCalled();
+        });
+
+        it("preserves current behavior when no ceiling is configured", async () => {
+            const contractId = seedContract(db);
+
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "instance-key-xdr",
+                entry_type: "instance",
+                live_until_ledger: 2410000,
+                discovery_source: "deterministic",
+            });
+
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+                // No max_fee_stroops provided
+            });
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+
+            // Simulation returns a very high fee, but there is no ceiling
+            mockSimulateExtension.mockResolvedValue({
+                success: true,
+                minResourceFee: 1000000,
+            });
+
+            mockSubmitExtension.mockResolvedValue({
+                success: true,
+                txHash: "auto-ext-tx",
+                ledger: 2400100,
+            });
+
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2400100,
+                entries: [
+                    {
+                        entryKeyXdr: "instance-key-xdr",
+                        latestLedger: 2400100,
+                        liveUntilLedgerSeq: 2500100,
+                        lastModifiedLedgerSeq: 2400100,
+                        remainingTTL: 100000,
+                    },
+                ],
+            });
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.contractsChecked).toBe(1);
+            expect(result.contractsExtended).toBe(1);
+            expect(result.errors.length).toBe(0);
+            expect(mockSubmitExtension).toHaveBeenCalled();
+        });
     });
 });
