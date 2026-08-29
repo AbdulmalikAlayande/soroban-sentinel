@@ -1,5 +1,6 @@
 import { registerAlertChannel, type ChannelDefinition } from "./registry.js";
 import { sendWebhookAlert } from "./webhook.js";
+import { sendWebhook2Alert } from "./webhook2.js";
 import { SlackChannel } from "./slack.js";
 import { sendPagerDutyAlert } from "./pagerduty.js";
 import { sendOpsgenieAlert } from "./opsgenie.js";
@@ -26,6 +27,14 @@ export function registerBuiltinChannels(): void {
             channel: { send: sendWebhookAlert },
             targetOption: "url",
             missingTargetError: "Error: --url is required when --type is webhook.",
+            supportsSigning: true,
+        },
+        {
+            name: "webhook2",
+            channel: { send: sendWebhook2Alert },
+            targetOption: "url",
+            missingTargetError:
+                "Error: --url is required when --type is webhook2. The value must be a JSON string: {\"url\":\"https://...\",\"headers\":{},\"timeoutMs\":10000}",
             supportsSigning: true,
         },
         {

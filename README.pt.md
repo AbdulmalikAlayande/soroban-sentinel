@@ -357,9 +357,44 @@ Tarefas de gerenciamento do banco de dados, incluindo migrações, backups e ger
 
 Gere scripts de autocompletar para shell bash/zsh para habilitar completar por tabulação para todos os comandos do Sorokeep.
 
+---
+
+### `sorokeep contracts`
+
+Liste todos os contratos monitorados rapidamente — uma visão de índice útil quando você gerencia mais de alguns contratos.
+
+```bash
+sorokeep contracts [opções]
+```
+
+| Opção | Descrição |
+|--------|-------------|
+| `--network <network>` | Filtrar por `testnet` ou `mainnet` |
+| `--json` | Saída em JSON legível por máquina |
+
+Exibe uma tabela com o ID do contrato (truncado), nome, rede, contagem de entradas, pior TTL restante e status (OK / Warning / Critical / Expired). Lê apenas do banco de dados local — instantâneo, sem chamadas RPC.
+
 ## Alertas
 
-O Sorokeep entrega alertas através de múltiplos canais: **webhooks**, **Slack**, **Discord**, **Telegram** e **PagerDuty**. Cada alerta inclui um nível de gravidade e contexto rico sobre a entrada afetada. O Sorokeep utiliza uma arquitetura robusta e desacoplada de detecção e despacho com fila baseada em banco de dados.
+O Sorokeep entrega alertas através de múltiplos canais: **webhooks**, **Slack**, **Discord**, **Telegram**, **PagerDuty**, **Opsgenie**, **Microsoft Teams**, **Matrix**, **e-mail**, **Google Chat**, e um segundo canal de **Webhook v2** configurável. Cada alerta inclui um nível de gravidade e contexto rico sobre a entrada afetada. O Sorokeep utiliza uma arquitetura robusta e desacoplada de detecção e despacho com fila baseada em banco de dados.
+
+### Comparação dos Canais Suportados
+
+| Canal | Método de Autenticação | Limite de Taxa Típico | Formato do Payload | Complexidade de Configuração |
+|---------|-------------|--------------------|----------------|------------------|
+| **Webhook** | HMAC-SHA256 (`X-Sorokeep-Signature`) / Secret | Ilimitado (depende do destino) | JSON genérico | Baixa |
+| **Webhook v2** | HMAC-SHA256 (`X-Sorokeep-Signature`) / Secret, cabeçalhos customizados | Ilimitado (depende do destino) | JSON genérico | Baixa |
+| **Slack** | Token OAuth do Bot (`xoxb-...`) / URL do Webhook | 1 req/seg | JSON Slack Block Kit | Baixa |
+| **PagerDuty** | Chave de Roteamento da Events API v2 | 120 req/min | JSON PagerDuty Event v2 | Baixa |
+| **Opsgenie** | Chave de API | Depende do plano | JSON da Opsgenie Alert API | Baixa |
+| **Discord** | URL do Webhook | 30 req/min por webhook | JSON Discord Embed | Baixa |
+| **Telegram** | Token do Bot (`SOROKEEP_TELEGRAM_BOT_TOKEN`) | 30 msg/seg no geral (1 msg/seg por chat) | Texto formatado em HTML / Markdown | Média |
+| **Microsoft Teams** | URL do Webhook (escopo de tenant) | Depende do conector | JSON MessageCard do Teams | Baixa |
+| **Matrix** | ID da Sala | Depende do homeserver | Evento `m.room.message` do Matrix | Média |
+| **E-mail** | Credenciais SMTP (host/porta/usuário/senha) | Depende do provedor SMTP | Texto simples + HTML | Média |
+| **Google Chat** | URL do Webhook | Depende do espaço | JSON de cartão do Google Chat | Baixa |
+
+> Precisa de um canal que não está listado aqui? Veja [Adicionando um Canal de Alerta](docs/adding-an-alert-channel.md) para implementar um plugin de canal customizado.
 
 ### Ciclo de Vida do Alerta
 
@@ -669,6 +704,16 @@ E-mail ainda não foi implementado. O CLI rejeitará `--type email` com uma mens
 - GitHub Action reutilizável encapsulando `sorokeep check` para verificações de TTL integradas a CI
 - Dashboard web para monitoramento visual de TTL
 - Operações em lote multi-contrato
+
+## Obtendo Ajuda
+
+**Problemas com o daemon?** Veja [docs/troubleshooting.md](docs/troubleshooting.md) (em inglês) para um guia completo cobrindo modos de falha comuns (ciclos travados, alertas que não disparam, auto-extensão bloqueada, erros de RPC) com comandos de diagnóstico e passos de resolução.
+
+Se você estiver com dúvidas ou problemas:
+- Consulte as [issues abertas](https://github.com/AbdulmalikAlayande/sorokeep/issues)
+- Entre em contato no X: [@The_good_man02](https://twitter.com/The_good_man02)
+
+Para problemas de segurança (vazamento de chaves, transações não intencionais), veja [SECURITY.md](SECURITY.md) em vez de abrir uma issue pública.
 
 ## Contribuir
 

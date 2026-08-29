@@ -36,6 +36,10 @@ function buildTitle(event: AlertEvent): string {
         return `${icon} State ${diffLabel} — ${contractDisplay}`;
     }
 
+    if (event.type === "budget_exhausted") {
+        return `${icon} Budget Exhausted — ${contractDisplay}`;
+    }
+
     const level = event.severity === "critical" ? "CRITICAL" : "Warning";
     return `${icon} TTL ${level} — ${contractDisplay}`;
 }
@@ -106,6 +110,21 @@ function buildAdaptiveCard(event: AlertEvent): AdaptiveCardPayload {
             {
                 title: "New Value",
                 value: event.diff.newValueXdr ?? "(none)",
+            },
+        );
+    } else if (event.type === "budget_exhausted") {
+        facts.push(
+            {
+                title: "Billing Cycle",
+                value: event.budget.billingCycle,
+            },
+            {
+                title: "Budget",
+                value: `${event.budget.spentXlm.toFixed(7)} / ${event.budget.limitXlm.toFixed(7)} XLM spent`,
+            },
+            {
+                title: "Blocked Extension Cost",
+                value: `${event.budget.estimatedFeeXlm.toFixed(7)} XLM`,
             },
         );
     } else {

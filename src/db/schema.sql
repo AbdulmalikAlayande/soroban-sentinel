@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS alert_configs (
     quiet_hours_start    TEXT,
     quiet_hours_end      TEXT,
     quiet_hours_timezone TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -73,6 +74,9 @@ CREATE TABLE IF NOT EXISTS alerts_fired (
 
 CREATE INDEX IF NOT EXISTS idx_alerts_fired_undelivered
     ON alerts_fired(delivered, retry_count);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_fired_resolved_fired_at
+    ON alerts_fired(resolved, fired_at DESC);
 
 CREATE TABLE IF NOT EXISTS channel_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -229,3 +233,55 @@ CREATE INDEX IF NOT EXISTS idx_resource_usage_logs_contract_id
 CREATE INDEX IF NOT EXISTS idx_resource_usage_logs_recorded_at
     ON resource_usage_logs(recorded_at DESC);
 
+
+-- digest_configs: one row per "daily/periodic fleet health digest" delivery endpoint.
+-- Deliberately separate from alert_configs because a digest has no threshold_ledgers,
+-- no alert_config_id FK, and carries an interval_ms instead — semantically it is a
+-- different concept from per-entry threshold alerts (issue #399).
+CREATE TABLE IF NOT EXISTS digest_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    network TEXT NOT NULL DEFAULT 'testnet',
+    -- channel_type is validated at the application layer against the alert channel
+    -- registry (same approach as alert_configs / resource_alert_configs).
+    channel_type TEXT NOT NULL CHECK(channel_type <> ''),
+    channel_target TEXT NOT NULL,
+    -- How often (in milliseconds) the digest should be delivered.
+    interval_ms INTEGER NOT NULL DEFAULT 86400000,
+    webhook_secret TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Fleet query performance indexes (matching migration 007, issue #406)
+CREATE INDEX IF NOT EXISTS idx_contracts_network_active
+    ON contracts(network, active);
+
+CREATE INDEX IF NOT EXISTS idx_extension_history_executed_at
+    ON extension_history(executed_at);
+
+-- shared_budget_pools: an alternative to per-contract contract_budgets where
+-- several contracts draw from one combined monthly cap. A contract assigned
+-- to a pool (via shared_budget_pool_contracts) is enforced against the pool
+-- instead of its individual budget — see runAutoExtensions in
+-- core/extension.ts (issue #407).
+CREATE TABLE IF NOT EXISTS shared_budget_pools (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    monthly_limit_xlm REAL NOT NULL CHECK(monthly_limit_xlm >= 0),
+    billing_cycle TEXT NOT NULL,
+    spent_xlm REAL NOT NULL DEFAULT 0 CHECK(spent_xlm >= 0),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- A contract may belong to at most one pool (contract_id is UNIQUE); pool
+-- membership takes precedence over the contract's individual budget.
+CREATE TABLE IF NOT EXISTS shared_budget_pool_contracts (
+    pool_id INTEGER NOT NULL REFERENCES shared_budget_pools(id) ON DELETE CASCADE,
+    contract_id TEXT NOT NULL UNIQUE REFERENCES contracts(id) ON DELETE CASCADE,
+    assigned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(pool_id, contract_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_shared_budget_pool_contracts_pool_id
+    ON shared_budget_pool_contracts(pool_id);

@@ -54,6 +54,76 @@ describe("Database Repositories", () => {
         });
     });
 
+    describe("Contract Tags", () => {
+        it("adds a tag to a contract with no existing tags", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            const tags = repo.addContractTag(db, "C1", "defi");
+            expect(tags).toEqual(["defi"]);
+            expect(repo.getContract(db, "C1")?.tags).toBe("defi");
+        });
+
+        it("appends a new tag to existing tags using the comma-separated format", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "nft" });
+            const tags = repo.addContractTag(db, "C1", "defi");
+            expect(tags).toEqual(["nft", "defi"]);
+            expect(repo.getContract(db, "C1")?.tags).toBe("nft,defi");
+        });
+
+        it("adding a tag that already exists is a no-op, not a duplicate", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "defi" });
+            const tags = repo.addContractTag(db, "C1", "defi");
+            expect(tags).toEqual(["defi"]);
+            expect(repo.getContract(db, "C1")?.tags).toBe("defi");
+        });
+
+        it("trims surrounding whitespace when adding a tag", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet" });
+            const tags = repo.addContractTag(db, "C1", "  defi  ");
+            expect(tags).toEqual(["defi"]);
+            expect(repo.getContract(db, "C1")?.tags).toBe("defi");
+        });
+
+        it("produces a clear error when adding a tag to an unregistered contract", () => {
+            expect(() => repo.addContractTag(db, "MISSING", "defi")).toThrow(/not registered/i);
+        });
+
+        it("removes an existing tag", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "defi,nft" });
+            const tags = repo.removeContractTag(db, "C1", "defi");
+            expect(tags).toEqual(["nft"]);
+            expect(repo.getContract(db, "C1")?.tags).toBe("nft");
+        });
+
+        it("removing a tag that is not present does not error and leaves tags unchanged", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "nft" });
+            const tags = repo.removeContractTag(db, "C1", "defi");
+            expect(tags).toEqual(["nft"]);
+            expect(repo.getContract(db, "C1")?.tags).toBe("nft");
+        });
+
+        it("removing the last tag resets the tags column to null", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "defi" });
+            const tags = repo.removeContractTag(db, "C1", "defi");
+            expect(tags).toEqual([]);
+            expect(repo.getContract(db, "C1")?.tags).toBeNull();
+        });
+
+        it("produces a clear error when removing a tag from an unregistered contract", () => {
+            expect(() => repo.removeContractTag(db, "MISSING", "defi")).toThrow(/not registered/i);
+        });
+
+        it("keeps tags interoperable with the exact-match --tag filter format", () => {
+            repo.insertContract(db, { id: "C1", network: "testnet", tags: "defi" });
+            repo.addContractTag(db, "C1", "nft");
+
+            // Stored format must be a trimmed, comma-separated string so an
+            // exact-match tag filter finds it.
+            expect(repo.getContract(db, "C1")?.tags).toBe("defi,nft");
+            repo.removeContractTag(db, "C1", "defi");
+            expect(repo.getContract(db, "C1")?.tags).toBe("nft");
+        });
+    });
+
     describe("ContractEntry CRUD", () => {
         it("upserts and gets entries", () => {
             repo.insertContract(db, { id: "C1", network: "testnet" });
@@ -236,6 +306,58 @@ describe("Database Repositories", () => {
             repo.markAlertDelivered(db, undelivered[0].alertFiredId);
             undelivered = repo.getUndeliveredAlerts(db, "testnet");
             expect(undelivered.length).toBe(0);
+        });
+
+        it("computes channel delivery stats correctly", () => {
+            repo.insertContract(db, { id: "C2", network: "testnet" });
+            repo.upsertEntry(db, { contract_id: "C2", entry_key_xdr: "xdr2", entry_type: "wasm" });
+            const entryId = repo.getEntriesForContract(db, "C2")[0].id;
+
+            // Multiple configs for same channel type
+            repo.insertAlertConfig(db, { contract_id: "C2", channel_type: "slack", channel_target: "C_A", threshold_ledgers: 100 });
+            repo.insertAlertConfig(db, { contract_id: "C2", channel_type: "slack", channel_target: "C_B", threshold_ledgers: 100 });
+            
+            const configs = repo.getAlertConfigsForContract(db, "C2");
+            const configIdA = configs[0].id;
+            const configIdB = configs[1].id;
+
+            // We need 10 attempts total: 8 delivered, 2 abandoned (retry_count >= 5)
+            // 5 delivered for config A
+            for (let i = 0; i < 5; i++) {
+                repo.recordAlertFired(db, { alert_config_id: configIdA, contract_entry_id: entryId, fired_at_ledger: 1000, ttl_at_fire: 100 });
+            }
+            // 3 delivered for config B
+            for (let i = 0; i < 3; i++) {
+                repo.recordAlertFired(db, { alert_config_id: configIdB, contract_entry_id: entryId, fired_at_ledger: 1000, ttl_at_fire: 100 });
+            }
+            
+            // Mark the first 8 as delivered
+            const history = repo.getAlertHistory(db, "C2");
+            for (let i = 0; i < 8; i++) {
+                repo.markAlertDelivered(db, history[i].alertFiredId);
+            }
+
+            // 2 abandoned for config A
+            for (let i = 0; i < 2; i++) {
+                repo.recordAlertFired(db, { alert_config_id: configIdA, contract_entry_id: entryId, fired_at_ledger: 1000, ttl_at_fire: 100 });
+            }
+
+            // Increment retry_count to 5 for the abandoned ones
+            const historyAfterAbandoned = repo.getAlertHistory(db, "C2");
+            const undelivered = historyAfterAbandoned.filter(a => a.delivered === 0);
+            for (const alert of undelivered) {
+                for (let r = 0; r < 5; r++) {
+                    repo.incrementRetryCount(db, alert.alertFiredId);
+                }
+            }
+
+            const stats = repo.getChannelDeliveryStats(db, "slack");
+            expect(stats).toBeDefined();
+            expect(stats.totalAttempts).toBe(10);
+            expect(stats.deliveredCount).toBe(8);
+            expect(stats.abandonedCount).toBe(2);
+            expect(stats.failedCount).toBe(0);
+            expect(stats.successRate).toBe(80);
         });
     });
 
@@ -634,6 +756,193 @@ describe("Database Repositories", () => {
 
             repo.deleteResourceAlertConfig(db, conf!.id);
             expect(repo.getResourceAlertConfigsForContract(db, "C1").length).toBe(0);
+        });
+    });
+
+    describe("getFleetCostRollup", () => {
+        /**
+         * Helper: seed a contract with one instance entry and one extension
+         * recorded N days ago (so aggregateDailyCostSnapshots will pick it up).
+         */
+        function seedContractWithExtension(
+            database: typeof db,
+            contractId: string,
+            name: string,
+            tags: string | null,
+            costXlm: number,
+            daysAgo: number,
+        ) {
+            repo.insertContract(database, { id: contractId, name, network: "testnet", tags: tags ?? undefined });
+            repo.upsertEntry(database, {
+                contract_id: contractId,
+                entry_key_xdr: `xdr-${contractId}`,
+                entry_type: "instance",
+                label: "instance",
+                live_until_ledger: 500000,
+                last_modified_ledger: 400000,
+            });
+            const entryRow = database
+                .prepare("SELECT id FROM contract_entries WHERE contract_id = ? LIMIT 1")
+                .get(contractId) as { id: number };
+
+            database.prepare(`
+                INSERT INTO extension_history
+                    (contract_id, contract_entry_id, old_ttl_ledgers, new_ttl_ledgers,
+                     tx_hash, cost_xlm, cpu_insns, mem_bytes, is_anomaly,
+                     executed_at_ledger, executed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?))
+            `).run(
+                contractId,
+                entryRow.id,
+                10000,
+                20000,
+                `tx-${contractId}-${daysAgo}`,
+                costXlm,
+                0,
+                1024,
+                0,
+                400001,
+                `-${daysAgo} days`,
+            );
+        }
+
+        it("returns zero totals when no snapshots exist", () => {
+            const rollup = repo.getFleetCostRollup(db);
+            expect(rollup.total_extensions).toBe(0);
+            expect(rollup.total_cost_xlm).toBe(0);
+            expect(rollup.contract_count).toBe(0);
+            expect(rollup.byType.instance.cost_xlm).toBe(0);
+            expect(rollup.byType.wasm.cost_xlm).toBe(0);
+            expect(rollup.byType.persistent.cost_xlm).toBe(0);
+            expect(rollup.byType.temporary.cost_xlm).toBe(0);
+        });
+
+        it("fleet total equals sum of individual contract costs (AC1)", () => {
+            seedContractWithExtension(db, "CA", "Contract A", null, 1.5, 1);
+            seedContractWithExtension(db, "CB", "Contract B", null, 2.5, 1);
+
+            repo.aggregateDailyCostSnapshots(db);
+
+            const summaryA = repo.getContractCostSummary(db, "CA");
+            const summaryB = repo.getContractCostSummary(db, "CB");
+            const expectedTotal = summaryA.total_cost_xlm + summaryB.total_cost_xlm;
+
+            const rollup = repo.getFleetCostRollup(db);
+
+            expect(rollup.total_cost_xlm).toBeCloseTo(expectedTotal, 7);
+            expect(rollup.contract_count).toBe(2);
+        });
+
+        it("includes today's live extensions in fleet totals", () => {
+            repo.insertContract(db, { id: "CT", name: "Today Contract", network: "testnet" });
+            repo.upsertEntry(db, {
+                contract_id: "CT",
+                entry_key_xdr: "xdr-CT",
+                entry_type: "instance",
+                label: "instance",
+                live_until_ledger: 500000,
+                last_modified_ledger: 400000,
+            });
+            const entryRow = db
+                .prepare("SELECT id FROM contract_entries WHERE contract_id = ? LIMIT 1")
+                .get("CT") as { id: number };
+
+            db.prepare(`
+                INSERT INTO extension_history
+                    (contract_id, contract_entry_id, old_ttl_ledgers, new_ttl_ledgers,
+                     tx_hash, cost_xlm, cpu_insns, mem_bytes, is_anomaly,
+                     executed_at_ledger, executed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            `).run("CT", entryRow.id, 10000, 20000, "tx-today", 3.0, 0, 1024, 0, 400001);
+
+            const rollup = repo.getFleetCostRollup(db);
+
+            expect(rollup.total_cost_xlm).toBeCloseTo(3.0, 7);
+            expect(rollup.total_extensions).toBe(1);
+        });
+
+        it("filters by tag — excludes contracts outside the tag set (AC2)", () => {
+            seedContractWithExtension(db, "CA", "Contract A", "defi", 1.0, 1);
+            seedContractWithExtension(db, "CB", "Contract B", "defi", 2.0, 1);
+            seedContractWithExtension(db, "CC", "Contract C", "infra", 5.0, 1);
+
+            repo.aggregateDailyCostSnapshots(db);
+
+            const rollup = repo.getFleetCostRollup(db, { tag: "defi" });
+
+            expect(rollup.total_cost_xlm).toBeCloseTo(3.0, 7);
+            expect(rollup.contract_count).toBe(2);
+        });
+
+        it("tag filter with a comma-separated tags field matches correctly", () => {
+            seedContractWithExtension(db, "CM", "Multi-tag", "defi,bridge", 4.0, 1);
+            seedContractWithExtension(db, "CO", "Other", "infra", 1.0, 1);
+
+            repo.aggregateDailyCostSnapshots(db);
+
+            const rollup = repo.getFleetCostRollup(db, { tag: "defi" });
+
+            expect(rollup.total_cost_xlm).toBeCloseTo(4.0, 7);
+            expect(rollup.contract_count).toBe(1);
+        });
+
+        it("returns zero when tag filter matches no contracts", () => {
+            seedContractWithExtension(db, "CA", "Contract A", "defi", 1.0, 1);
+            repo.aggregateDailyCostSnapshots(db);
+
+            const rollup = repo.getFleetCostRollup(db, { tag: "nonexistent-tag" });
+
+            expect(rollup.total_cost_xlm).toBe(0);
+            expect(rollup.contract_count).toBe(0);
+        });
+
+        it("respects the days filter to limit the rollup period", () => {
+            seedContractWithExtension(db, "CA", "Contract A", null, 1.0, 3);
+            seedContractWithExtension(db, "CB", "Contract B", null, 10.0, 20);
+
+            repo.aggregateDailyCostSnapshots(db);
+
+            const rollup7 = repo.getFleetCostRollup(db, { days: 7 });
+            expect(rollup7.total_cost_xlm).toBeCloseTo(1.0, 7);
+
+            const rollupAll = repo.getFleetCostRollup(db);
+            // aggregateDailyCostSnapshots only captures the last 7 days, so
+            // the 20-day-old extension is outside the snapshot window — only CA
+            expect(rollupAll.total_cost_xlm).toBeCloseTo(1.0, 7);
+        });
+
+        it("includes per-entry-type breakdown at fleet level", () => {
+            repo.insertContract(db, { id: "CW", name: "Wasm Contract", network: "testnet" });
+            repo.upsertEntry(db, {
+                contract_id: "CW",
+                entry_key_xdr: "xdr-wasm-CW",
+                entry_type: "wasm",
+                label: "wasm",
+                live_until_ledger: 500000,
+                last_modified_ledger: 400000,
+            });
+            const wasmEntry = db
+                .prepare("SELECT id FROM contract_entries WHERE contract_id = ? LIMIT 1")
+                .get("CW") as { id: number };
+
+            db.prepare(`
+                INSERT INTO extension_history
+                    (contract_id, contract_entry_id, old_ttl_ledgers, new_ttl_ledgers,
+                     tx_hash, cost_xlm, cpu_insns, mem_bytes, is_anomaly,
+                     executed_at_ledger, executed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-1 day'))
+            `).run("CW", wasmEntry.id, 10000, 20000, "tx-wasm", 3.0, 0, 1024, 0, 400001);
+
+            seedContractWithExtension(db, "CI", "Instance Contract", null, 2.0, 1);
+
+            repo.aggregateDailyCostSnapshots(db);
+
+            const rollup = repo.getFleetCostRollup(db);
+
+            expect(rollup.byType.wasm.cost_xlm).toBeCloseTo(3.0, 7);
+            expect(rollup.byType.instance.cost_xlm).toBeCloseTo(2.0, 7);
+            expect(rollup.byType.persistent.cost_xlm).toBe(0);
+            expect(rollup.byType.temporary.cost_xlm).toBe(0);
         });
     });
 });

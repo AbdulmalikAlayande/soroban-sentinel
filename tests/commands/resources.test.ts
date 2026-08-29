@@ -132,7 +132,7 @@ describe("resources command", () => {
         registerResourcesCommand(program);
 
         expect(() => {
-            program.parse(["node", "sorokeep", "resources", "CUNKNOWNCONTRACTID"]);
+            program.parse(["node", "sorokeep", "resources", "CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ"]);
         }).toThrow("process.exit called");
 
         expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("not found. Run 'sorokeep watch' first."));

@@ -254,10 +254,24 @@ describe("sendWebhookAlert", () => {
                 "firedAtLedger",
                 "network",
                 "severity",
+                "stellarExpertUrl",
                 "threshold",
                 "timestamp",
                 "type",
             ]);
+        });
+
+        it("body includes a Stellar.expert contract link", async () => {
+            mockFetch.mockResolvedValue(makeOkResponse());
+            const event = makeAlertEvent({ contractId: "CDEF1234ABCD5678", network: "testnet" });
+
+            await sendWebhookAlert("https://example.com/hook", event);
+
+            const [, options] = mockFetch.mock.calls[0]!;
+            const body = JSON.parse(options.body as string);
+            expect(body.stellarExpertUrl).toBe(
+                "https://testnet.stellar.expert/explorer/testnet/contract/CDEF1234ABCD5678",
+            );
         });
     });
 

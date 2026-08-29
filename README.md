@@ -1,6 +1,8 @@
 <p align="center">
   <h1 align="center">Sorokeep</h1>
   <p align="center">
+    <a href="README.es.md">Español</a>
+    &middot;
     <a href="README.pt.md">Português (Brasil)</a>
   </p>
   <p align="center">
@@ -18,14 +20,16 @@
     <a href="#alerting">Alerting</a>
     &middot;
     <a href="#contributing">Contributing</a>
+    &middot;
+    <a href="CHANGELOG.md">Changelog</a>
   </p>
 </p>
 
 <br />
 
-## Why This Exists
+## Why Sorokeep Exists
 
-*(Unfamiliar with Soroban/Stellar terminology like TTL, footprint, or ledger entry? Check out the [Glossary](docs/glossary.md).)*
+_(Unfamiliar with Soroban/Stellar terminology like TTL, footprint, or ledger entry? Check out the [Glossary](docs/glossary.md).)_
 
 Soroban's storage model is uncommon among major smart contract platforms: **state expires.** Every ledger entry — contract instances, persistent storage, WASM code — has a Time-To-Live (TTL). When it runs out, the entry is archived. If a contract's instance entry expires, the entire contract stops working. If persistent storage entries expire, user data becomes inaccessible until someone pays to restore it.
 
@@ -84,6 +88,11 @@ npm install -g sorokeep
 
 ## Quick Start
 
+> **See it in action:** `scripts/demo.sh` runs the full Quick Start flow automatically. Record it with [asciinema](https://asciinema.org/) (`asciinema rec -c "bash scripts/demo.sh"`) and convert to an embeddable SVG with [svg-term-cli](https://github.com/marionebl/svg-term-cli) (`svg-term --in demo.cast --out docs/demo.svg --window`).
+>
+> Once a recording is captured, the SVG can be embedded here with:
+> `![Sorokeep demo](docs/demo.svg)`
+
 ```bash
 # 1. Register a contract for monitoring
 sorokeep watch CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
@@ -108,6 +117,18 @@ The daemon will check TTLs every 5 minutes, fire alerts when thresholds are cros
 
 ## Commands
 
+### Global Options
+
+The following options can be used with any command:
+
+| Option | Description |
+|--------|-------------|
+| `-y, --yes` | Skip all confirmation prompts on destructive commands (e.g., `unwatch`). Use in scripts and CI pipelines to run non-interactively. |
+| `-h, --help` | Show help for any command or subcommand. |
+| `-V, --version` | Print the Sorokeep version. |
+
+> **Note:** `--yes` bypasses interactive confirmation prompts only. For the `check` command, use `--force` (see below) to bypass CI exit-code failures instead.
+
 ### `sorokeep watch <contract-id>`
 
 Register a contract for monitoring. Connects to the Stellar RPC, discovers the contract's instance and WASM code entries, reads their TTLs, and stores everything locally.
@@ -116,12 +137,12 @@ Register a contract for monitoring. Connects to the Stellar RPC, discovers the c
 sorokeep watch <contract-id> [options]
 ```
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `-n, --name <name>` | Human-readable contract name | — |
-| `--network <network>` | `testnet` or `mainnet` | `testnet` |
-| `-r, --rpc-url <url>` | Custom Stellar RPC endpoint | Network default |
-| `--storage-keys <keys>` | Comma-separated base64 XDR storage keys to track | — |
+| Option                  | Description                                      | Default         |
+| ----------------------- | ------------------------------------------------ | --------------- |
+| `-n, --name <name>`     | Human-readable contract name                     | —               |
+| `--network <network>`   | `testnet` or `mainnet`                           | `testnet`       |
+| `-r, --rpc-url <url>`   | Custom Stellar RPC endpoint                      | Network default |
+| `--storage-keys <keys>` | Comma-separated base64 XDR storage keys to track | —               |
 
 **Example output:**
 
@@ -167,11 +188,11 @@ Start the long-running monitoring process.
 sorokeep daemon [options]
 ```
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--network <network>` | Network to monitor | `testnet` |
-| `--interval <ms>` | Polling interval in milliseconds (min: 10,000) | `300000` (5 min) |
-| `-r, --rpc-url <url>` | Custom RPC endpoint | Network default |
+| Option                | Description                                    | Default          |
+| --------------------- | ---------------------------------------------- | ---------------- |
+| `--network <network>` | Network to monitor                             | `testnet`        |
+| `--interval <ms>`     | Polling interval in milliseconds (min: 10,000) | `300000` (5 min) |
+| `-r, --rpc-url <url>` | Custom RPC endpoint                            | Network default  |
 
 Each cycle performs three phases:
 
@@ -193,14 +214,14 @@ Manage alert configurations. Supports five subcommands.
 sorokeep alerts add [options]
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--contract <id>` | Contract ID to alert on (required) |
-| `--type <type>` | `webhook` or `slack` (required) |
-| `--url <url>` | Webhook POST URL (required for webhook) |
-| `--channel <channel>` | Slack channel name or ID (required for slack) |
-| `--threshold <ledgers>` | Fire when remaining TTL drops below this (required) |
-| `--secret <secret>` | HMAC signing secret for webhooks (auto-generated if omitted) |
+| Option                  | Description                                                  |
+| ----------------------- | ------------------------------------------------------------ |
+| `--contract <id>`       | Contract ID to alert on (required)                           |
+| `--type <type>`         | `webhook` or `slack` (required)                              |
+| `--url <url>`           | Webhook POST URL (required for webhook)                      |
+| `--channel <channel>`   | Slack channel name or ID (required for slack)                |
+| `--threshold <ledgers>` | Fire when remaining TTL drops below this (required)          |
+| `--secret <secret>`     | HMAC signing secret for webhooks (auto-generated if omitted) |
 
 For webhook alerts, an HMAC signing secret is auto-generated (32-byte hex) if you don't provide one. The secret is displayed once at creation time — save it to verify webhook signatures on your server. See [Webhook Signing](#webhook-signing) for details.
 
@@ -242,15 +263,15 @@ Configure auto-extension policies. When enabled, the daemon automatically extend
 sorokeep guard <contract-id> [options]
 ```
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--target-ttl <ledgers>` | TTL to extend entries to | `100000` |
-| `--threshold <ledgers>` | Extend when TTL drops below this | `20000` |
-| `--keypair <secret>` | Stellar secret key (for one-time extension) | — |
-| `--keypair-env <var>` | Env var name containing the secret key | — |
-| `--auto-extend` | Enable daemon auto-extension (requires `--keypair-env`) | — |
-| `--dry-run` | Simulate extension and show estimated fee | — |
-| `--disable` | Disable auto-extension for this contract | — |
+| Option                   | Description                                             | Default  |
+| ------------------------ | ------------------------------------------------------- | -------- |
+| `--target-ttl <ledgers>` | TTL to extend entries to                                | `100000` |
+| `--threshold <ledgers>`  | Extend when TTL drops below this                        | `20000`  |
+| `--keypair <secret>`     | Stellar secret key (for one-time extension)             | —        |
+| `--keypair-env <var>`    | Env var name containing the secret key                  | —        |
+| `--auto-extend`          | Enable daemon auto-extension (requires `--keypair-env`) | —        |
+| `--dry-run`              | Simulate extension and show estimated fee               | —        |
+| `--disable`              | Disable auto-extension for this contract                | —        |
 
 **Usage modes:**
 
@@ -283,10 +304,10 @@ View extension history and rent spending for a contract.
 sorokeep costs <contract-id> [options]
 ```
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--period <days>` | Show costs for the last N days | `30` |
-| `--all` | Show all history | — |
+| Option            | Description                    | Default |
+| ----------------- | ------------------------------ | ------- |
+| `--period <days>` | Show costs for the last N days | `30`    |
+| `--all`           | Show all history               | —       |
 
 **Output includes:**
 
@@ -305,12 +326,12 @@ Recover archived ledger entries via `RestoreFootprintOp` transactions.
 sorokeep restore <contract-id> [options]
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--keypair <secret>` | Stellar secret key |
-| `--keypair-env <var>` | Env var containing secret key |
-| `--entry <keyXdr>` | Specific entry key XDR to restore (repeatable) |
-| `--all` | Restore all tracked entries for the contract |
+| Option                | Description                                    |
+| --------------------- | ---------------------------------------------- |
+| `--keypair <secret>`  | Stellar secret key                             |
+| `--keypair-env <var>` | Env var containing secret key                  |
+| `--entry <keyXdr>`    | Specific entry key XDR to restore (repeatable) |
+| `--all`               | Restore all tracked entries for the contract   |
 
 One of `--keypair` or `--keypair-env` is required. One of `--entry` or `--all` is required (mutually exclusive).
 
@@ -352,6 +373,17 @@ Inspect on-chain state directly. Can parse Stellar Asset Contract (SAC) token ba
 
 Perform an ad-hoc, one-off execution of the monitoring cycle without starting the long-running daemon.
 
+```bash
+sorokeep check <contract-id> [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--fail-under <ledgers>` | Exit with code 1 if any entry TTL is below this many ledgers (required) |
+| `--force` | Bypass CI TTL failures and exit 0 even when entries are below the threshold. Use in CI pipelines where you want to report TTL health without failing the build. |
+
+> **Note:** `--force` on `check` is different from the global `--yes` flag. `--force` overrides the exit code for CI/CD workflows; `--yes` skips interactive confirmation prompts on destructive commands.
+
 ---
 
 ### `sorokeep db`
@@ -362,11 +394,80 @@ Database management tasks, including migrations, backups, and introspection cach
 
 ### `sorokeep completion`
 
-Generate shell autocomplete scripts for bash/zsh to enable tab completion for all Sorokeep commands.
+Generate shell autocomplete scripts for bash/zsh/fish/powershell to enable tab completion for all Sorokeep commands.
+
+**Bash:**
+
+```bash
+sorokeep completion --script bash > /etc/bash_completion.d/sorokeep
+# Or source it in your .bashrc:
+# source <(sorokeep completion --script bash)
+```
+
+**Zsh:**
+
+```zsh
+sorokeep completion --script zsh > /usr/local/share/zsh/site-functions/_sorokeep
+# Or source it in your .zshrc:
+# source <(sorokeep completion --script zsh)
+```
+
+**Fish:**
+
+```fish
+sorokeep completion --script fish > ~/.config/fish/completions/sorokeep.fish
+```
+
+**PowerShell:**
+
+```powershell
+# Install for the current user (adds to $PROFILE)
+sorokeep completion --script powershell | Out-File -FilePath (Join-Path $PROFILE "..\sorokeep_completion.ps1") -Encoding utf8
+# Then add to your $PROFILE:
+# . (Join-Path $PROFILE "..\sorokeep_completion.ps1")
+#
+# Or install directly into your $PROFILE:
+# sorokeep completion --script powershell >> $PROFILE
+```
+
+---
+
+### `sorokeep contracts`
+
+List all watched contracts at a glance — an index view when you're managing more than a few contracts.
+
+```bash
+sorokeep contracts [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--network <network>` | Filter by `testnet` or `mainnet` |
+| `--json` | Output machine-readable JSON |
+
+Displays a table with contract ID (truncated), name, network, entry count, worst-case remaining TTL, and status (OK / Warning / Critical / Expired). Reads from the local database only — instant, no RPC calls.
 
 ## Alerting
 
-Sorokeep delivers alerts through multiple channels: **webhooks**, **Slack**, **Discord**, **Telegram**, and **PagerDuty**. Each alert includes a severity level and rich context about the affected entry. Sorokeep uses a robust, decoupled detection and dispatch architecture with a database-backed queue.
+Sorokeep delivers alerts through multiple channels: **webhooks**, **Slack**, **Discord**, **Telegram**, **PagerDuty**, **Opsgenie**, **Microsoft Teams**, **Matrix**, **email**, **Google Chat**, and a second configurable **Webhook v2** channel. Each alert includes a severity level and rich context about the affected entry. Sorokeep uses a robust, decoupled detection and dispatch architecture with a database-backed queue.
+
+### Supported Channels Comparison
+
+| Channel             | Auth Method                                                   | Typical Rate Limit                      | Payload Format                 | Setup Complexity |
+| ------------------- | ------------------------------------------------------------- | --------------------------------------- | ------------------------------ | ---------------- |
+| **Webhook**         | HMAC-SHA256 (`X-Sorokeep-Signature`) / Secret                 | Unlimited (target dependent)            | Generic JSON                   | Low              |
+| **Webhook v2**      | HMAC-SHA256 (`X-Sorokeep-Signature`) / Secret, custom headers | Unlimited (target dependent)            | Generic JSON                   | Low              |
+| **Slack**           | Bot OAuth Token (`xoxb-...`) / Webhook URL                    | 1 req/sec                               | Slack Block Kit JSON           | Low              |
+| **PagerDuty**       | Events API v2 Routing Key                                     | 120 req/min                             | PagerDuty Event v2 JSON        | Low              |
+| **Opsgenie**        | API Key                                                       | Plan-dependent                          | Opsgenie Alert API JSON        | Low              |
+| **Discord**         | Webhook URL                                                   | 30 req/min per webhook                  | Discord Embed JSON             | Low              |
+| **Telegram**        | Bot Token (`SOROKEEP_TELEGRAM_BOT_TOKEN`)                     | 30 msg/sec overall (1 msg/sec per chat) | HTML / Markdown Formatted Text | Medium           |
+| **Microsoft Teams** | Webhook URL (tenant-scoped)                                   | Connector-dependent                     | Teams MessageCard JSON         | Low              |
+| **Matrix**          | Room ID                                                       | Homeserver-dependent                    | Matrix `m.room.message` event  | Medium           |
+| **Email**           | SMTP credentials (host/port/user/pass)                        | SMTP-provider dependent                 | Plain text + HTML              | Medium           |
+| **Google Chat**     | Webhook URL                                                   | Space-dependent                         | Google Chat card JSON          | Low              |
+
+> Need a channel not listed here? See [Adding an Alert Channel](docs/adding-an-alert-channel.md) to implement a custom channel plugin.
 
 ### Alert Lifecycle
 
@@ -378,11 +479,11 @@ Sorokeep delivers alerts through multiple channels: **webhooks**, **Slack**, **D
 
 Severity is computed automatically based on how much TTL remains relative to the configured threshold:
 
-| Severity | Condition | Description |
-|----------|-----------|-------------|
-| **critical** | Remaining TTL < 25% of threshold, or TTL = 0 | Entry is in immediate danger of archival |
-| **warning** | Remaining TTL is below threshold but above 25% | Entry needs attention soon |
-| **info** | Alert resolved (TTL recovered) | Entry is healthy again |
+| Severity     | Condition                                      | Description                              |
+| ------------ | ---------------------------------------------- | ---------------------------------------- |
+| **critical** | Remaining TTL < 25% of threshold, or TTL = 0   | Entry is in immediate danger of archival |
+| **warning**  | Remaining TTL is below threshold but above 25% | Entry needs attention soon               |
+| **info**     | Alert resolved (TTL recovered)                 | Entry is healthy again                   |
 
 ### Webhook Delivery
 
@@ -390,23 +491,23 @@ Webhook alerts are delivered as HTTP POST requests with a JSON body:
 
 ```json
 {
-  "type": "threshold_crossed",
-  "severity": "warning",
-  "contractId": "CDLZFC3S...",
-  "contractName": "XLM Native Token",
-  "network": "testnet",
-  "entry": {
-    "keyXdr": "AAAA1234...",
-    "type": "instance",
-    "label": "Contract Instance"
-  },
-  "threshold": {
-    "configuredLedgers": 20000,
-    "currentRemainingLedgers": 8500,
-    "approximateTimeRemaining": "~13h 0m"
-  },
-  "firedAtLedger": 2500000,
-  "timestamp": "2026-06-13T12:00:00.000Z"
+	"type": "threshold_crossed",
+	"severity": "warning",
+	"contractId": "CDLZFC3S...",
+	"contractName": "XLM Native Token",
+	"network": "testnet",
+	"entry": {
+		"keyXdr": "AAAA1234...",
+		"type": "instance",
+		"label": "Contract Instance"
+	},
+	"threshold": {
+		"configuredLedgers": 20000,
+		"currentRemainingLedgers": 8500,
+		"approximateTimeRemaining": "~13h 0m"
+	},
+	"firedAtLedger": 2500000,
+	"timestamp": "2026-06-13T12:00:00.000Z"
 }
 ```
 
@@ -424,10 +525,9 @@ To verify on your server:
 import { createHmac } from "node:crypto";
 
 function verifySignature(payload, signature, secret) {
-  const expected = "sha256=" + createHmac("sha256", secret)
-    .update(payload)
-    .digest("hex");
-  return signature === expected;
+	const expected =
+		"sha256=" + createHmac("sha256", secret).update(payload).digest("hex");
+	return signature === expected;
 }
 ```
 
@@ -463,45 +563,40 @@ Failed alert deliveries are automatically retried on subsequent daemon cycles. A
 
 Sorokeep is an off-chain monitoring tool. It reads data from the Stellar RPC, stores it locally in SQLite, and acts on it (alerts, auto-extension, restoration). It does not run on-chain and does not require you to modify your contracts.
 
-```
-                         ┌─────────────────────┐
-                         │   Stellar Network    │
-                         │  (testnet / mainnet) │
-                         └──────────┬───────────┘
-                                    │ RPC
-                         ┌──────────▼───────────┐
-                         │   Sorokeep    │
-                         │                       │
-                         │  ┌─────────────────┐  │
-                         │  │  Monitor Cycle   │  │
-                         │  │  (fetch TTLs,    │  │
-                         │  │   detect alerts, │  │
-                         │  │   resolve)       │  │
-                         │  └────────┬────────┘  │
-                         │           │            │
-                         │  ┌────────▼────────┐  │
-                         │  │   Dispatcher     │  │
-                         │  │  (webhook/slack) │  │
-                         │  └────────┬────────┘  │
-                         │           │            │
-                         │  ┌────────▼────────┐  │
-                         │  │  Auto-Extend     │  │
-                         │  │  (guard policy)  │  │
-                         │  └─────────────────┘  │
-                         │                       │
-                         │  ┌─────────────────┐  │
-                         │  │   SQLite DB      │  │
-                         │  │  ~/.soroban-     │  │
-                         │  │   sorokeep/     │  │
-                         │  │   sorokeep.db    │  │
-                         │  └─────────────────┘  │
-                         └───────────────────────┘
-                                    │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-              ┌──────────┐  ┌────────────┐  ┌────────────┐
-              │ Webhooks │  │   Slack    │  │  Terminal  │
-              └──────────┘  └────────────┘  └────────────┘
+```mermaid
+sequenceDiagram
+    participant loop as src/daemon/loop.ts
+    participant monitor as src/core/monitor.ts
+    participant extension as src/core/extension.ts
+    participant dispatcher as src/alerts/dispatcher.ts
+    participant db as src/db/repositories.ts
+
+    Note over loop: setInterval tick triggers executeCycle()
+    
+    loop->>monitor: runMonitorCycle(db, network)
+    activate monitor
+    Note over monitor: 1. Batch-fetch TTLs via RPC<br/>2. Upsert fresh TTLs<br/>3. Detect threshold crossings & record AlertFired<br/>4. Resolve recovered alerts
+    
+    monitor->>extension: runAutoExtensions(db, network)
+    activate extension
+    Note over extension: Read extension_policies<br/>Simulate & submit ExtendFootprintTTLOp<br/>Record extension_history (cost, tx hash)
+    extension-->>monitor: (extension results)
+    deactivate extension
+    
+    monitor-->>loop: MonitorCycleResult
+    deactivate monitor
+
+    loop->>dispatcher: deliverPendingAlerts(db, network)
+    activate dispatcher
+    Note over dispatcher: Reads undelivered alerts from DB<br/>Routes to webhook/slack/etc.<br/>Increments retries on failure
+    dispatcher-->>loop: (delivery results)
+    deactivate dispatcher
+
+    loop->>db: aggregateDailyCostSnapshots(db)
+    activate db
+    Note over db: Rolls extension_history into daily snapshots
+    db-->>loop: (void)
+    deactivate db
 ```
 
 ### The Daemon Cycle
@@ -522,14 +617,14 @@ All state is local. Sorokeep stores data in `~/.sorokeep/sorokeep.db` (SQLite wi
 
 **Database tables:**
 
-| Table | Purpose |
-|-------|---------|
-| `contracts` | Registered contracts with network, name, WASM hash |
-| `contract_entries` | Tracked ledger entries with TTLs and discovery source |
-| `extension_policies` | Auto-extension rules per contract (threshold, target, keypair reference) |
-| `alert_configs` | Alert channels, thresholds, and webhook secrets |
-| `alerts_fired` | Fired alert records with delivery status, retry count, and resolution tracking |
-| `extension_history` | Every TTL extension with transaction hash and XLM cost |
+| Table                | Purpose                                                                        |
+| -------------------- | ------------------------------------------------------------------------------ |
+| `contracts`          | Registered contracts with network, name, WASM hash                             |
+| `contract_entries`   | Tracked ledger entries with TTLs and discovery source                          |
+| `extension_policies` | Auto-extension rules per contract (threshold, target, keypair reference)       |
+| `alert_configs`      | Alert channels, thresholds, and webhook secrets                                |
+| `alerts_fired`       | Fired alert records with delivery status, retry count, and resolution tracking |
+| `extension_history`  | Every TTL extension with transaction hash and XLM cost                         |
 
 ### Configuration
 
@@ -538,9 +633,11 @@ Sorokeep stores user configuration in `~/.sorokeep/config.yaml`:
 ```yaml
 network: testnet
 pollingIntervalSeconds: 300
-slackToken: "xoxb-..."        # Optional — can also use SOROKEEP_SLACK_TOKEN env var
-rpcUrl: "https://..."         # Optional — overrides network default
+slackToken: "xoxb-..." # Optional — can also use SOROKEEP_SLACK_TOKEN env var
+rpcUrl: "https://..." # Optional — overrides network default
 ```
+
+For a complete list of all supported fields (including integrations like Telegram, Vault, and Templates) and their environment variable overrides, see the [Configuration Reference](docs/config-reference.md).
 
 The config file is created with `0600` permissions (owner read/write only) to protect sensitive values like the Slack token.
 
@@ -599,16 +696,16 @@ sorokeep/
 
 ## Tech Stack
 
-| Package | Purpose |
-|---------|---------|
-| [TypeScript](https://www.typescriptlang.org/) | Application language (ESM) |
-| [@stellar/stellar-sdk](https://github.com/nicktomlin/js-stellar-sdk) | Stellar and Soroban RPC interactions |
-| [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) | Local database (synchronous, zero external deps) |
-| [Commander.js](https://github.com/tj/commander.js) | CLI framework |
-| [pino](https://github.com/pinojs/pino) | Structured JSON logging |
-| [chalk](https://github.com/chalk/chalk) / [ora](https://github.com/sindresorhus/ora) | Terminal formatting and spinners |
-| [yaml](https://github.com/eemeli/yaml) | Config file parsing |
-| [Vitest](https://vitest.dev/) | Test framework |
+| Package                                                                              | Purpose                                          |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| [TypeScript](https://www.typescriptlang.org/)                                        | Application language (ESM)                       |
+| [@stellar/stellar-sdk](https://github.com/nicktomlin/js-stellar-sdk)                 | Stellar and Soroban RPC interactions             |
+| [better-sqlite3](https://github.com/WiseLibs/better-sqlite3)                         | Local database (synchronous, zero external deps) |
+| [Commander.js](https://github.com/tj/commander.js)                                   | CLI framework                                    |
+| [pino](https://github.com/pinojs/pino)                                               | Structured JSON logging                          |
+| [chalk](https://github.com/chalk/chalk) / [ora](https://github.com/sindresorhus/ora) | Terminal formatting and spinners                 |
+| [yaml](https://github.com/eemeli/yaml)                                               | Config file parsing                              |
+| [Vitest](https://vitest.dev/)                                                        | Test framework                                   |
 
 ## Testing
 
@@ -677,10 +774,20 @@ Track overall progress on the [Sorokeep Roadmap board](https://github.com/Abdulm
 > If you're a maintainer, follow that doc to create and link the board.
 
 - Plugin interface for alert channels — so a new channel (Matrix, MS Teams, email) doesn't require touching core dispatch code or the DB schema
-- Prometheus `/metrics` endpoint for teams with existing observability stacks
+- Prometheus `/metrics` endpoint for teams with existing observability stacks — see [Observability Setup Guide](docs/observability.md); an [example Grafana dashboard](devops/grafana/sorokeep-dashboard.json) is included
 - Reusable GitHub Action wrapping `sorokeep check` for CI-integrated TTL checks
 - Web dashboard for visual TTL monitoring
 - Multi-contract batch operations
+
+## Getting Help
+
+**Troubleshooting daemon issues?** See [docs/troubleshooting.md](docs/troubleshooting.md) for a complete runbook covering common failure modes (hung cycles, alerts not firing, auto-extension blocked, RPC errors) with diagnostic commands and resolution steps.
+
+If you're stuck or have questions:
+- Check [open issues](https://github.com/AbdulmalikAlayande/sorokeep/issues)
+- Reach out on X: [@The_good_man02](https://twitter.com/The_good_man02)
+
+For security issues (key leakage, unintended transactions), see [SECURITY.md](SECURITY.md) instead of opening a public issue.
 
 ## Contributing
 

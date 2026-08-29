@@ -12,6 +12,7 @@ import {
     FeeBumpTransaction,
     Asset,
 } from "@stellar/stellar-sdk";
+import chalk from "chalk";
 import { getLogger } from "../logging/index.js";
 // CostSummary removed — no longer exported from costs.js
 
@@ -22,6 +23,122 @@ interface ErrorLike {
     code?: string;
     message?: string;
     response?: { status?: number };
+    cause?: unknown;
+}
+
+/** Thrown when a network-level failure (connection refused, timeout, DNS, etc.)
+ * is detected talking to the configured RPC endpoint, so callers can print an
+ * actionable message instead of a raw fetch/SDK error. */
+export class RpcUnreachableError extends Error {
+    public readonly url: string;
+
+    constructor(url: string, options?: { cause?: unknown }) {
+        super(`RPC endpoint at ${url} is unreachable`, options);
+        this.name = "RpcUnreachableError";
+        this.url = url;
+    }
+}
+
+const NETWORK_ERROR_CODES = new Set([
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "ETIMEDOUT",
+    "EADDRNOTAVAIL",
+    "ECONNRESET",
+    "EPIPE",
+    "EHOSTUNREACH",
+    "ENETUNREACH",
+]);
+
+const NETWORK_ERROR_MESSAGE_PATTERNS = [
+    "fetch failed",
+    "econnrefused",
+    "enotfound",
+    "etimedout",
+    "econnreset",
+    "timeout",
+    "unreachable",
+    "network error",
+];
+
+/** Detects whether an error (or its cause chain) looks like a network-level failure. */
+export function isNetworkError(error: unknown, seen = new Set<unknown>()): boolean {
+    if (!error || typeof error !== "object" || seen.has(error)) return false;
+    seen.add(error);
+
+    const err = error as ErrorLike;
+    if (typeof err.code === "string" && NETWORK_ERROR_CODES.has(err.code)) return true;
+
+    const message = typeof err.message === "string" ? err.message.toLowerCase() : "";
+    if (NETWORK_ERROR_MESSAGE_PATTERNS.some((pattern) => message.includes(pattern))) return true;
+
+    return isNetworkError(err.cause, seen);
+}
+
+const RPC_UNREACHABLE_MESSAGE_PATTERN = /RPC endpoint at (https?:\/\/\S+) is unreachable/;
+
+/**
+ * Prints an actionable message for an unreachable-RPC failure and returns
+ * true if it recognized one. Accepts a plain string as well as an Error,
+ * since some call sites (e.g. core/watch.ts's structured WatchResult) already
+ * stringify errors to `.message` before returning, losing the original type.
+ */
+export function handleRpcUnreachableError(error: unknown): boolean {
+    let url: string | undefined;
+
+    if (error instanceof RpcUnreachableError) {
+        url = error.url;
+    } else if (typeof error === "string") {
+        url = error.match(RPC_UNREACHABLE_MESSAGE_PATTERN)?.[1];
+    } else if (error instanceof Error) {
+        url = error.message.match(RPC_UNREACHABLE_MESSAGE_PATTERN)?.[1];
+    }
+
+    if (!url) return false;
+
+    console.error(chalk.red(`\nError: RPC endpoint is unreachable: ${url}`));
+    console.error(chalk.yellow("Suggestions:"));
+    console.error(`  - Check that the URL is correct and the endpoint is online.`);
+    console.error(`  - Use the ${chalk.bold("--rpc-url")} flag to specify a different endpoint.`);
+    console.error(`  - Verify your configuration in ${chalk.bold("~/.sorokeep/config.yaml")}.`);
+    console.error(`  - Check Stellar network status: ${chalk.cyan("https://status.stellar.org")}\n`);
+    return true;
+}
+
+/**
+ * Wraps every method on an `rpc.Server` instance so a network-level failure
+ * (connection refused, timeout, DNS, etc.) surfaces as a `RpcUnreachableError`
+ * carrying the endpoint URL, with the original error preserved as `.cause`.
+ *
+ * A Proxy is used rather than editing each `StellarRpcClient` method
+ * individually, since callers reach the SDK server both directly
+ * (`this.server.getLedgerEntries(...)`) and via `withRateLimit`, and every
+ * path needs the same detection without duplicating it at each call site.
+ */
+function wrapServerWithUnreachableDetection(server: rpc.Server, url: string): rpc.Server {
+    return new Proxy(server, {
+        get(target, prop, receiver) {
+            const value: unknown = Reflect.get(target, prop, receiver);
+            if (typeof value !== "function") return value;
+
+            return function (this: unknown, ...args: unknown[]): unknown {
+                const toRpcError = (error: unknown): unknown =>
+                    isNetworkError(error) ? new RpcUnreachableError(url, { cause: error }) : error;
+
+                try {
+                    const result: unknown = Reflect.apply(value, target, args);
+                    if (result instanceof Promise) {
+                        return result.catch((error: unknown) => {
+                            throw toRpcError(error);
+                        });
+                    }
+                    return result;
+                } catch (error) {
+                    throw toRpcError(error);
+                }
+            };
+        },
+    });
 }
 
 /** Soroban meta with optional resource-counter accessors. */
@@ -91,8 +208,9 @@ export async function executeWithRetry<T>(action: () => Promise<T>): Promise<T> 
             return await action();
         } catch (error: unknown) {
             const err = error as ErrorLike;
-            const isTimeout = err.code === "ETIMEDOUT" || err.code === "ECONNRESET" || err.message?.includes("timeout");
-            const status = err.response?.status ?? 0;
+            const cause = (err.cause ?? err) as ErrorLike;
+            const isTimeout = cause.code === "ETIMEDOUT" || cause.code === "ECONNRESET" || cause.message?.includes("timeout");
+            const status = cause.response?.status ?? err.response?.status ?? 0;
             const isRetryableHttp = status === 429 || (status >= 500 && status < 600);
 
             if ((isTimeout || isRetryableHttp) && attempt < MAX_RETRIES) {
@@ -290,7 +408,10 @@ export class StellarRpcClient {
         if (!url) {
             throw new Error(`Unknown network "${network}". Use "testnet", "mainnet", or provide a custom URL.`);
         }
-        this.server = new rpc.Server(url, { allowHttp: url.startsWith("http://") });
+        this.server = wrapServerWithUnreachableDetection(
+            new rpc.Server(url, { allowHttp: url.startsWith("http://") }),
+            url,
+        );
     }
 
     getNetwork(): string {

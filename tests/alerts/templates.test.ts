@@ -118,4 +118,23 @@ describe("Handlebars Alert Custom Templates", () => {
         const result = renderAlertTemplate("pagerduty", resourceEvent, tempDir);
         expect(result).toBe(`{"payload": {"summary": "[Custom PD] CA12345678901234567890123456789012345678901234567890123456 - CPU usage is at 85% of limit"}}`);
     });
+
+    it("exposes stellarExpertUrl in the template context for custom templates that opt in", () => {
+        fs.writeFileSync(
+            path.join(tempDir, "linktest.hbs"),
+            "{{stellarExpertUrl}}",
+            "utf8",
+        );
+        const result = renderAlertTemplate("linktest", ttlEvent, tempDir);
+        expect(result).toBe(
+            "https://testnet.stellar.expert/explorer/testnet/contract/CA12345678901234567890123456789012345678901234567890123456",
+        );
+    });
+
+    it("existing custom templates that don't reference stellarExpertUrl render unchanged", () => {
+        const result = renderAlertTemplate("telegram", ttlEvent, tempDir);
+        expect(result).toBe(
+            "[Custom Telegram] Contract: TestContract, Network: testnet, Remaining: 1500 ledgers",
+        );
+    });
 });

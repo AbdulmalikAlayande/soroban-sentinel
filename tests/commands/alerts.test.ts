@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import stripAnsi from "strip-ansi";
 import { Command } from "commander";
 import type Database from "better-sqlite3";
 import { getDatabaseForTesting } from "../../src/db/database";
@@ -9,7 +10,14 @@ import {
     getAlertConfigsForContract,
     insertAlertConfig,
     getResourceAlertConfigsForContract,
+    getAlertConfigTargets,
+    upsertEntry,
 } from "../../src/db/repositories";
+
+const SNAPSHOT_TIMESTAMP = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/g;
+function normalizeOutput(output: string): string {
+    return stripAnsi(output).replace(SNAPSHOT_TIMESTAMP, "YYYY-MM-DD HH:MM:SS");
+}
 
 let mockDb: Database.Database;
 
@@ -90,6 +98,52 @@ describe("alerts command", () => {
             expect(consoleLogSpy).toHaveBeenCalledWith(
                 expect.stringContaining("Successfully added alert config")
             );
+        });
+
+        it("persists repeatable --target flags as additional fan-out targets", () => {
+            parse([
+                "alerts", "add",
+                "--contract", contractID,
+                "--type", "webhook",
+                "--url", "https://example.com/webhook",
+                "--threshold", "1000",
+                "--target", "slack:#ops-alerts",
+                "--target", "pagerduty:pd-routing-key",
+            ]);
+
+            const configs = getAlertConfigsForContract(mockDb, contractID);
+            expect(configs).toHaveLength(1);
+
+            const targets = getAlertConfigTargets(mockDb, configs[0]!.id);
+            expect(targets).toHaveLength(2);
+            expect(targets.map((t) => `${t.channel_type}:${t.channel_target}`).sort()).toEqual([
+                "pagerduty:pd-routing-key",
+                "slack:#ops-alerts",
+            ]);
+        });
+
+        it("uses the first --target as the primary channel when --type is omitted", () => {
+            parse([
+                "alerts", "add",
+                "--contract", contractID,
+                "--threshold", "1000",
+                "--target", "slack:#ops-alerts",
+                "--target", "webhook:https://example.com/hook",
+            ]);
+
+            const configs = getAlertConfigsForContract(mockDb, contractID);
+            expect(configs).toHaveLength(1);
+            expect(configs[0]).toMatchObject({
+                channel_type: "slack",
+                channel_target: "#ops-alerts",
+            });
+
+            const targets = getAlertConfigTargets(mockDb, configs[0]!.id);
+            expect(targets).toHaveLength(1);
+            expect(targets[0]).toMatchObject({
+                channel_type: "webhook",
+                channel_target: "https://example.com/hook",
+            });
         });
 
         it("writes a slack alert to SQLite", () => {
@@ -599,6 +653,78 @@ describe("alerts command", () => {
         });
     });
 
+    // =========================================================================
+    // alerts enable / disable
+    // =========================================================================
+    describe("alerts enable / disable", () => {
+        it("disables an alert config without deleting it", () => {
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "webhook",
+                channel_target: "https://example.com/webhook",
+                threshold_ledgers: 1000,
+            });
+            const configId = getAlertConfigsForContract(mockDb, contractID)[0]!.id;
+
+            parse(["alerts", "disable", "--id", configId.toString()]);
+
+            const configs = getAlertConfigsForContract(mockDb, contractID);
+            expect(configs).toHaveLength(1); // still present, not deleted
+            expect(configs[0]!.enabled).toBe(0);
+            expect(consoleLogSpy).toHaveBeenCalledWith(
+                expect.stringContaining(`Alert config ID ${configId} disabled`)
+            );
+        });
+
+        it("re-enables a disabled alert config", () => {
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "webhook",
+                channel_target: "https://example.com/webhook",
+                threshold_ledgers: 1000,
+            });
+            const configId = getAlertConfigsForContract(mockDb, contractID)[0]!.id;
+
+            parse(["alerts", "disable", "--id", configId.toString()]);
+            parse(["alerts", "enable", "--id", configId.toString()]);
+
+            const configs = getAlertConfigsForContract(mockDb, contractID);
+            expect(configs[0]!.enabled).toBe(1);
+            expect(consoleLogSpy).toHaveBeenCalledWith(
+                expect.stringContaining(`Alert config ID ${configId} enabled`)
+            );
+        });
+
+        it("exits with 1 when disabling a non-existent config", () => {
+            parseExpectExit(["alerts", "disable", "--id", "99999"]);
+
+            expect(exitSpy).toHaveBeenCalledWith(1);
+            expect(consoleErrorSpy).toHaveBeenCalledWith(
+                expect.stringContaining("Alert config ID 99999 not found")
+            );
+        });
+
+        it("exits with 1 when enabling a non-existent config", () => {
+            parseExpectExit(["alerts", "enable", "--id", "99999"]);
+
+            expect(exitSpy).toHaveBeenCalledWith(1);
+            expect(consoleErrorSpy).toHaveBeenCalledWith(
+                expect.stringContaining("Alert config ID 99999 not found")
+            );
+        });
+
+        it("exits with 1 when --id is not a number (disable)", () => {
+            parseExpectExit(["alerts", "disable", "--id", "not-a-number"]);
+            expect(exitSpy).toHaveBeenCalledWith(1);
+        });
+
+        it("exits with 1 when --id is not a number (enable)", () => {
+            parseExpectExit(["alerts", "enable", "--id", "not-a-number"]);
+            expect(exitSpy).toHaveBeenCalledWith(1);
+        });
+    });
+
+    
     describe("alerts test", () => {
         let webhookConfigId: number;
 
@@ -776,6 +902,61 @@ describe("alerts command", () => {
                 expect.stringContaining("Test alert delivered successfully")
             );
         });
+
+        it("with --dry-run prints the exact JSON payload and does not call deliverSingleAlert", async () => {
+            const program = new Command();
+            registerAlertsCommand(program);
+
+            await program.parseAsync([
+                "node", "sorokeep", "alerts", "test",
+                "--id", webhookConfigId.toString(),
+                "--dry-run",
+            ]);
+
+            expect(mockDeliverSingleAlert).not.toHaveBeenCalled();
+            expect(consoleLogSpy).toHaveBeenCalled();
+            
+            // Check that the printed payload is a valid JSON of the test alert event
+            const printCall = consoleLogSpy.mock.calls.find((args) => {
+                try {
+                    const parsed = JSON.parse(args[0]);
+                    return parsed.type === "threshold_crossed";
+                } catch {
+                    return false;
+                }
+            });
+            expect(printCall).toBeTruthy();
+        });
+
+        it("with --dry-run for signed webhook replicates the HMAC signing logic and prints X-Sorokeep-Signature header", async () => {
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "webhook",
+                channel_target: "https://example.com/signed",
+                threshold_ledgers: 500,
+                webhook_secret: "dry-run-secret",
+            });
+            const allConfigs = getAlertConfigsForContract(mockDb, contractID);
+            const signedConfig = allConfigs.find((c) => c.webhook_secret === "dry-run-secret")!;
+
+            const program = new Command();
+            registerAlertsCommand(program);
+
+            await program.parseAsync([
+                "node", "sorokeep", "alerts", "test",
+                "--id", signedConfig.id.toString(),
+                "--dry-run",
+            ]);
+
+            expect(mockDeliverSingleAlert).not.toHaveBeenCalled();
+            
+            // Should print X-Sorokeep-Signature: sha256=<hmac>
+            const signatureCall = consoleLogSpy.mock.calls.find((args) => 
+                typeof args[0] === "string" && args[0].startsWith("X-Sorokeep-Signature:")
+            );
+            expect(signatureCall).toBeTruthy();
+            expect(signatureCall![0]).toContain("X-Sorokeep-Signature: sha256=");
+        });
     });
 
     describe("alerts test-all", () => {
@@ -866,6 +1047,86 @@ describe("alerts command", () => {
             expect(output).toContain("matrix-listing-test");
             expect(output).toContain("url");
             expect(output).toContain("no");
+        });
+    });
+
+    // ── Snapshot tests ──────────────────────────────────────────────
+    describe("snapshot tests", () => {
+        it("matches snapshot for alerts list table", () => {
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "webhook",
+                channel_target: "https://example.com/webhook",
+                threshold_ledgers: 1000,
+            });
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "slack",
+                channel_target: "#ops-alerts",
+                threshold_ledgers: 2000,
+            });
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "discord",
+                channel_target: "https://discord.com/api/webhooks/123/abc",
+                threshold_ledgers: 500,
+                webhook_secret: "my-signing-secret",
+            });
+
+            parse(["alerts", "list", "--contract", contractID]);
+
+            const output = consoleLogSpy.mock.calls.flat().join("\n");
+            expect(normalizeOutput(output)).toMatchSnapshot();
+        });
+
+        it("matches snapshot when no alerts configured", () => {
+            parse(["alerts", "list", "--contract", contractID]);
+
+            const output = consoleLogSpy.mock.calls.flat().join("\n");
+            expect(normalizeOutput(output)).toMatchSnapshot();
+        });
+
+        it("matches snapshot for alerts history table", () => {
+            upsertEntry(mockDb, {
+                contract_id: contractID,
+                entry_key_xdr: "AAAAA",
+                entry_type: "instance",
+                label: "instance",
+                live_until_ledger: 500000,
+                last_modified_ledger: 400000,
+                discovery_source: "deterministic",
+            });
+
+            const entryRow = mockDb
+                .prepare("SELECT id FROM contract_entries WHERE contract_id = ? LIMIT 1")
+                .get(contractID) as { id: number };
+
+            insertAlertConfig(mockDb, {
+                contract_id: contractID,
+                channel_type: "webhook",
+                channel_target: "https://example.com/webhook",
+                threshold_ledgers: 1000,
+            });
+
+            const configRows = mockDb
+                .prepare("SELECT id FROM alert_configs WHERE contract_id = ?")
+                .all(contractID) as { id: number }[];
+
+            // Insert fired alerts with deterministic timestamps
+            mockDb.prepare(`
+                INSERT INTO alerts_fired (alert_config_id, contract_entry_id, fired_at_ledger, ttl_at_fire, fired_at, delivered, retry_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            `).run(configRows[0]!.id, entryRow.id, 500000, 800, "2024-06-15 10:30:00", 1, 0);
+
+            mockDb.prepare(`
+                INSERT INTO alerts_fired (alert_config_id, contract_entry_id, fired_at_ledger, ttl_at_fire, fired_at, delivered, retry_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            `).run(configRows[0]!.id, entryRow.id, 510000, 200, "2024-06-20 14:15:00", 0, 2);
+
+            parse(["alerts", "history", "--contract", contractID]);
+
+            const output = consoleLogSpy.mock.calls.flat().join("\n");
+            expect(normalizeOutput(output)).toMatchSnapshot();
         });
     });
 });

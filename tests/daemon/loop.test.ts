@@ -52,6 +52,7 @@ vi.mock("../../src/logging/index.js", () => ({
 
 import { startDaemon, stopDaemon } from "../../src/daemon/loop.js";
 import { insertContract } from "../../src/db/repositories.js";
+import { daemonCycleDuration, daemonCyclesSkipped } from "../../src/observability/metrics/daemon.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,8 @@ describe("daemon loop", () => {
         db = getDatabaseForTesting();
         vi.clearAllMocks();
         vi.useFakeTimers();
+        daemonCycleDuration.reset();
+        daemonCyclesSkipped.reset();
         // Default: deliver succeeds silently so loop tests focus on cycle behaviour
         mockDeliverPendingAlerts.mockResolvedValue({
             attempted: 0,
@@ -109,6 +112,104 @@ describe("daemon loop", () => {
 
             await vi.advanceTimersByTimeAsync(5000);
             expect(mockVacuumDatabase).toHaveBeenCalledTimes(2);
+        });
+
+        it("handles forward system clock jumps without vacuuming on every tick", async () => {
+            // Simulate a system clock jump (DST, NTP correction, or wake from suspend)
+            // where the clock suddenly jumps forward by a large amount.
+            // The vacuum check uses Date.now() - lastVacuumAt, so a forward jump
+            // should cause the next vacuum to fire immediately (since enough time
+            // has "passed" according to the clock), but NOT on every subsequent tick.
+
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+            mockVacuumDatabase.mockReturnValue(true);
+
+            const tickMs = 5000;
+            const vacuumIntervalMs = 20000;
+
+            // Start at a known time
+            vi.setSystemTime(1000000);
+
+            await startDaemon(db, "testnet", { intervalMs: tickMs, vacuumIntervalMs });
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(0);
+
+            // Advance to the first vacuum (20s elapsed)
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(1);
+
+            // Now simulate a large forward clock jump (e.g., system woke from suspend
+            // after 2 hours). Set system time forward by 2 hours.
+            const currentTime = Date.now();
+            const clockJumpMs = 2 * 60 * 60 * 1000; // 2 hours
+            vi.setSystemTime(currentTime + clockJumpMs);
+
+            // Advance one tick — the vacuum should fire because
+            // Date.now() - lastVacuumAt is now 2+ hours, which is >= vacuumIntervalMs
+            await vi.advanceTimersByTimeAsync(tickMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(2);
+
+            // BUT — the next tick should NOT vacuum again, because lastVacuumAt
+            // was updated when vacuum ran. Advance another tick (5s).
+            await vi.advanceTimersByTimeAsync(tickMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(2); // still 2
+
+            // Advance the remaining interval to verify normal behavior resumes
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs - tickMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(3);
+        });
+
+        it("handles backward system clock jumps without skipping vacuum indefinitely", async () => {
+            // Simulate a backward clock jump (manual clock adjustment, NTP correction).
+            // The vacuum check uses Date.now() - lastVacuumAt, so if the clock jumps
+            // backward, lastVacuumAt could be in the "future" relative to Date.now(),
+            // causing Date.now() - lastVacuumAt to be negative or very small.
+            // We want to verify that vacuum doesn't get skipped forever.
+
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+            mockVacuumDatabase.mockReturnValue(true);
+
+            const tickMs = 5000;
+            const vacuumIntervalMs = 20000;
+
+            // Start at a known time
+            vi.setSystemTime(2000000);
+
+            await startDaemon(db, "testnet", { intervalMs: tickMs, vacuumIntervalMs });
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(0);
+
+            // Advance to the first vacuum (20s elapsed)
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(1);
+
+            // Now simulate a backward clock jump (e.g., clock was wrong and gets corrected).
+            // Jump back by 1 hour.
+            const currentTime = Date.now();
+            const clockJumpMs = -1 * 60 * 60 * 1000; // -1 hour
+            vi.setSystemTime(currentTime + clockJumpMs);
+
+            // After a backward jump, Date.now() - lastVacuumAt will be negative
+            // (lastVacuumAt is now in the "future"). The current implementation
+            // will skip vacuum until the clock catches up to lastVacuumAt + vacuumIntervalMs.
+
+            // Advance several ticks — vacuum should NOT fire yet because
+            // Date.now() - lastVacuumAt < vacuumIntervalMs (it's negative).
+            await vi.advanceTimersByTimeAsync(tickMs);
+            await vi.advanceTimersByTimeAsync(tickMs);
+            await vi.advanceTimersByTimeAsync(tickMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(1); // still 1
+
+            // Now advance the clock enough to catch up past the backward jump
+            // plus the vacuum interval. We need to advance by:
+            // (1 hour to catch up) + (20s vacuum interval)
+            const catchUpMs = Math.abs(clockJumpMs) + vacuumIntervalMs;
+            await vi.advanceTimersByTimeAsync(catchUpMs);
+
+            // Vacuum should have fired at some point during this advancement
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(2);
+
+            // Verify normal behavior resumes
+            await vi.advanceTimersByTimeAsync(vacuumIntervalMs);
+            expect(mockVacuumDatabase).toHaveBeenCalledTimes(3);
         });
 
         it("skips scheduled vacuum when the database is already in a transaction", async () => {
@@ -471,6 +572,104 @@ describe("daemon loop", () => {
     // =========================================================================
     // 5. RE-ENTRANCE GUARD
     // =========================================================================
+    describe("Metrics instrumentation", () => {
+        it("records a cycle-duration observation after a completed cycle", async () => {
+            const startedAt = new Date("2026-01-01T00:00:00.000Z");
+            const finishedAt = new Date("2026-01-01T00:00:02.500Z");
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult({ cycleStartedAt: startedAt, cycleFinishedAt: finishedAt }));
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+
+            const { values } = await daemonCycleDuration.get();
+            const sumSample = values.find((v) => v.metricName?.endsWith("_sum") && v.labels.network === "testnet");
+            expect(sumSample?.value).toBeCloseTo(2.5, 3);
+        });
+
+        it("increments the skipped-cycles counter when a tick is skipped due to an in-flight cycle", async () => {
+            let resolveSlowCycle!: (value: MonitorCycleResult) => void;
+
+            mockRunMonitorCycle.mockResolvedValueOnce(makeCycleResult());
+            mockRunMonitorCycle.mockImplementationOnce(() => new Promise<MonitorCycleResult>((resolve) => { resolveSlowCycle = resolve; }));
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+            await vi.advanceTimersByTimeAsync(5000); // triggers the slow cycle
+
+            const findSkipped = async () =>
+                (await daemonCyclesSkipped.get()).values.find((v) => v.labels.network === "testnet")?.value ?? 0;
+
+            const before = await findSkipped();
+
+            // A tick fires while the slow cycle is still in flight — should be skipped.
+            await vi.advanceTimersByTimeAsync(5000);
+
+            const after = await findSkipped();
+            expect(after).toBe(before + 1);
+
+            resolveSlowCycle(makeCycleResult());
+            await vi.advanceTimersByTimeAsync(0);
+        });
+    });
+
+    describe("OpenTelemetry tracing", () => {
+        beforeEach(async () => {
+            // getTracer() lazily creates an uninstrumented provider on first
+            // call from anywhere in the process (e.g. an earlier test's
+            // daemon cycle) and that provider is cached — reset it so each
+            // test here starts from a clean, uninitialized state.
+            const { shutdownTracing } = await import("../../src/observability/tracing.js");
+            await shutdownTracing();
+            process.env["SOROKEEP_OTLP_IN_MEMORY"] = "true";
+        });
+
+        afterEach(async () => {
+            delete process.env["SOROKEEP_OTLP_IN_MEMORY"];
+            const { shutdownTracing } = await import("../../src/observability/tracing.js");
+            await shutdownTracing();
+        });
+
+        it("produces a parent span with Monitor/Deliver/CostAggregation child spans after a completed cycle", async () => {
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+            const { initTracing, getInMemoryExporter } = await import("../../src/observability/tracing.js");
+            await initTracing();
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+
+            const spans = getInMemoryExporter()!.getFinishedSpans();
+            const spanNames = spans.map((s) => s.name);
+
+            expect(spanNames).toContain("DaemonCycle");
+            expect(spanNames).toContain("Monitor");
+            expect(spanNames).toContain("Deliver");
+            expect(spanNames).toContain("CostAggregation");
+
+            const parentSpan = spans.find((s) => s.name === "DaemonCycle")!;
+            for (const childName of ["Monitor", "Deliver", "CostAggregation"]) {
+                const childSpan = spans.find((s) => s.name === childName)!;
+                expect(childSpan.parentSpanId).toBe(parentSpan.spanId);
+            }
+        });
+
+        it("records error status on the Monitor span when runMonitorCycle throws", async () => {
+            mockRunMonitorCycle.mockRejectedValueOnce(new Error("RPC failure"));
+            const { initTracing, getInMemoryExporter } = await import("../../src/observability/tracing.js");
+            await initTracing();
+
+            await startDaemon(db, "testnet", { intervalMs: 5000 });
+
+            const spans = getInMemoryExporter()!.getFinishedSpans();
+            const monitorSpan = spans.find((s) => s.name === "Monitor")!;
+            expect(monitorSpan.status.code).toBe(2); // SpanStatusCode.ERROR
+        });
+
+        it("adds no measurable behavior change to the cycle when tracing is off (default)", async () => {
+            delete process.env["SOROKEEP_OTLP_IN_MEMORY"];
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+
+            await expect(startDaemon(db, "testnet", { intervalMs: 5000 })).resolves.not.toThrow();
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
+        });
+    });
+
     describe("Re-entrance guard", () => {
         it("does not run overlapping cycles if a cycle takes longer than the interval", async () => {
             let resolveSlowCycle!: (value: MonitorCycleResult) => void;
