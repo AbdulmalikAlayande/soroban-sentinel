@@ -111,6 +111,8 @@ If you're adding a new feature, the logic goes in `core/`, the CLI wiring goes i
 
 We enforce strict test-driven development. Your PR will not be accepted without comprehensive tests.
 
+For a full explanation of the conventions — the `tests/` directory mirroring rule, the `getDatabaseForTesting()` pattern, the `vi.mock()` patterns for RPC and channel modules, and how to read a coverage report — see **[docs/testing-philosophy.md](docs/testing-philosophy.md)**.
+
 The process is:
 
 1. **Write the test first.** Define what the function should do, what inputs it takes, and what outputs it returns. Run the test — it should fail (red).
