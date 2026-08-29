@@ -447,6 +447,8 @@ sorokeep contracts [options]
 
 Displays a table with contract ID (truncated), name, network, entry count, worst-case remaining TTL, and status (OK / Warning / Critical / Expired). Reads from the local database only — instant, no RPC calls.
 
+> **Managing many contracts across teams?** See the [Fleet Management Guide](docs/fleet-management.md) for writing a manifest, bulk-registering contracts, creating groups, applying policies and alerts in bulk, and reading the fleet status dashboard.
+
 ## Alerting
 
 Sorokeep delivers alerts through multiple channels: **webhooks**, **Slack**, **Discord**, **Telegram**, **PagerDuty**, **Opsgenie**, **Microsoft Teams**, **Matrix**, **email**, **Google Chat**, and a second configurable **Webhook v2** channel. Each alert includes a severity level and rich context about the affected entry. Sorokeep uses a robust, decoupled detection and dispatch architecture with a database-backed queue.
