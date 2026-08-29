@@ -19,3 +19,5 @@ export { inspectContract, parseSacBalance, buildSacBalanceKeyXdr, formatTokenBal
 export type { InspectOptions, InspectResult, InspectEntryInfo } from "./core/inspect.js";
 export { AWSSecretsResolver } from "./core/aws_secrets.js";
 export type { AWSSecretsResolverConfig } from "./core/aws_secrets.js";
+
+export { sendWebhookAlert, verifyWebhookSignature } from "./alerts/webhook.js";
