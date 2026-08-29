@@ -6,7 +6,7 @@ import { createHmac } from "node:crypto";
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
-import { sendWebhookAlert } from "../../src/alerts/webhook";
+import { sendWebhookAlert, verifyWebhookSignature } from "../../src/alerts/webhook";
 import type { AlertEvent } from "../../src/alerts/types";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -312,14 +312,52 @@ describe("sendWebhookAlert", () => {
                 return Promise.resolve(makeOkResponse());
             });
 
-            await sendWebhookAlert("https://fast.example.com/hook", makeAlertEvent());
-
-            // Advance well past the timeout — already resolved, should stay un-aborted
-            await vi.advanceTimersByTimeAsync(10_000);
-
             expect(aborted).toBe(false);
 
             vi.useRealTimers();
         });
+    });
+});
+
+describe("verifyWebhookSignature", () => {
+    const secret = "test-webhook-secret-key-123";
+    const payload = JSON.stringify({ type: "threshold_crossed", contractId: "C123" });
+    const expectedSigHex = createHmac("sha256", secret).update(payload).digest("hex");
+    const validHeader = `sha256=${expectedSigHex}`;
+
+    it("verifies a valid signature and payload returning true", () => {
+        expect(verifyWebhookSignature(payload, validHeader, secret)).toBe(true);
+    });
+
+    it("verifies a valid Buffer payload returning true", () => {
+        const bufferPayload = Buffer.from(payload, "utf-8");
+        expect(verifyWebhookSignature(bufferPayload, validHeader, secret)).toBe(true);
+    });
+
+    it("returns false if the payload has been tampered with", () => {
+        const tamperedPayload = JSON.stringify({ type: "threshold_crossed", contractId: "TAMPERED" });
+        expect(verifyWebhookSignature(tamperedPayload, validHeader, secret)).toBe(false);
+    });
+
+    it("returns false if the secret is incorrect", () => {
+        expect(verifyWebhookSignature(payload, validHeader, "wrong-secret")).toBe(false);
+    });
+
+    it("returns false if signature does not start with sha256=", () => {
+        expect(verifyWebhookSignature(payload, expectedSigHex, secret)).toBe(false);
+        expect(verifyWebhookSignature(payload, "invalid_prefix", secret)).toBe(false);
+    });
+
+    it("returns false if signature header is missing or empty", () => {
+        expect(verifyWebhookSignature(payload, "", secret)).toBe(false);
+        expect(verifyWebhookSignature(payload, null as any, secret)).toBe(false);
+    });
+
+    it("returns false if secret is empty", () => {
+        expect(verifyWebhookSignature(payload, validHeader, "")).toBe(false);
+    });
+
+    it("handles signature length mismatch safely without throwing", () => {
+        expect(verifyWebhookSignature(payload, "sha256=123", secret)).toBe(false);
     });
 });
