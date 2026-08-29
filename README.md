@@ -738,6 +738,16 @@ npx vitest
 
 All tests use in-memory SQLite databases and mocked RPC responses — no network calls, no filesystem side effects. TDD is practiced throughout.
 
+## Security & Provenance
+
+Sorokeep packages published to npm carry a [verified provenance statement](https://docs.npmjs.com/generating-provenance-statements). This provides a cryptographic, auditable link between the published npm package and the exact GitHub Actions run and commit that built it.
+
+To verify the provenance of your installed Sorokeep package, you can check the [npm registry page](https://www.npmjs.com/package/sorokeep) for the provenance badge, or run the following command to check npm audit signatures:
+
+```bash
+npm audit signatures
+```
+
 ## FAQ
 
 ### Why TypeScript, not Rust?
