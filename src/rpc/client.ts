@@ -14,6 +14,8 @@ import {
 } from "@stellar/stellar-sdk";
 import chalk from "chalk";
 import { getLogger } from "../logging/index.js";
+import * as undici from "undici";
+import * as crypto from "node:crypto";
 // CostSummary removed — no longer exported from costs.js
 
 // ── Local helper types to replace `any` casts ──────────────────────────────
@@ -390,6 +392,7 @@ const NETWORK_PASSPHRASES: Record<string, string> = {
 
 export interface StellarRpcClientOptions {
     maxRequestsPerSecond?: number;
+    rpcCertificateFingerprint?: string;
 }
 
 export class StellarRpcClient {
@@ -408,8 +411,32 @@ export class StellarRpcClient {
         if (!url) {
             throw new Error(`Unknown network "${network}". Use "testnet", "mainnet", or provide a custom URL.`);
         }
+        const serverOptions: rpc.Server.Options = { allowHttp: url.startsWith("http://") };
+        if (options.rpcCertificateFingerprint) {
+            const expectedFingerprint = options.rpcCertificateFingerprint.toLowerCase().replace(/:/g, '');
+            const dispatcher = new undici.Agent({
+                connect: {
+                    rejectUnauthorized: true,
+                    checkServerIdentity: (hostname, cert) => {
+                        const actualFingerprint = crypto.createHash('sha256').update(cert.raw).digest('hex').toLowerCase();
+                        if (actualFingerprint !== expectedFingerprint) {
+                            return new Error(`Certificate fingerprint mismatch. Expected ${expectedFingerprint}, got ${actualFingerprint}`);
+                        }
+                        return undefined;
+                    }
+                }
+            });
+            // We pass a custom fetch to rpc.Server Options so it uses our pinned dispatcher
+            serverOptions.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+                const initOptions = init ?? {};
+                // The stellar-sdk might not pass dispatcher as part of RequestInit types, so we cast it to any
+                (initOptions as any).dispatcher = dispatcher;
+                return fetch(input, initOptions);
+            };
+        }
+
         this.server = wrapServerWithUnreachableDetection(
-            new rpc.Server(url, { allowHttp: url.startsWith("http://") }),
+            new rpc.Server(url, serverOptions),
             url,
         );
     }
