@@ -32,6 +32,8 @@ Sorokeep is the unified operations layer that handles all of this.
 
 > Security auditors have started flagging TTL mismanagement as a risk area in Soroban contracts. [Veridise](https://veridise.com/audits/soroban/) includes TTL handling in their audit scope. The [LayerZero Stellar endpoint audit](https://code4rena.com/audits/2026-04-layerzero-stellar-endpoint) explicitly lists TTL expiration edge cases as a concern. [OpenZeppelin's Stellar contracts library](https://docs.openzeppelin.com/stellar-contracts) deliberately leaves instance storage TTL management to the application developer.
 
+> Considering whether a hand-rolled cron script is enough for your team? See our honest comparison guide: [Sorokeep vs. Manual Scripts](docs/vs-manual-scripts.md).
+
 ## Features
 
 - **Watch & Introspect** — Register contracts, footprint discovery from on-chain transactions, and introspection specs
