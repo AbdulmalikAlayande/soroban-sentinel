@@ -53,5 +53,12 @@ These are the invariants any PR touching secret-key code paths must preserve:
 2. Secret keys are never logged, including at `debug` level.
 3. When AWS Secrets Manager or HashiCorp Vault is used for key resolution, the resolved secret must not be cached to disk.
 4. Transaction simulation (via RPC `simulateTransaction`) happens before submission for both extension and restore operations — never submit blind.
+5. **Key-material buffers are zeroed after use where technically feasible.** Specifically, any function in `src/core/channels.ts` that constructs a `Keypair` from a secret key **must** call `zeroizeKeypair(keypair)` in a `finally` block immediately after the signing operation completes. This overwrites the raw 32-byte ed25519 seed held in the Keypair's internal Buffer, shortening the window in which a heap dump or memory scrape could recover the key.
+
+   **What this does and does not guarantee:**
+   - ✅ The `Keypair` object's backing Buffer is overwritten with zeros immediately after use — the key material is removed from that specific allocation.
+   - ❌ The original secret-key *string* (the `S…` Stellar address) is a JavaScript primitive. JS strings are immutable and may be interned by V8; there is no portable way to zero a string. It will persist in the heap until the garbage collector reclaims it.
+   - ❌ V8's heap compaction may have duplicated the Buffer's bytes elsewhere in memory before zeroing occurs. Full cryptographic erasure is not achievable in a garbage-collected runtime.
+   - This is defense-in-depth — it meaningfully reduces (not eliminates) the exposure window. Do not describe it as a hard security guarantee in documentation or PR descriptions.
 
 If a PR changes any code path touching secret keys or transaction submission, call this out explicitly in the PR description so reviewers know to scrutinize it.
