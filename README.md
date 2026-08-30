@@ -88,6 +88,8 @@ npm install -g sorokeep
 
 ## Quick Start
 
+> **Migrating from custom scripts or cron jobs?** See the [Migration Guide](docs/migrating-from-cli-scripts.md) to map your existing `soroban-cli` / `stellar contract extend-ttl` scripts to Sorokeep.
+
 > **See it in action:** `scripts/demo.sh` runs the full Quick Start flow automatically. Record it with [asciinema](https://asciinema.org/) (`asciinema rec -c "bash scripts/demo.sh"`) and convert to an embeddable SVG with [svg-term-cli](https://github.com/marionebl/svg-term-cli) (`svg-term --in demo.cast --out docs/demo.svg --window`).
 >
 > Once a recording is captured, the SVG can be embedded here with:
