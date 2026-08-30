@@ -1,8 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { runAutoExtensions } from '../../src/core/extension';
 import { 
     insertContract, 
     upsertExtensionPolicy, 
@@ -11,51 +10,47 @@ import {
     getBudget 
 } from '../../src/db/repositories';
 
-// Mock dependencies
-vi.mock('../../src/rpc/client', () => {
+// ─── Mock RPC client (same pattern as extension.test.ts) ────────────────────
+// Module-level vi.fn() handles are captured outside the factory so that
+// beforeEach can reconfigure them without losing the mock binding.
+// Using the .js extension mirrors how the source file imports the module.
+
+const mockGetCurrentLedger = vi.fn();
+const mockSimulateExtension = vi.fn();
+const mockSubmitExtension = vi.fn();
+const mockGetEntryTTLs = vi.fn();
+
+vi.mock('../../src/rpc/client.js', () => {
     return {
-        StellarRpcClient: vi.fn().mockImplementation(() => ({
-            getCurrentLedger: vi.fn().mockResolvedValue(1000),
-            simulateExtension: vi.fn().mockResolvedValue({
-                success: true,
-                minResourceFee: 15000000 // 1.5 XLM in stroops
-            }),
-            submitExtension: vi.fn().mockResolvedValue({
-                success: true,
-                txHash: '0x123',
-                ledger: 1001,
-                cpuInsns: 100,
-                memBytes: 100
-            }),
-            getEntryTTLs: vi.fn().mockResolvedValue({
-                latestLedger: 1001,
-                entries: [{
-                    entryKeyXdr: 'AAAA',
-                    remainingTTL: 50000,
-                    liveUntilLedgerSeq: 51001,
-                    lastModifiedLedgerSeq: 1001
-                }]
-            })
-        }))
+        StellarRpcClient: class MockStellarRpcClient {
+            constructor() {}
+            getCurrentLedger = mockGetCurrentLedger;
+            simulateExtension = mockSimulateExtension;
+            submitExtension = mockSubmitExtension;
+            getEntryTTLs = mockGetEntryTTLs;
+        },
     };
 });
 
-// We need to mock resolveSecretKey indirectly if we want it to work without environment variables, but since it's an internal function in extension.ts we can just provide a raw secret key.
-vi.mock("@stellar/stellar-sdk", () => {
-    return {
-        Keypair: {
-            fromSecret: vi.fn().mockReturnValue({
-                publicKey: vi.fn().mockReturnValue("GBDUMMYPUBLICKEYFORTESTING1234567890")
-            })
-        }
-    };
-});
-const DUMMY_SECRET = 'SBAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIB';
+// Import the module under test AFTER the mock is hoisted so that the dynamic
+// import inside extension.ts also picks up the mock (avoids v8-coverage breakage).
+const { runAutoExtensions } = await import('../../src/core/extension.js');
+
+// A real valid Stellar secret key (deterministic from all-\x01 seed) used as a
+// test fixture.  The env: prefix routes through resolveSecretKey so the value
+// is read from process.env at runtime, and Keypair.fromSecret() receives a key
+// with a correct checksum — avoiding breakage when v8 coverage causes dynamic
+// imports to bypass vi.mock() hoisting for @stellar/stellar-sdk.
+const TEST_SECRET = 'SAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC5MY';
+const DUMMY_SOURCE = 'env:BUDGET_TEST_SECRET_KEY';
 
 describe('Budget Enforcement', () => {
     let db: Database.Database;
 
     beforeEach(() => {
+        // Make the secret key available to resolveSecretKey via env
+        process.env['BUDGET_TEST_SECRET_KEY'] = TEST_SECRET;
+
         db = new Database(':memory:');
         const schema = fs.readFileSync(path.resolve(__dirname, '../../src/db/schema.sql'), 'utf8');
         db.exec(schema);
@@ -66,7 +61,7 @@ describe('Budget Enforcement', () => {
             enabled: true,
             target_ttl_ledgers: 50000,
             extend_when_below_ledgers: 20000,
-            keypair_source: DUMMY_SECRET
+            keypair_source: DUMMY_SOURCE
         });
         upsertEntry(db, {
             contract_id: 'contract_1',
@@ -74,7 +69,33 @@ describe('Budget Enforcement', () => {
             entry_type: 'instance',
             live_until_ledger: 1500 // 500 remaining (1500 - 1000)
         });
-        
+
+        // Configure default mock responses — individual tests can override
+        mockGetCurrentLedger.mockResolvedValue(1000);
+        mockSimulateExtension.mockResolvedValue({
+            success: true,
+            minResourceFee: 15000000 // 1.5 XLM in stroops
+        });
+        mockSubmitExtension.mockResolvedValue({
+            success: true,
+            txHash: '0x123',
+            ledger: 1001,
+            cpuInsns: 100,
+            memBytes: 100
+        });
+        mockGetEntryTTLs.mockResolvedValue({
+            latestLedger: 1001,
+            entries: [{
+                entryKeyXdr: 'AAAA',
+                remainingTTL: 50000,
+                liveUntilLedgerSeq: 51001,
+                lastModifiedLedgerSeq: 1001
+            }]
+        });
+    });
+
+    afterEach(() => {
+        delete process.env['BUDGET_TEST_SECRET_KEY'];
         vi.clearAllMocks();
     });
 
@@ -121,7 +142,7 @@ describe('Budget Enforcement', () => {
 
     it('blocks every contract in a pool once their combined spend reaches the cap', async () => {
         insertContract(db, { id: 'contract_2', network: 'testnet' });
-        upsertExtensionPolicy(db, { contract_id: 'contract_2', enabled: true, target_ttl_ledgers: 50000, extend_when_below_ledgers: 20000, keypair_source: DUMMY_SECRET });
+        upsertExtensionPolicy(db, { contract_id: 'contract_2', enabled: true, target_ttl_ledgers: 50000, extend_when_below_ledgers: 20000, keypair_source: DUMMY_SOURCE });
         upsertEntry(db, { contract_id: 'contract_2', entry_key_xdr: 'BBBB', entry_type: 'instance', live_until_ledger: 1500 });
         const currentCycle = new Date().toISOString().slice(0, 7);
         const pool = db.prepare(`INSERT INTO shared_budget_pools (name, monthly_limit_xlm, billing_cycle, spent_xlm) VALUES (?, ?, ?, ?)`)
