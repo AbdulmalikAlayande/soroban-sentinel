@@ -16,7 +16,7 @@
  * not a hard guarantee of secure erasure.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Keypair } from "@stellar/stellar-sdk";
 import type Database from "better-sqlite3";
 import { getDatabaseForTesting } from "../../src/db/database.js";
@@ -121,6 +121,13 @@ describe("fundChannels() key zeroing", () => {
     beforeEach(() => {
         db = getDatabaseForTesting();
         vi.clearAllMocks();
+    });
+
+    afterEach(() => {
+        // Ensure any vi.spyOn calls within this suite are fully restored so they
+        // don't leak into other test files (e.g. budget_enforcement.test.ts,
+        // which mocks @stellar/stellar-sdk and would be broken by a lingering spy).
+        vi.restoreAllMocks();
     });
 
     it("calls sendPayments and returns funded count on success", async () => {
