@@ -4,6 +4,11 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
+    // Run each test file in an isolated module environment. This prevents
+    // vi.mock() hoisting in one file from leaking into a concurrently-scheduled
+    // file in the same worker (e.g. discovery.test.ts -> budget_enforcement.test.ts).
+    isolate: true,
+    pool: "forks",
     include: ["tests/**/*.test.ts"],
     server: {
       deps: {

@@ -85,10 +85,10 @@ export function registerFleetCommand(program: Command): void {
             console.log();
             console.log(chalk.bold(`  Fleet Health Summary`));
             console.log(
-                `  ${chalk.bold.magenta("EXPIRED")}: ${counts.expired}  ` +
-                `${chalk.bold.red("CRITICAL")}: ${counts.critical}  ` +
-                `${chalk.bold.yellow("WARNING")}: ${counts.warning}  ` +
-                `${chalk.bold.green("OK")}: ${counts.ok}`,
+                `  ${chalk.bold.magenta(`EXPIRED: ${counts.expired}`)}  ` +
+                `${chalk.bold.red(`CRITICAL: ${counts.critical}`)}  ` +
+                `${chalk.bold.yellow(`WARNING: ${counts.warning}`)}  ` +
+                `${chalk.bold.green(`OK: ${counts.ok}`)}`,
             );
             console.log();
 
