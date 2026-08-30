@@ -6,6 +6,8 @@ import { getAllContracts, getEntriesForContract } from "../db/repositories.js";
 import { classifyTTL } from "../utils/formatting.js";
 import type { TTLStatus } from "../utils/formatting.js";
 import { instrumentMcpToolInvocations } from "../observability/metrics/mcp.js";
+import { applyMcpPermissions, READ_ONLY_ANNOTATIONS } from "./permissions.js";
+import { getMcpMode, loadConfig, type McpMode } from "../utils/config.js";
 
 export async function invokeListWatchedContracts(db: Database.Database) {
     const contracts = getAllContracts(db);
@@ -39,7 +41,18 @@ export async function invokeListWatchedContracts(db: Database.Database) {
     };
 }
 
-export function createMcpServer(getDb: () => Database.Database): McpServer {
+export interface CreateMcpServerOptions {
+    /**
+     * Permission mode to run in. Defaults to the configured `mcp.mode`, which
+     * is itself `read-only` unless a config file says otherwise.
+     */
+    mode?: McpMode;
+}
+
+export function createMcpServer(
+    getDb: () => Database.Database,
+    options: CreateMcpServerOptions = {},
+): McpServer {
     const server = new McpServer(
         {
             name: "sorokeep",
@@ -54,6 +67,9 @@ export function createMcpServer(getDb: () => Database.Database): McpServer {
         },
     );
 
+    // Permissions first, metrics second, so a tool call refused by the mode
+    // check is not counted as an invocation.
+    applyMcpPermissions(server, options.mode ?? getMcpMode(loadConfig()));
     instrumentMcpToolInvocations(server);
 
     registerGetContractStatusTool(server, getDb);
@@ -62,6 +78,7 @@ export function createMcpServer(getDb: () => Database.Database): McpServer {
     server.tool(
         "list_watched_contracts",
         "List all contracts registered for TTL monitoring with their current health status",
+        READ_ONLY_ANNOTATIONS,
         async () => invokeListWatchedContracts(getDb()),
     );
 
