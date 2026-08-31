@@ -764,7 +764,27 @@ Testnet (`https://soroban-testnet.stellar.org`) and Mainnet (`https://mainnet.so
 
 ### What about email alerts?
 
-Email is not yet implemented. The CLI will reject `--type email` with a clear error message. Webhook and Slack are the supported channels today.
+Email alerts are supported. Configure SMTP credentials (host/port/user/pass) in `~/.sorokeep/config.yaml` or via the corresponding environment variables, and email deliveries use the same database-backed retry queue as the other channels. See the [Configuration Reference](docs/config-reference.md) for the exact field names.
+
+### How do I use a custom RPC endpoint?
+
+Pass `--rpc-url <url>` to `sorokeep watch` or `sorokeep daemon`, or set `rpcUrl` in `~/.sorokeep/config.yaml`. A custom endpoint overrides the default Testnet or Mainnet RPC URL for that command.
+
+### Can I run a monitoring pass without the daemon?
+
+Yes — `sorokeep check <contract-id> --fail-under <ledgers>` runs a single monitoring cycle ad hoc and exits with code 1 if any tracked entry is below that TTL. Use `--force` in CI when you want to report TTL health without failing the build.
+
+### How do I restore an archived entry?
+
+Run `sorokeep restore <contract-id> --keypair-env STELLAR_SECRET_KEY --all` to restore all tracked entries, or pass `--entry <base64-xdr>` to restore one specific entry. The command requires either `--keypair` or `--keypair-env`.
+
+### How do I see how much I've spent on extensions?
+
+Run `sorokeep costs <contract-id>` to see total extensions, total cost in XLM, a per-entry-type breakdown, and a 30-day projection. Use `--period <days>` to change the lookback window or `--all` for the complete history.
+
+### What does `sorokeep guard --dry-run` do?
+
+Run `sorokeep guard <contract-id> --keypair S... --dry-run` to simulate the extension transaction and see the estimated fee without submitting anything to the network. This is useful for checking cost before enabling auto-extension or performing a one-time extension.
 
 ## Roadmap
 
