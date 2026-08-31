@@ -50,6 +50,11 @@ vi.mock("@stellar/stellar-sdk", () => {
         }
     };
 });
+
+// Load the mocked SDK eagerly so extension.ts's runtime `await import()` resolves
+// to the mock instead of racing a parallel load of the real package into cache.
+import "@stellar/stellar-sdk";
+
 const DUMMY_SECRET = 'SBAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIB';
 
 describe('Budget Enforcement', () => {
