@@ -19,6 +19,8 @@ You should receive an acknowledgment within 5 business days. We'll keep you upda
 
 ## Scope
 
+*For a detailed breakdown of assets, trust boundaries, and out-of-scope threats, see our [Threat Model](docs/THREAT_MODEL.md).*
+
 The following are in scope for security reports:
 
 - **Key handling** — any path where a secret key (raw, env-var, AWS Secrets Manager, or HashiCorp Vault-resolved) could be logged, persisted to disk, or leaked in an error message
