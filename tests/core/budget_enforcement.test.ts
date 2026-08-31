@@ -51,11 +51,9 @@ vi.mock("@stellar/stellar-sdk", () => {
     };
 });
 
-// Load the mocked SDK eagerly so extension.ts's runtime `await import()` resolves
-// to the mock instead of racing a parallel load of the real package into cache.
-import "@stellar/stellar-sdk";
-
-const DUMMY_SECRET = 'SBAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIB';
+// Use a valid Stellar secret so the test passes even if the real SDK leaks in
+// on some platforms (the runtime `await import()` in extension.ts races the mock).
+const DUMMY_SECRET = 'SDPD7HC3SVYA6EDX5H7W4TYFMUHX2WY4OIDSRXXAZYM6ZTV2FOQNJDTC';
 
 describe('Budget Enforcement', () => {
     let db: Database.Database;
