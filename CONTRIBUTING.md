@@ -36,7 +36,7 @@ If you want to work on something, check the [open issues](https://github.com/Abd
 
 For how the pieces actually work together at runtime (the daemon cycle, fault isolation, where a new alert channel or command plugs in), read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The [Project Structure](#project-structure) section below covers the directory layout; ARCHITECTURE.md covers the data flow.
 
-If you're reporting a security issue (key leakage, unintended transactions, signature bypass), see [SECURITY.md](SECURITY.md) instead of opening a public issue. This project is also governed by a [Code of Conduct](CODE_OF_CONDUCT.md).
+If you're reporting a security issue (key leakage, unintended transactions, signature bypass), see [SECURITY.md](SECURITY.md) instead of opening a public issue. To understand our security boundaries and assets, read the [Threat Model](docs/THREAT_MODEL.md). This project is also governed by a [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Quick Start
 
