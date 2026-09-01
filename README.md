@@ -35,7 +35,7 @@ Soroban's storage model is uncommon among major smart contract platforms: **stat
 
 This is by design — state archival keeps Stellar lean and scalable. But it means **you must actively manage the lifecycle of your contract's state, or it dies.**
 
-There is currently no dedicated open-source tool that combines TTL monitoring, alerting, auto-extension, cost tracking, and restoration for Soroban contracts. Developers either use manual CLI commands, build ad-hoc scripts, or embed TTL extension logic directly in their contracts.
+There is currently no dedicated open-source tool that combines TTL monitoring, alerting, auto-extension, cost tracking, and restoration for Soroban contracts. Developers either use manual CLI commands, build ad-hoc scripts, or embed TTL extension logic directly in their contracts. (See our detailed [Comparison Guide: Sorokeep vs. Manual Scripts](docs/vs-manual-scripts.md) for an in-depth breakdown.)
 
 Sorokeep is the unified operations layer that handles all of this.
 
