@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
@@ -56,6 +56,16 @@ describe('Budget Enforcement', () => {
     let db: Database.Database;
 
     beforeEach(() => {
+        // Freeze the clock so this suite's `new Date().toISOString().slice(0, 7)`
+        // billing-cycle calls (both here and inside runAutoExtensions) always
+        // agree, regardless of real wall-clock drift, month-boundary timing,
+        // or CI worker scheduling. Without this, a test and the code under
+        // test could compute different "current" billing cycles, silently
+        // triggering the pool-rollover branch and invalidating assertions
+        // that assume a stable, already-populated billing cycle.
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-06-15T00:00:00.000Z'));
+
         db = new Database(':memory:');
         const schema = fs.readFileSync(path.resolve(__dirname, '../../src/db/schema.sql'), 'utf8');
         db.exec(schema);
@@ -74,8 +84,12 @@ describe('Budget Enforcement', () => {
             entry_type: 'instance',
             live_until_ledger: 1500 // 500 remaining (1500 - 1000)
         });
-        
+
         vi.clearAllMocks();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
     });
 
     it('Extensions are skipped when budget limit is crossed', async () => {
