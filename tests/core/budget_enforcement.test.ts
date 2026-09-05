@@ -50,7 +50,16 @@ vi.mock("@stellar/stellar-sdk", () => {
         }
     };
 });
-const DUMMY_SECRET = 'SBAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIB';
+// A genuinely checksum-valid Stellar secret key (not a real funded account).
+// extension.ts resolves this via a *dynamic* `await import("@stellar/stellar-sdk")`
+// inside runAutoExtensions, which does not reliably go through this file's
+// `vi.mock("@stellar/stellar-sdk", ...)` in every environment (observed in CI:
+// the real Keypair.fromSecret ran and threw "invalid checksum" on a
+// deliberately-invalid placeholder, which silently turned a "both contracts
+// blocked by the shared budget pool" assertion into a false failure for one
+// of the two). Using a real, valid key removes the dependency on that mock
+// being applied to make this test's core assertions correct.
+const DUMMY_SECRET = 'SBPQHPF4S2SQ7XMYAC27XZZ3BE4BKXPW2MDJMMNKSAW5GCEYOQUDJPN7';
 
 describe('Budget Enforcement', () => {
     let db: Database.Database;
