@@ -1,3 +1,17 @@
+-- Contract groups allow teams to apply shared settings (such as a default
+-- poll interval) to a collection of contracts without repeating the same
+-- per-contract override on every member.
+--
+-- settings is a JSON object stored as TEXT.  The only field consulted by the
+-- daemon today is `poll_interval_seconds` (integer).  Additional fields may
+-- be added later without a schema change.
+CREATE TABLE IF NOT EXISTS contract_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    settings TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS contracts (
     id TEXT PRIMARY KEY,
     name TEXT,
@@ -5,6 +19,7 @@ CREATE TABLE IF NOT EXISTS contracts (
     wasm_hash TEXT,
     tags TEXT,
     poll_interval_seconds INTEGER,
+    group_id INTEGER REFERENCES contract_groups(id) ON DELETE SET NULL,
     active INTEGER NOT NULL DEFAULT 1,
     registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_checked_ledger INTEGER,

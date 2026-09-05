@@ -1,5 +1,18 @@
 import type Database from "better-sqlite3";
 
+/**
+ * A contract group holds shared settings for a collection of contracts.
+ * The `settings` column is a JSON object; the daemon reads
+ * `settings.poll_interval_seconds` as a group-level polling default.
+ */
+export interface ContractGroup {
+    id: number;
+    name: string;
+    /** JSON-encoded settings object, e.g. `{"poll_interval_seconds": 120}`. */
+    settings: string;
+    created_at: string;
+}
+
 export interface Contract {
     id: string;
     name: string | null;
@@ -7,6 +20,8 @@ export interface Contract {
     wasm_hash: string | null;
     tags: string | null;
     poll_interval_seconds?: number | null;
+    /** FK into contract_groups.id — NULL means the contract belongs to no group. */
+    group_id?: number | null;
     active: number;
     registered_at: Date;
     last_checked_ledger?: number | null;
@@ -98,16 +113,17 @@ export interface StateChange {
 export { upsertBudget, getBudget, addBudgetSpent } from "./budget.js";
 
 // ---------------------------- Database Access Functions For Schema: Contract ----------------------------
-export function insertContract(db: Database.Database, contract: {id: string; name?: string; network: string; wasm_hash?: string; tags?: string; poll_interval_seconds?: number | null; active?: number}): void {
+export function insertContract(db: Database.Database, contract: {id: string; name?: string; network: string; wasm_hash?: string; tags?: string; poll_interval_seconds?: number | null; group_id?: number | null; active?: number}): void {
     db.prepare(`
-        INSERT INTO contracts (id, name, network, wasm_hash, tags, poll_interval_seconds, active)
-        VALUES (@id, @name, @network, @wasm_hash, @tags, @poll_interval_seconds, @active)
+        INSERT INTO contracts (id, name, network, wasm_hash, tags, poll_interval_seconds, group_id, active)
+        VALUES (@id, @name, @network, @wasm_hash, @tags, @poll_interval_seconds, @group_id, @active)
         ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             network = excluded.network,
             wasm_hash = excluded.wasm_hash,
             tags = excluded.tags,
             poll_interval_seconds = COALESCE(excluded.poll_interval_seconds, contracts.poll_interval_seconds),
+            group_id = COALESCE(excluded.group_id, contracts.group_id),
             active = COALESCE(excluded.active, contracts.active)
     `).run({
       id: contract.id,
@@ -116,6 +132,7 @@ export function insertContract(db: Database.Database, contract: {id: string; nam
       wasm_hash: contract.wasm_hash ?? null,
       tags: contract.tags ?? null,
       poll_interval_seconds: contract.poll_interval_seconds ?? null,
+      group_id: contract.group_id ?? null,
       active: contract.active ?? 1,
     });
 }
@@ -200,6 +217,64 @@ export function isIntrospectionCacheValid(
   const ageMs = Date.now() - introspectedAt;
   // strictly less than → at exactly 24 h the cache is expired
   return ageMs < maxAgeMs;
+}
+
+// ---------------------------- Database Access Functions For Schema: ContractGroup ----------------------------
+
+/**
+ * Insert or update a contract group.
+ *
+ * If a group with the same name already exists its settings are overwritten.
+ * Returns the rowid of the inserted/updated group.
+ */
+export function upsertContractGroup(
+    db: Database.Database,
+    group: { name: string; settings?: Record<string, unknown> },
+): number {
+    const settingsJson = JSON.stringify(group.settings ?? {});
+    const result = db.prepare(`
+        INSERT INTO contract_groups (name, settings)
+        VALUES (@name, @settings)
+        ON CONFLICT(name) DO UPDATE SET settings = excluded.settings
+    `).run({ name: group.name, settings: settingsJson });
+    // lastInsertRowid is 0 on an UPDATE; look up the actual id in that case.
+    if (result.lastInsertRowid !== 0) {
+        return result.lastInsertRowid as number;
+    }
+    const row = db.prepare("SELECT id FROM contract_groups WHERE name = ?").get(group.name) as { id: number };
+    return row.id;
+}
+
+/** Return a group by its primary key, or undefined if not found. */
+export function getContractGroup(
+    db: Database.Database,
+    groupId: number,
+): ContractGroup | undefined {
+    return db.prepare("SELECT * FROM contract_groups WHERE id = ?").get(groupId) as ContractGroup | undefined;
+}
+
+/** Return the group that the given contract belongs to, or undefined if it has no group. */
+export function getGroupForContract(
+    db: Database.Database,
+    contractId: string,
+): ContractGroup | undefined {
+    return db.prepare(`
+        SELECT cg.*
+        FROM contract_groups cg
+        JOIN contracts c ON c.group_id = cg.id
+        WHERE c.id = ?
+    `).get(contractId) as ContractGroup | undefined;
+}
+
+/**
+ * Assign a contract to a group (or remove it from any group by passing null).
+ */
+export function setContractGroup(
+    db: Database.Database,
+    contractId: string,
+    groupId: number | null,
+): void {
+    db.prepare("UPDATE contracts SET group_id = ? WHERE id = ?").run(groupId, contractId);
 }
 
 // ---------------------------- Database Access Functions For Schema: ContractEntry ----------------------------

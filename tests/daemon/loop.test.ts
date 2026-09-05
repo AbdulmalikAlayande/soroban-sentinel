@@ -52,6 +52,7 @@ vi.mock("../../src/logging/index.js", () => ({
 
 import { startDaemon, stopDaemon } from "../../src/daemon/loop.js";
 import { insertContract } from "../../src/db/repositories.js";
+import { upsertContractGroup, setContractGroup } from "../../src/db/repositories.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -721,6 +722,170 @@ describe("daemon loop", () => {
             await vi.advanceTimersByTimeAsync(5000);
             expect(mockRunMonitorCycle).toHaveBeenCalledTimes(2);
             expect(mockDeliverPendingAlerts).toHaveBeenCalledTimes(2);
+        });
+    });
+
+    // =========================================================================
+    // 11. GROUP-LEVEL POLL INTERVAL PRECEDENCE
+    // =========================================================================
+    describe("Group-level poll interval precedence", () => {
+        /**
+         * Precedence (lowest → highest):
+         *   global --interval  <  per-group default  <  per-contract override
+         */
+
+        it("uses the group's poll_interval_seconds when the contract has no per-contract override", async () => {
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+
+            // Create a group whose settings specify a 200-second poll interval.
+            const groupId = upsertContractGroup(db, {
+                name: "team-alpha",
+                settings: { poll_interval_seconds: 200 },
+            });
+
+            // Register a contract with no per-contract poll_interval_seconds override,
+            // but belonging to the group.
+            insertContract(db, {
+                id: "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6",
+                name: "group-contract-no-override",
+                network: "testnet",
+                // Deliberately no poll_interval_seconds here
+            });
+            setContractGroup(db, "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6", groupId);
+
+            // Global interval is intentionally much larger so it can't be responsible
+            // for the 200 000 ms tick.
+            await startDaemon(db, "testnet", { intervalMs: 900_000 });
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
+
+            // Just under 200 s — should NOT have triggered a second cycle.
+            await vi.advanceTimersByTimeAsync(199_999);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
+
+            // Exactly at 200 s — group default kicks in.
+            await vi.advanceTimersByTimeAsync(1);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(2);
+        });
+
+        it("per-contract override always wins over the group's default interval", async () => {
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+
+            // Create a group with a 600-second default.
+            const groupId = upsertContractGroup(db, {
+                name: "team-beta",
+                settings: { poll_interval_seconds: 600 },
+            });
+
+            // Register a contract with a 120-second per-contract override.
+            insertContract(db, {
+                id: "CBEK0975FU6KKOEZHGO098G6HLBS5D6LVATIGCESOGXSZEQ2UWUY8I3O",
+                name: "group-contract-with-override",
+                network: "testnet",
+                poll_interval_seconds: 120,
+            });
+            setContractGroup(db, "CBEK0975FU6KKOEZHGO098G6HLBS5D6LVATIGCESOGXSZEQ2UWUY8I3O", groupId);
+
+            // Global interval is larger than both — it must not win.
+            await startDaemon(db, "testnet", { intervalMs: 900_000 });
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
+
+            // Just under 120 s — per-contract override has not yet fired.
+            await vi.advanceTimersByTimeAsync(119_999);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
+
+            // Exactly at 120 s — per-contract override fires (not the 600 s group default).
+            await vi.advanceTimersByTimeAsync(1);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(2);
+        });
+
+        it("falls back to global interval when no per-contract override and no group membership", async () => {
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+
+            // A contract with no override and no group.
+            insertContract(db, {
+                id: "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6",
+                name: "ungrouped-no-override",
+                network: "testnet",
+            });
+
+            await startDaemon(db, "testnet", { intervalMs: 10_000 });
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
+
+            await vi.advanceTimersByTimeAsync(9_999);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(2);
+        });
+
+        it("when multiple contracts exist, picks the smallest effective interval across all of them", async () => {
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+
+            // Group A: 400-second default.
+            const groupA = upsertContractGroup(db, {
+                name: "group-a",
+                settings: { poll_interval_seconds: 400 },
+            });
+            // Group B: 250-second default.
+            const groupB = upsertContractGroup(db, {
+                name: "group-b",
+                settings: { poll_interval_seconds: 250 },
+            });
+
+            // Contract 1: no override, in group A → effective 400 s.
+            insertContract(db, {
+                id: "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6",
+                name: "c1-group-a",
+                network: "testnet",
+            });
+            setContractGroup(db, "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6", groupA);
+
+            // Contract 2: no override, in group B → effective 250 s.
+            insertContract(db, {
+                id: "CBEK0975FU6KKOEZHGO098G6HLBS5D6LVATIGCESOGXSZEQ2UWUY8I3O",
+                name: "c2-group-b",
+                network: "testnet",
+            });
+            setContractGroup(db, "CBEK0975FU6KKOEZHGO098G6HLBS5D6LVATIGCESOGXSZEQ2UWUY8I3O", groupB);
+
+            // Global fallback is much larger — should not win.
+            await startDaemon(db, "testnet", { intervalMs: 900_000 });
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
+
+            // Just under 250 s — nothing should have fired yet.
+            await vi.advanceTimersByTimeAsync(249_999);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
+
+            // At 250 s — the smallest group default fires.
+            await vi.advanceTimersByTimeAsync(1);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(2);
+        });
+
+        it("ignores group settings when poll_interval_seconds is absent from the settings JSON", async () => {
+            mockRunMonitorCycle.mockResolvedValue(makeCycleResult());
+
+            // A group whose settings JSON does NOT include poll_interval_seconds.
+            const groupId = upsertContractGroup(db, {
+                name: "group-no-interval",
+                settings: { some_other_key: "value" },
+            });
+
+            insertContract(db, {
+                id: "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6",
+                name: "contract-group-no-interval",
+                network: "testnet",
+            });
+            setContractGroup(db, "CBEOJUP5FU6KKOEZ7RMTSKZ7YLBS5D6LVATIGCESOGXSZEQ2UWQFKZW6", groupId);
+
+            // Global is 10 s; group has no poll_interval_seconds → must fall back to 10 s.
+            await startDaemon(db, "testnet", { intervalMs: 10_000 });
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
+
+            await vi.advanceTimersByTimeAsync(9_999);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(1);
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(mockRunMonitorCycle).toHaveBeenCalledTimes(2);
         });
     });
 });

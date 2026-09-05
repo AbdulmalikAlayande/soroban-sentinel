@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { runMonitorCycle, type MonitorCycleResult } from "../core/monitor.js";
 import { deliverPendingAlerts } from "../alerts/dispatcher.js";
 import { vacuumDatabase } from "../db/database.js";
-import { aggregateDailyCostSnapshots, getAllContracts } from "../db/repositories.js";
+import { aggregateDailyCostSnapshots, getAllContracts, getGroupForContract } from "../db/repositories.js";
 import { getLogger } from "../logging/index.js";
 import type { Logger } from "../logging/types.js";
 
@@ -215,15 +215,64 @@ function safeOnCycle(
     }
 }
 
+/**
+ * Determine the effective poll interval in milliseconds for the given network.
+ *
+ * Precedence — lowest to highest (a higher tier always wins):
+ *
+ *   1. Global default (`fallbackIntervalMs`) — the `--interval` CLI flag or
+ *      the built-in 5-minute constant.
+ *   2. Per-group default — `contract_groups.settings.poll_interval_seconds`
+ *      for any contract in the network that belongs to a group.  Only
+ *      consulted when the contract itself has no per-contract override.
+ *   3. Per-contract override — `contracts.poll_interval_seconds`.
+ *
+ * Across all contracts on the network we collect their *effective* intervals
+ * (resolving each one through the precedence chain) and return the smallest
+ * value so that the contract with the shortest desired cadence is always
+ * satisfied.
+ *
+ * If no contract supplies a meaningful interval (neither a per-contract
+ * override nor a group default) the global fallback is returned unchanged.
+ */
 function resolvePollIntervalMs(db: Database.Database, network: string, fallbackIntervalMs: number): number {
     const contracts = getAllContracts(db).filter((contract) => contract.network === network);
-    const overrides = contracts
-        .map((contract) => contract.poll_interval_seconds)
-        .filter((value): value is number => typeof value === "number" && value > 0);
 
-    if (overrides.length === 0) {
+    // Collect the effective interval (in seconds) for every contract that
+    // has at least one tier of override above the global default.
+    const effectiveSeconds: number[] = [];
+
+    for (const contract of contracts) {
+        // Tier 3 — per-contract override wins unconditionally.
+        if (typeof contract.poll_interval_seconds === "number" && contract.poll_interval_seconds > 0) {
+            effectiveSeconds.push(contract.poll_interval_seconds);
+            continue;
+        }
+
+        // Tier 2 — per-group default, only when the contract belongs to a group.
+        if (contract.group_id != null) {
+            const group = getGroupForContract(db, contract.id);
+            if (group) {
+                let settings: Record<string, unknown>;
+                try {
+                    settings = JSON.parse(group.settings) as Record<string, unknown>;
+                } catch {
+                    // Malformed JSON in settings — treat as absent.
+                    settings = {};
+                }
+                const groupInterval = settings["poll_interval_seconds"];
+                if (typeof groupInterval === "number" && groupInterval > 0) {
+                    effectiveSeconds.push(groupInterval);
+                }
+            }
+        }
+        // Tier 1 — no override found; this contract contributes nothing
+        // (it will be polled on the global fallback interval).
+    }
+
+    if (effectiveSeconds.length === 0) {
         return fallbackIntervalMs;
     }
 
-    return Math.min(...overrides) * 1000;
+    return Math.min(...effectiveSeconds) * 1000;
 }

@@ -70,6 +70,7 @@ export function getDatabase(customPath?: string): Database.Database {
         )`,
         `ALTER TABLE contracts ADD COLUMN last_introspected_at DATETIME`,
         `ALTER TABLE contracts ADD COLUMN active INTEGER NOT NULL DEFAULT 1`,
+        `ALTER TABLE contracts ADD COLUMN group_id INTEGER REFERENCES contract_groups(id) ON DELETE SET NULL`,
     ];
     for (const sql of migrations) {
         try { db.exec(sql); } catch { /* column already exists — no-op */ }
