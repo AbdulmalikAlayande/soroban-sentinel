@@ -13,6 +13,12 @@ import { handleRpcUnreachableError } from "../rpc/client.js";
 
 const logger = getLogger().child({ component: "GuardCommand" });
 
+function getEntryLabel(entry: { entry_type: string; label?: string | null }): string {
+    if (entry.entry_type === "instance") return "Instance";
+    if (entry.entry_type === "wasm") return "WASM Code";
+    return entry.label ?? entry.entry_type;
+}
+
 /**
  * Exported extension policy shape — safe for serialization to JSON.
  * Per SECURITY.md: never contains raw secret keys, only public keys and
@@ -294,6 +300,89 @@ export function registerGuardCommand(program: Command): void {
             } catch (error: unknown) {
                 const msg = error instanceof Error ? error.message : String(error);
                 logger.error("Guard import failed", { error: msg });
+                console.error(chalk.red(`Error: ${msg}`));
+                process.exit(1);
+            }
+        });
+
+    guard
+        .command("preview")
+        .description("Preview which entries would be auto-extended based on cached TTL data (local-only, no RPC calls)")
+        .requiredOption("--contract <id>", "The contract ID to preview auto-extension for")
+        .action(async (options: { contract: string }) => {
+            try {
+                const contractId = options.contract;
+                const db = getDatabase();
+                const contract = getContract(db, contractId);
+
+                if (!contract) {
+                    console.error(chalk.red(`Contract ${formatContractID(contractId)} not found. Run 'sorokeep watch' first.`));
+                    process.exit(1);
+                    return;
+                }
+
+                const policy = getExtensionPolicy(db, contractId);
+
+                if (!policy) {
+                    console.log(chalk.yellow(`No extension policy configured for ${contract.name ?? formatContractID(contractId)}.`));
+                    console.log(chalk.dim("Run 'sorokeep guard <contractId> --auto-extend ...' first."));
+                    return;
+                }
+
+                const displayName = contract.name ?? formatContractID(contractId);
+
+                console.log();
+                console.log(chalk.bold(`  ${displayName}`) + chalk.dim(` (${formatContractID(contractId)})`));
+                console.log(`  Network: ${chalk.cyan(contract.network)}`);
+                console.log(
+                    `  Policy: ${policy.enabled ? chalk.green("ENABLED") : chalk.yellow("DISABLED")}` +
+                    ` (threshold: ${policy.extend_when_below_ledgers.toLocaleString()} ledgers, target: ${policy.target_ttl_ledgers.toLocaleString()} ledgers)`,
+                );
+                const lastCheckedLedger = contract.last_checked_ledger ?? null;
+                if (lastCheckedLedger != null) {
+                    console.log(chalk.dim(`  Last checked: ledger ${lastCheckedLedger.toLocaleString()}`));
+                }
+                console.log();
+
+                const entries = getEntriesForContract(db, contractId);
+
+                if (entries.length === 0) {
+                    console.log(chalk.yellow("  No entries tracked for this contract."));
+                    console.log();
+                    return;
+                }
+
+                const labels = entries.map((e) => getEntryLabel(e));
+                const maxLabelLen = Math.max(...labels.map((l) => l.length));
+
+                for (const entry of entries) {
+                    const label = getEntryLabel(entry);
+                    const paddedLabel = label.padEnd(maxLabelLen);
+                    const liveUntilLedger = entry.live_until_ledger ?? null;
+
+                    if (liveUntilLedger == null || lastCheckedLedger == null) {
+                        console.log(`  ${paddedLabel}  TTL: ${chalk.dim("unknown")}`);
+                        continue;
+                    }
+
+                    const remaining = liveUntilLedger - lastCheckedLedger;
+                    const timeRemaining = formatTimeToCloseLedger(remaining);
+                    const wouldExtend = remaining >= 0 && remaining < policy.extend_when_below_ledgers;
+                    const statusText = wouldExtend
+                        ? chalk.bold.yellow("would extend")
+                        : remaining < 0
+                            ? chalk.bold.magenta("expired")
+                            : chalk.bold.green("ok");
+
+                    console.log(
+                        `  ${paddedLabel}  TTL: ${remaining.toLocaleString().padStart(9)} ledgers (${timeRemaining})  ${statusText}`,
+                    );
+                }
+
+                console.log();
+            } catch (error: unknown) {
+                const msg = error instanceof Error ? error.message : String(error);
+                logger.error("Guard preview command failed", { error: msg });
                 console.error(chalk.red(`Error: ${msg}`));
                 process.exit(1);
             }
