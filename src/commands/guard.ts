@@ -5,6 +5,7 @@ import type Database from "better-sqlite3";
 import { getDatabase } from "../db/database.js";
 import { getContract, getEntriesForContract, upsertExtensionPolicy, getExtensionPolicy, getEffectivePolicy, setEntryTypePolicy, deleteEntryTypePolicy, type EntryType } from "../db/repositories.js";
 import { rollbackExtensionPolicy, listPolicyHistory } from "../db/guard_policy_history.js";
+import { getPreset, PRESET_NAMES } from "../core/guard-presets.js";
 import { simulateExtension, extendEntries, resolveSecretKey } from "../core/extension.js";
 import { applyGuardPolicyByTag } from "../core/fleet.js";
 import { getExtensionCosts } from "../core/costs.js";
@@ -208,6 +209,33 @@ async function runCostEstimateCommand(contractId: string, options: { targetTtl?:
         }
         process.exit(1);
     }
+}
+
+/**
+ * Resolves --preset into --target-ttl/--threshold values, or returns an
+ * error message if --preset is unknown or combined with an explicit
+ * --target-ttl/--threshold (issue #494: the intent is ambiguous otherwise).
+ * A no-op ({}) is returned when --preset was not supplied.
+ */
+function resolvePresetOptions(options: { preset?: string; targetTtl?: string; threshold?: string }): {
+    targetTtl?: string;
+    threshold?: string;
+    error?: string;
+} {
+    if (options.preset === undefined) return {};
+
+    const preset = getPreset(options.preset);
+    if (!preset) {
+        return { error: `Unknown preset "${options.preset}". Valid presets: ${PRESET_NAMES.join(", ")}` };
+    }
+    if (options.targetTtl !== undefined) {
+        return { error: "--preset and --target-ttl are mutually exclusive. Use --preset to pick a named policy or --target-ttl to set a custom value, not both." };
+    }
+    if (options.threshold !== undefined) {
+        return { error: "--preset and --threshold are mutually exclusive. Use --preset to pick a named policy or --threshold to set a custom value, not both." };
+    }
+
+    return { targetTtl: String(preset.targetTtl), threshold: String(preset.threshold) };
 }
 
 export function registerGuardCommand(program: Command): void {
@@ -607,8 +635,9 @@ export function registerGuardCommand(program: Command): void {
         .command("apply [contractId]", { isDefault: true, hidden: true })
         .description("Configure auto-extension policy for a contract, or in bulk via --tag")
         .option("--tag <tag>", "Apply policy to all contracts matching this tag instead of a single contract")
-        .option("--target-ttl <ledgers>", "Target TTL in ledgers after extension", "100000")
-        .option("--threshold <ledgers>", "Extend when TTL drops below this many ledgers", "20000")
+        .option("--preset <name>", `Use a named policy preset (${PRESET_NAMES.join(" | ")}). Mutually exclusive with --target-ttl and --threshold.`)
+        .option("--target-ttl <ledgers>", "Target TTL in ledgers after extension")
+        .option("--threshold <ledgers>", "Extend when TTL drops below this many ledgers")
         .option("--keypair <secret>", "Stellar secret key for signing extension transactions")
         .option("--keypair-env <var>", "Environment variable containing the secret key")
         .option("--keypair-vault <path>", "HashiCorp Vault secret path (e.g. secret/data/stellar/mykey)")
@@ -617,7 +646,7 @@ export function registerGuardCommand(program: Command): void {
         .option("--dry-run", "Simulate the extension without submitting")
         .option("--disable", "Disable auto-extension for this contract")
         .option("--json", "Output machine-readable JSON")
-        .action(async (contractId: string | undefined, options: { json?: boolean; tag?: string; targetTtl?: string; threshold?: string; keypair?: string; keypairEnv?: string; keypairVault?: string; maxFee?: string; autoExtend?: boolean; dryRun?: boolean; disable?: boolean } = {}) => {
+        .action(async (contractId: string | undefined, options: { json?: boolean; tag?: string; preset?: string; targetTtl?: string; threshold?: string; keypair?: string; keypairEnv?: string; keypairVault?: string; maxFee?: string; autoExtend?: boolean; dryRun?: boolean; disable?: boolean } = {}) => {
             try {
                 if (contractId && options.tag) {
                     if (options.json) {
@@ -671,6 +700,20 @@ export function registerGuardCommand(program: Command): void {
                     console.error(chalk.red(`Contract ${formatContractID(contractId!)} not found. Run 'sorokeep watch' first.`));
                     process.exit(1);
                 }
+
+                const presetResolution = resolvePresetOptions(options);
+                if (presetResolution.error) {
+                    if (options.json) {
+                        printOutput({ success: false, error: "invalid_preset", contractId, message: presetResolution.error }, true);
+                        process.exitCode = 1;
+                        return;
+                    }
+                    console.error(chalk.red(presetResolution.error));
+                    process.exit(1);
+                    return;
+                }
+                if (presetResolution.targetTtl) options.targetTtl = presetResolution.targetTtl;
+                if (presetResolution.threshold) options.threshold = presetResolution.threshold;
 
                 const targetTtlRaw = options.targetTtl ?? "100000";
                 const thresholdRaw = options.threshold ?? "20000";
@@ -959,6 +1002,7 @@ export function registerGuardCommand(program: Command): void {
 
 interface TagPolicyOptions {
     json?: boolean;
+    preset?: string;
     targetTtl?: string;
     threshold?: string;
     keypair?: string;
@@ -974,6 +1018,20 @@ async function applyGuardPolicyToTag(
     tag: string,
     options: TagPolicyOptions,
 ): Promise<void> {
+    const presetResolution = resolvePresetOptions(options);
+    if (presetResolution.error) {
+        if (options.json) {
+            printOutput({ success: false, error: "invalid_preset", tag, message: presetResolution.error }, true);
+            process.exitCode = 1;
+            return;
+        }
+        console.error(chalk.red(presetResolution.error));
+        process.exit(1);
+        return;
+    }
+    if (presetResolution.targetTtl) options.targetTtl = presetResolution.targetTtl;
+    if (presetResolution.threshold) options.threshold = presetResolution.threshold;
+
     const targetTtlRaw = options.targetTtl ?? "100000";
     const thresholdRaw = options.threshold ?? "20000";
     const targetTTL = Number(targetTtlRaw);

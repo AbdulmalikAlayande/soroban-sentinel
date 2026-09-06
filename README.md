@@ -277,15 +277,32 @@ Configure auto-extension policies. When enabled, the daemon automatically extend
 sorokeep guard <contract-id> [options]
 ```
 
-| Option                   | Description                                             | Default  |
-| ------------------------ | ------------------------------------------------------- | -------- |
-| `--target-ttl <ledgers>` | TTL to extend entries to                                | `100000` |
-| `--threshold <ledgers>`  | Extend when TTL drops below this                        | `20000`  |
-| `--keypair <secret>`     | Stellar secret key (for one-time extension)             | —        |
-| `--keypair-env <var>`    | Env var name containing the secret key                  | —        |
-| `--auto-extend`          | Enable daemon auto-extension (requires `--keypair-env`) | —        |
-| `--dry-run`              | Simulate extension and show estimated fee               | —        |
-| `--disable`              | Disable auto-extension for this contract                | —        |
+| Option                   | Description                                                             | Default  |
+| ------------------------ | ------------------------------------------------------------------------ | -------- |
+| `--preset <name>`        | Use a named policy preset (`conservative`\|`balanced`\|`aggressive`); mutually exclusive with `--target-ttl`/`--threshold` | —        |
+| `--target-ttl <ledgers>` | TTL to extend entries to                                                | `100000` |
+| `--threshold <ledgers>`  | Extend when TTL drops below this                                        | `20000`  |
+| `--keypair <secret>`     | Stellar secret key (for one-time extension)                             | —        |
+| `--keypair-env <var>`    | Env var name containing the secret key                                  | —        |
+| `--auto-extend`          | Enable daemon auto-extension (requires `--keypair-env`)                 | —        |
+| `--dry-run`              | Simulate extension and show estimated fee                               | —        |
+| `--disable`              | Disable auto-extension for this contract                                | —        |
+
+**Extension policy presets:**
+
+Instead of picking raw ledger numbers, `--preset` selects a named tradeoff between cost and safety margin:
+
+| Preset         | Target TTL      | Threshold      | Safety margin | Cost |
+| -------------- | --------------- | -------------- | -------------- | ---- |
+| `conservative` | 518,400 (~30d)  | 103,680 (~6d)  | Wide           | High |
+| `balanced`     | 100,000 (~5.8d) | 20,000 (~1.2d) | Medium         | Med  |
+| `aggressive`   | 51,840 (~3d)    | 8,640 (~12h)   | Narrow         | Low  |
+
+Use `conservative` for production contracts where downtime is unacceptable, `aggressive` for actively monitored testnet contracts where extension cost matters more than safety margin, and `balanced` (the historical default) otherwise. `--preset` cannot be combined with `--target-ttl` or `--threshold` — pick one or the other.
+
+```bash
+sorokeep guard <contract-id> --preset conservative --keypair-env STELLAR_SECRET_KEY --auto-extend
+```
 
 **Usage modes:**
 
