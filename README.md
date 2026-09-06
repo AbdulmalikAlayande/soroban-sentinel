@@ -35,7 +35,7 @@ Soroban's storage model is uncommon among major smart contract platforms: **stat
 
 This is by design — state archival keeps Stellar lean and scalable. But it means **you must actively manage the lifecycle of your contract's state, or it dies.**
 
-There is currently no dedicated open-source tool that combines TTL monitoring, alerting, auto-extension, cost tracking, and restoration for Soroban contracts. Developers either use manual CLI commands, build ad-hoc scripts, or embed TTL extension logic directly in their contracts.
+There is currently no dedicated open-source tool that combines TTL monitoring, alerting, auto-extension, cost tracking, and restoration for Soroban contracts. Developers either use manual CLI commands, build ad-hoc scripts, or embed TTL extension logic directly in their contracts. (See our detailed [Comparison Guide: Sorokeep vs. Manual Scripts](docs/vs-manual-scripts.md) for an in-depth breakdown.)
 
 Sorokeep is the unified operations layer that handles all of this.
 
@@ -89,6 +89,8 @@ npm install -g sorokeep
 -->
 
 ## Quick Start
+
+> **Migrating from custom scripts or cron jobs?** See the [Migration Guide](docs/migrating-from-cli-scripts.md) to map your existing `soroban-cli` / `stellar contract extend-ttl` scripts to Sorokeep.
 
 > **See it in action:** `scripts/demo.sh` runs the full Quick Start flow automatically. Record it with [asciinema](https://asciinema.org/) (`asciinema rec -c "bash scripts/demo.sh"`) and convert to an embeddable SVG with [svg-term-cli](https://github.com/marionebl/svg-term-cli) (`svg-term --in demo.cast --out docs/demo.svg --window`).
 >
@@ -789,6 +791,30 @@ The built-in registry currently includes Webhook, Webhook v2, Slack, PagerDuty, 
 ### What happens when a contract entry has already expired?
 
 An expired entry is archived and cannot be extended until it is restored. Run `sorokeep restore <contract-id> --entry <key-xdr> --keypair-env <var>` (or use `--all`), then let the existing watch continue; restoration requires a signing key and XLM for network fees.
+
+### What about email alerts?
+
+Email alerts are supported. Configure SMTP credentials (host/port/user/pass) in `~/.sorokeep/config.yaml` or via the corresponding environment variables, and email deliveries use the same database-backed retry queue as the other channels. See the [Configuration Reference](docs/config-reference.md) for the exact field names.
+
+### How do I use a custom RPC endpoint?
+
+Pass `--rpc-url <url>` to `sorokeep watch` or `sorokeep daemon`, or set `rpcUrl` in `~/.sorokeep/config.yaml`. A custom endpoint overrides the default Testnet or Mainnet RPC URL for that command.
+
+### Can I run a monitoring pass without the daemon?
+
+Yes — `sorokeep check <contract-id> --fail-under <ledgers>` runs a single monitoring cycle ad hoc and exits with code 1 if any tracked entry is below that TTL. Use `--force` in CI when you want to report TTL health without failing the build.
+
+### How do I restore an archived entry?
+
+Run `sorokeep restore <contract-id> --keypair-env STELLAR_SECRET_KEY --all` to restore all tracked entries, or pass `--entry <base64-xdr>` to restore one specific entry. The command requires either `--keypair` or `--keypair-env`.
+
+### How do I see how much I've spent on extensions?
+
+Run `sorokeep costs <contract-id>` to see total extensions, total cost in XLM, a per-entry-type breakdown, and a 30-day projection. Use `--period <days>` to change the lookback window or `--all` for the complete history.
+
+### What does `sorokeep guard --dry-run` do?
+
+Run `sorokeep guard <contract-id> --keypair S... --dry-run` to simulate the extension transaction and see the estimated fee without submitting anything to the network. This is useful for checking cost before enabling auto-extension or performing a one-time extension.
 
 ## Roadmap
 
