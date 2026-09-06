@@ -463,7 +463,7 @@ Displays a table with contract ID (truncated), name, network, entry count, worst
 
 ## Alerting
 
-Sorokeep delivers alerts through multiple channels: **webhooks**, **Slack**, **Discord**, **Telegram**, **PagerDuty**, **Opsgenie**, **Microsoft Teams**, **Matrix**, **email**, **Google Chat**, and a second configurable **Webhook v2** channel. Each alert includes a severity level and rich context about the affected entry. Sorokeep uses a robust, decoupled detection and dispatch architecture with a database-backed queue.
+Sorokeep delivers alerts through multiple channels: **webhooks**, **Slack**, **Discord**, **Telegram**, **PagerDuty**, **Opsgenie**, **Microsoft Teams**, **Matrix**, **email**, **Google Chat**, **AWS SNS**, and a second configurable **Webhook v2** channel. Each alert includes a severity level and rich context about the affected entry. Sorokeep uses a robust, decoupled detection and dispatch architecture with a database-backed queue.
 
 ### Supported Channels Comparison
 
@@ -480,6 +480,7 @@ Sorokeep delivers alerts through multiple channels: **webhooks**, **Slack**, **D
 | **Matrix**          | Room ID                                                       | Homeserver-dependent                    | Matrix `m.room.message` event  | Medium           |
 | **Email**           | SMTP credentials (host/port/user/pass)                        | SMTP-provider dependent                 | Plain text + HTML              | Medium           |
 | **Google Chat**     | Webhook URL                                                   | Space-dependent                         | Google Chat card JSON          | Low              |
+| **AWS SNS**         | AWS IAM credentials (default credential chain)                | Topic-dependent (AWS account quota)     | Raw JSON (SNS `Message` field) | Medium           |
 
 > Need a channel not listed here? See [Adding an Alert Channel](docs/adding-an-alert-channel.md) to implement a custom channel plugin.
 
