@@ -36,7 +36,16 @@ export function checkIpAllowlist(allowedIps: string[]): (remoteAddressStr?: stri
             if (remoteAddress.kind() === "ipv6" && (remoteAddress as ipaddr.IPv6).isIPv4MappedAddress()) {
                 remoteAddress = (remoteAddress as ipaddr.IPv6).toIPv4Address();
             }
-            return parsedRanges.some((range) => remoteAddress.match(range));
+            // ipaddr.js's match() overloads require both sides to be the same
+            // IP kind — TS can't resolve the union call, and mismatched kinds
+            // (e.g. an IPv4 address against an IPv6 range) simply never match
+            // at runtime anyway, so filter to same-kind ranges first.
+            return parsedRanges.some(([rangeAddr, prefix]) =>
+                rangeAddr.kind() === remoteAddress.kind() &&
+                (remoteAddress.kind() === "ipv4"
+                    ? (remoteAddress as ipaddr.IPv4).match(rangeAddr as ipaddr.IPv4, prefix)
+                    : (remoteAddress as ipaddr.IPv6).match(rangeAddr as ipaddr.IPv6, prefix)),
+            );
         } catch {
             return false;
         }
