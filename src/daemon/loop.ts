@@ -7,6 +7,7 @@ import { buildFleetDigest, deliverDigestPayload } from "../core/digest.js";
 import { getLogger } from "../logging/index.js";
 import type { Logger } from "../logging/types.js";
 import { createMetricsServer, stopMetricsServer } from "../observability/server.js";
+import { loadConfig } from "../utils/config.js";
 import { daemonCycleDuration, daemonCyclesSkipped } from "../observability/metrics/daemon.js";
 import { StellarRpcClient } from "../rpc/client.js";
 import { initTracing, getTracer, endSpan } from "../observability/tracing.js";
@@ -94,7 +95,8 @@ export async function startDaemon(
     if (options?.metricsPort !== undefined) {
         try {
             const readyzRpcClient = new StellarRpcClient(network, rpcUrl);
-            createMetricsServer(options.metricsPort, db, readyzRpcClient);
+            const allowedIps = loadConfig().allowedIps;
+            createMetricsServer(options.metricsPort, db, readyzRpcClient, allowedIps);
             logger().info(`Metrics server listening on http://127.0.0.1:${options.metricsPort}/metrics`);
         } catch (err: unknown) {
             logger().error("Failed to start metrics server", err);

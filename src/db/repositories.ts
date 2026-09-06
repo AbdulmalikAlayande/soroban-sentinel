@@ -423,6 +423,23 @@ export function setAlertConfigEnabled(db: Database.Database, id: number, enabled
   db.prepare("UPDATE alert_configs SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, id);
 }
 
+/**
+ * Rotate the HMAC signing secret for an existing alert config row.
+ * Only the `webhook_secret` column is touched; every other column is left unchanged.
+ *
+ * @returns `true` if the row was found and updated, `false` if no row with that `id` exists.
+ */
+export function updateAlertConfigSecret(
+  db: Database.Database,
+  id: number,
+  newSecret: string,
+): boolean {
+  const result = db
+    .prepare("UPDATE alert_configs SET webhook_secret = ? WHERE id = ?")
+    .run(newSecret, id);
+  return result.changes > 0;
+}
+
 // ---------------------------- Database Access Functions For Other Schema: AlertFired----------------------------
 export function recordAlertFired(db: Database.Database, alert: {
   alert_config_id: number;
