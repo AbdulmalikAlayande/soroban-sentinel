@@ -1361,6 +1361,69 @@ describe("Core Extension Logic", () => {
             expect(result.contractsExtended).toBe(1);
         });
 
+        // ── Issue #490: batch ExtendFootprintTTLOp across matching entries ──
+
+        it("batches entries sharing the same effective target TTL into a single transaction", async () => {
+            const contractId = seedContract(db);
+
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "instance-key-xdr",
+                entry_type: "instance",
+                live_until_ledger: 2410000,
+                discovery_source: "deterministic",
+            });
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "persistent-key-xdr",
+                entry_type: "persistent",
+                live_until_ledger: 2405000,
+                discovery_source: "deterministic",
+            });
+
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+            mockSubmitExtension.mockResolvedValue({
+                success: true,
+                txHash: "batched-tx",
+                ledger: 2400100,
+                cpuInsns: 1000,
+                memBytes: 2000,
+            });
+            mockGetEntryTTLs.mockImplementation(async (entryKeyXdrs: string[]) => ({
+                latestLedger: 2400100,
+                entries: entryKeyXdrs.map((xdr) => ({
+                    entryKeyXdr: xdr,
+                    latestLedger: 2400100,
+                    liveUntilLedgerSeq: 2500100,
+                    lastModifiedLedgerSeq: 2400100,
+                    remainingTTL: 100000,
+                })),
+            }));
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.errors).toEqual([]);
+            expect(mockSubmitExtension).toHaveBeenCalledTimes(1);
+
+            const [entryKeys, targetTtl] = mockSubmitExtension.mock.calls[0] as [string[], number, string];
+            expect(entryKeys.sort()).toEqual(["instance-key-xdr", "persistent-key-xdr"].sort());
+            expect(targetTtl).toBe(100000);
+
+            const history = getExtensionHistory(db, contractId, 10);
+            expect(history.length).toBe(2);
+            expect(history.every((h) => h.tx_hash === "batched-tx")).toBe(true);
+            expect(history.every((h) => h.cpu_insns === 1000)).toBe(true);
+        });
+
         // ── Issue #491/#563: per-entry-type policy target grouping ─────────
 
         it("extends entries with different effective target TTLs in separate transactions", async () => {
