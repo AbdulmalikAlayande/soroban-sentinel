@@ -39,6 +39,8 @@ There is currently no dedicated open-source tool that combines TTL monitoring, a
 
 Sorokeep is the unified operations layer that handles all of this.
 
+> **Why not just use a cron script?** See [Sorokeep vs. Cron Script](docs/vs-cron-script.md) for a detailed comparison of failure handling, alerting, cost visibility, and maintenance burden.
+
 > Security auditors have started flagging TTL mismanagement as a risk area in Soroban contracts. [Veridise](https://veridise.com/audits/soroban/) includes TTL handling in their audit scope. The [LayerZero Stellar endpoint audit](https://code4rena.com/audits/2026-04-layerzero-stellar-endpoint) explicitly lists TTL expiration edge cases as a concern. [OpenZeppelin's Stellar contracts library](https://docs.openzeppelin.com/stellar-contracts) deliberately leaves instance storage TTL management to the application developer.
 
 ## Features
@@ -114,6 +116,8 @@ sorokeep daemon --network testnet
 ```
 
 The daemon will check TTLs every 5 minutes, fire alerts when thresholds are crossed, send resolution notifications when TTLs recover, and auto-extend entries if guard policies are configured.
+
+For using Sorokeep with a Soroban naming service so alerts and `status` output show friendly contract names, see [Naming Services](docs/naming-services.md).
 
 ## Commands
 
@@ -760,11 +764,31 @@ Each phase (monitor, deliver, auto-extend) is wrapped in isolated error handling
 
 ### What networks are supported?
 
-Testnet (`https://soroban-testnet.stellar.org`) and Mainnet (`https://mainnet.sorobanrpc.com`). You can also point Sorokeep at any custom RPC endpoint with `--rpc-url`.
+Testnet (`https://soroban-testnet.stellar.org`) and Mainnet (`https://mainnet.sorobanrpc.com`) are supported, and commands that make RPC calls accept a custom endpoint with `--rpc-url`. The selected network is stored with each watched contract, so keep the network and RPC endpoint aligned.
 
-### What about email alerts?
+### How do I register a contract for monitoring?
 
-Email is not yet implemented. The CLI will reject `--type email` with a clear error message. Webhook and Slack are the supported channels today.
+Run `sorokeep watch <contract-id>` and provide the network and RPC options required for your deployment. Alert configurations require that the contract has already been registered; use `sorokeep status <contract-id>` to inspect its current state.
+
+### How can I verify an alert channel before going live?
+
+Create the alert configuration, then run `sorokeep alerts test --id <alert-config-id>`. The command sends a synthetic `threshold_crossed` event through the real delivery path; add `--dry-run` to print the payload without sending it.
+
+### Can one alert go to more than one destination?
+
+Yes. For TTL alerts, repeat `--target <type:target>` when running `sorokeep alerts add`, for example `--target webhook:https://... --target slack:alerts`. Resource alerts currently support only their primary target.
+
+### Why did an alert not arrive immediately?
+
+An alert may be deferred when its configured quiet-hours window is active; it remains pending without consuming a retry. Delivery failures are retried by the daemon, and a delivery is abandoned after the channel's retry limit is reached.
+
+### Which alert channels are available?
+
+The built-in registry currently includes Webhook, Webhook v2, Slack, PagerDuty, Google Chat, Discord, Telegram, Opsgenie, Microsoft Teams, Matrix, and email. Run `sorokeep alerts channels` to see the registered channels in the current installation, including channels supplied by plugins.
+
+### What happens when a contract entry has already expired?
+
+An expired entry is archived and cannot be extended until it is restored. Run `sorokeep restore <contract-id> --entry <key-xdr> --keypair-env <var>` (or use `--all`), then let the existing watch continue; restoration requires a signing key and XLM for network fees.
 
 ## Roadmap
 
