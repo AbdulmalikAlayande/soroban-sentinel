@@ -25,6 +25,10 @@
   </p>
 </p>
 
+<p align="center">
+  <a href="https://railway.com/new"><img src="https://railway.com/button.svg" alt="Deploy on Railway" /></a>
+</p>
+
 <br />
 
 ## Why Sorokeep Exists
