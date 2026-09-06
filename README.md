@@ -117,6 +117,8 @@ sorokeep daemon --network testnet
 
 The daemon will check TTLs every 5 minutes, fire alerts when thresholds are crossed, send resolution notifications when TTLs recover, and auto-extend entries if guard policies are configured.
 
+For using Sorokeep with a Soroban naming service so alerts and `status` output show friendly contract names, see [Naming Services](docs/naming-services.md).
+
 ## Commands
 
 ### Global Options
