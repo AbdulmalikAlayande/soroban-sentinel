@@ -48,3 +48,8 @@ jobs:
 
     - name: Build Project
       run: npm run build
+
+    - name: Bundle Size Check
+      run: node scripts/bundle-size.mjs
+      env:
+        BUNDLE_SIZE_THRESHOLD: '10'
