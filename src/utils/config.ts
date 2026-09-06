@@ -55,6 +55,13 @@ export interface SorokeepConfig {
         pass: string;
     };
 
+    /**
+     * Authentication token for the MCP server. When set, HTTP-transport tool
+     * calls must present it as a Bearer token. Prefer SOROKEEP_MCP_TOKEN over
+     * this field so the token itself is never written to disk in plaintext.
+     */
+    mcpAuthToken?: string;
+
 }
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -113,6 +120,7 @@ export function loadConfig(customPath?: string): SorokeepConfig {
             vault,
             feeSponsorSecret: typeof parsed.feeSponsorSecret === "string" ? parsed.feeSponsorSecret : undefined,
             smtp: parseSmtpConfig(parsed.smtp),
+            mcpAuthToken: typeof parsed.mcpAuthToken === "string" ? parsed.mcpAuthToken : undefined,
 
         };
     } catch (err: unknown) {
