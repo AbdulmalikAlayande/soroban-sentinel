@@ -23,8 +23,22 @@ import { VaultResolver } from "./vault.js";
 import { loadConfig } from "../utils/config.js";
 import { buildBudgetExhaustedAlertEvent, buildAlertEvent } from "../alerts/types.js";
 import { deliverSingleAlert } from "../alerts/dispatcher.js";
+import { SimulationCacheManager, computeFootprintHash } from "./simulation_cache.js";
 
 const logger = getLogger().child({ component: "Extension" });
+
+// Shared across all contracts to minimize redundant RPC simulateTransaction
+// calls during auto-extension cycles (issue #501).
+const simulationCache = new SimulationCacheManager();
+
+/**
+ * Clear the global simulation cache. Used for testing and when contract
+ * state changes significantly.
+ * @internal
+ */
+export function clearSimulationCache(): void {
+    simulationCache.clearAll();
+}
 
 
 // ─── Rate limiter ─────────────────────────────────────────────────────────────
@@ -139,9 +153,20 @@ export async function simulateExtension(
 
     const client = new StellarRpcClient(contract.network, rpcUrl);
 
+    const footprintHash = computeFootprintHash(entryKeyXdrs);
+    const wasmHash = contract.wasm_hash || "unknown";
+
     let sim;
     try {
-        sim = await client.simulateExtension(entryKeyXdrs, extendToLedgers, sourcePublicKey);
+        sim = await simulationCache.getSimulation(
+            footprintHash,
+            wasmHash,
+            contractId,
+            async () => {
+                logger.debug(`Cache miss for ${contractId} — running fresh simulation`);
+                return await client.simulateExtension(entryKeyXdrs, extendToLedgers, sourcePublicKey);
+            },
+        );
     } catch (err: any) {
         logger.warn(`Simulation warning for ${contractId}: ${err.message}`);
         return {
@@ -286,6 +311,9 @@ export async function extendEntries(
         updateLastCheckedLedger(db, contractId, freshTTLs.latestLedger);
     });
     updateDb();
+
+    // The entries' TTLs just changed, so any cached simulation is now stale.
+    simulationCache.invalidate(computeFootprintHash(entryKeyXdrs));
 
     return {
         success: true,

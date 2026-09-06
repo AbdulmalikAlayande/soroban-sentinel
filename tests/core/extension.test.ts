@@ -44,7 +44,7 @@ vi.mock("../../src/alerts/dispatcher.js", () => ({
 }));
 
 // Import after mocking
-const { extendEntries, restoreEntries, simulateExtension, simulateRestore, runAutoExtensions } = await import(
+const { extendEntries, restoreEntries, simulateExtension, simulateRestore, runAutoExtensions, clearSimulationCache } = await import(
     "../../src/core/extension.js"
 );
 
@@ -90,6 +90,7 @@ describe("Core Extension Logic", () => {
     beforeEach(() => {
         db = getDatabaseForTesting();
         vi.clearAllMocks();
+        clearSimulationCache(); // Clear the global simulation cache between tests (issue #501)
     });
 
     afterEach(() => {
