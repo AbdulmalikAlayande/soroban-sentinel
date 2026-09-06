@@ -643,10 +643,11 @@ export function registerGuardCommand(program: Command): void {
         .option("--keypair-vault <path>", "HashiCorp Vault secret path (e.g. secret/data/stellar/mykey)")
         .option("--max-fee <stroops>", "Maximum fee ceiling for a single extension transaction, in stroops")
         .option("--auto-extend", "Enable auto-extension (the daemon will extend automatically)")
+        .option("--predictive <cycles>", "Enable predictive mode: extend N cycles before threshold is projected to be crossed (requires --auto-extend)")
         .option("--dry-run", "Simulate the extension without submitting")
         .option("--disable", "Disable auto-extension for this contract")
         .option("--json", "Output machine-readable JSON")
-        .action(async (contractId: string | undefined, options: { json?: boolean; tag?: string; preset?: string; targetTtl?: string; threshold?: string; keypair?: string; keypairEnv?: string; keypairVault?: string; maxFee?: string; autoExtend?: boolean; dryRun?: boolean; disable?: boolean } = {}) => {
+        .action(async (contractId: string | undefined, options: { json?: boolean; tag?: string; preset?: string; targetTtl?: string; threshold?: string; keypair?: string; keypairEnv?: string; keypairVault?: string; maxFee?: string; autoExtend?: boolean; predictive?: string; dryRun?: boolean; disable?: boolean } = {}) => {
             try {
                 if (contractId && options.tag) {
                     if (options.json) {
@@ -826,6 +827,21 @@ export function registerGuardCommand(program: Command): void {
                     const { Keypair } = await import("@stellar/stellar-sdk");
                     const kp = Keypair.fromSecret(secretKey!);
 
+                    let predictiveCycles = 0;
+                    if (options.predictive !== undefined) {
+                        predictiveCycles = Number(options.predictive);
+                        if (!/^\d+$/.test(options.predictive) || !Number.isSafeInteger(predictiveCycles)) {
+                            if (options.json) {
+                                printOutput({ success: false, error: "invalid_predictive", contractId, predictive: options.predictive }, true);
+                                process.exitCode = 1;
+                                return;
+                            }
+                            console.error(chalk.red("--predictive must be a non-negative integer number of cycles"));
+                            process.exit(1);
+                            return;
+                        }
+                    }
+
                     upsertExtensionPolicy(db, {
                         contract_id: contractId!,
                         enabled: true,
@@ -834,10 +850,11 @@ export function registerGuardCommand(program: Command): void {
                         keypair_public: kp.publicKey(),
                         keypair_source: keypairSource!,
                         max_fee_stroops: maxFee,
+                        predictive_cycles: predictiveCycles,
                     });
 
                     if (options.json) {
-                        printOutput({ success: true, contractId, mode: "auto-extend", policy: { enabled: true, target_ttl_ledgers: targetTTL, extend_when_below_ledgers: threshold, keypair_source: keypairSource, keypair_public: kp.publicKey(), max_fee_stroops: maxFee } }, true);
+                        printOutput({ success: true, contractId, mode: "auto-extend", policy: { enabled: true, target_ttl_ledgers: targetTTL, extend_when_below_ledgers: threshold, keypair_source: keypairSource, keypair_public: kp.publicKey(), max_fee_stroops: maxFee, predictive_cycles: predictiveCycles } }, true);
                         return;
                     }
 
@@ -848,6 +865,9 @@ export function registerGuardCommand(program: Command): void {
                         console.log(`  Max Fee:     ${maxFee.toLocaleString()} stroops`);
                     }
                     console.log(`  Funded by:   ${kp.publicKey().slice(0, 8)}...${kp.publicKey().slice(-4)}`);
+                    if (predictiveCycles > 0) {
+                        console.log(`  Predictive:  ${predictiveCycles} cycle(s) ahead`);
+                    }
                     console.log(chalk.dim("\n  The daemon will auto-extend when TTL drops below the threshold."));
                     console.log(chalk.dim("  Run 'sorokeep daemon --network " + contract.network + "' to start monitoring."));
                     return;
@@ -979,6 +999,9 @@ export function registerGuardCommand(program: Command): void {
                     }
                     if (policy.keypair_source) {
                         console.log(`  Key source: ${policy.keypair_source}`);
+                    }
+                    if (policy.predictive_cycles > 0) {
+                        console.log(`  Predictive: ${policy.predictive_cycles} cycle(s) ahead`);
                     }
                 } else {
                     console.log(chalk.dim("\nNo extension policy configured for this contract."));

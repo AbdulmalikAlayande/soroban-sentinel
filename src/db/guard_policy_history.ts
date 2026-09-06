@@ -9,6 +9,7 @@ export interface GuardPolicyHistoryRecord {
     extend_when_below_ledgers: number;
     keypair_public?: string | null;
     keypair_source?: string | null;
+    predictive_cycles?: number;
     created_at?: string;
 }
 
@@ -37,7 +38,8 @@ export function rollbackExtensionPolicy(
             target_ttl_ledgers,
             extend_when_below_ledgers,
             keypair_public,
-            keypair_source
+            keypair_source,
+            predictive_cycles
         FROM guard_policy_history
         WHERE contract_id = ?
         ORDER BY id DESC
@@ -69,6 +71,7 @@ export function rollbackExtensionPolicy(
         extend_when_below_ledgers: target.extend_when_below_ledgers,
         keypair_public: target.keypair_public ?? undefined,
         keypair_source: target.keypair_source ?? undefined,
+        predictive_cycles: target.predictive_cycles ?? 0,
     });
 
     return target;
@@ -84,6 +87,7 @@ export function listPolicyHistory(db: Database.Database, contractId: string): Gu
             extend_when_below_ledgers,
             keypair_public,
             keypair_source,
+            predictive_cycles,
             created_at
         FROM guard_policy_history
         WHERE contract_id = ?
