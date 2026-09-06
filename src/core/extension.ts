@@ -15,6 +15,8 @@ import {
     countExtensionsInLastHour,
     getAlertConfigsForContract,
     getExtensionHistory,
+    getEffectivePolicy,
+    type EntryType,
 
 } from "../db/repositories.js";
 import { ChannelAccountPool } from "./channels.js";
@@ -383,8 +385,12 @@ export async function runAutoExtensions(
         const entries = getEntriesForContract(db, contract.id);
         const needsExtension = entries.filter(e => {
             if (!e.live_until_ledger) return false;
+            // Per-entry-type policies (issue #491): an override supplies its
+            // own extend_when_below_ledgers threshold; entries without an
+            // override fall back to the contract-level policy unchanged.
+            const effectivePolicy = getEffectivePolicy(db, contract.id, e.entry_type as EntryType) ?? policy;
             const remaining = e.live_until_ledger - latestLedger;
-            return remaining >= 0 && remaining < policy.extend_when_below_ledgers;
+            return remaining >= 0 && remaining < effectivePolicy.extend_when_below_ledgers;
         });
 
         if (needsExtension.length > 0) {
@@ -530,14 +536,30 @@ export async function runAutoExtensions(
                 }
             }
 
-            const entryKeys = needsExtension.map(e => e.entry_key_xdr);
+            // Group cooldown-eligible entries by their effective target TTL
+            // (issue #491's per-entry-type overrides). ExtendFootprintTTLOp
+            // sets one new TTL for an entire batch of keys, so entries whose
+            // effective policy resolves to different target_ttl_ledgers
+            // values cannot share a single extension transaction.
+            const groupsByTarget = new Map<number, typeof cooldownEligible>();
+            for (const entry of cooldownEligible) {
+                const effectivePolicy = getEffectivePolicy(db, contract.id, entry.entry_type as EntryType) ?? policy;
+                const target = effectivePolicy.target_ttl_ledgers;
+                const group = groupsByTarget.get(target) ?? [];
+                group.push(entry);
+                groupsByTarget.set(target, group);
+            }
+
+            try {
+            for (const [targetTtlLedgers, groupEntries] of groupsByTarget) {
+            const entryKeys = groupEntries.map(e => e.entry_key_xdr);
 
             logger.info(
                 `Auto-extending ${entryKeys.length} entries for ${contract.id} ` +
-                `(below ${policy.extend_when_below_ledgers}, target ${policy.target_ttl_ledgers})`,
+                `(target ${targetTtlLedgers})`,
             );
 
-            try {
+            {
                 const billingCycle = new Date().toISOString().slice(0, 7);
 
                 // Pool membership takes precedence over the contract's individual
@@ -574,7 +596,7 @@ export async function runAutoExtensions(
                 if (sharedBudget || budget) {
                     const { Keypair } = await import("@stellar/stellar-sdk");
                     const pubKey = Keypair.fromSecret(secretKey).publicKey();
-                    const simResult = await simulateExtension(db, contract.id, entryKeys, policy.target_ttl_ledgers, pubKey, rpcUrl);
+                    const simResult = await simulateExtension(db, contract.id, entryKeys, targetTtlLedgers, pubKey, rpcUrl);
 
                     if (!simResult.success) {
                         throw new Error(`Simulation failed: ${simResult.error}`);
@@ -643,7 +665,7 @@ export async function runAutoExtensions(
                     db,
                     contract.id,
                     entryKeys,
-                    policy.target_ttl_ledgers,
+                    targetTtlLedgers,
                     secretKey,
                     rpcUrl,
                     sponsorSecret,
@@ -693,6 +715,8 @@ export async function runAutoExtensions(
                         `Contract ${contract.id}: Extension failed — ${extResult.error}`,
                     );
                 }
+            }
+            }
             } finally {
                 if (slot && pool) pool.release(slot.publicKey);
             }

@@ -3,7 +3,7 @@ import chalk from "chalk";
 import ora from "ora";
 import type Database from "better-sqlite3";
 import { getDatabase } from "../db/database.js";
-import { getContract, getEntriesForContract, upsertExtensionPolicy, getExtensionPolicy } from "../db/repositories.js";
+import { getContract, getEntriesForContract, upsertExtensionPolicy, getExtensionPolicy, getEffectivePolicy, setEntryTypePolicy, deleteEntryTypePolicy, type EntryType } from "../db/repositories.js";
 import { simulateExtension, extendEntries, resolveSecretKey } from "../core/extension.js";
 import { applyGuardPolicyByTag } from "../core/fleet.js";
 import { getExtensionCosts } from "../core/costs.js";
@@ -383,6 +383,129 @@ export function registerGuardCommand(program: Command): void {
             } catch (error: unknown) {
                 const msg = error instanceof Error ? error.message : String(error);
                 logger.error("Guard preview command failed", { error: msg });
+                console.error(chalk.red(`Error: ${msg}`));
+                process.exit(1);
+            }
+        });
+
+    guard
+        .command("entry-type <contractId> <entryType>")
+        .description("Set or clear a per-entry-type TTL policy override (instance, wasm, persistent, temporary)")
+        .option("--target-ttl <ledgers>", "Target TTL in ledgers after extension for this entry type")
+        .option("--threshold <ledgers>", "Extend when TTL drops below this many ledgers for this entry type")
+        .option("--clear", "Remove the override, falling back to the contract-level policy")
+        .option("--json", "Output machine-readable JSON")
+        .action(async (contractId: string, entryType: string, options: { targetTtl?: string; threshold?: string; clear?: boolean; json?: boolean }) => {
+            try {
+                const validEntryTypes: EntryType[] = ["instance", "wasm", "persistent", "temporary"];
+                if (!validEntryTypes.includes(entryType as EntryType)) {
+                    if (options.json) {
+                        printOutput({ success: false, error: "invalid_entry_type", entryType, message: `entryType must be one of: ${validEntryTypes.join(", ")}` }, true);
+                        process.exitCode = 1;
+                        return;
+                    }
+                    console.error(chalk.red(`Invalid entry type '${entryType}'. Must be one of: ${validEntryTypes.join(", ")}`));
+                    process.exit(1);
+                    return;
+                }
+
+                const db = getDatabase();
+                const contract = getContract(db, contractId);
+
+                if (!contract) {
+                    if (options.json) {
+                        printOutput({ success: false, error: "contract_not_found", contractId }, true);
+                        process.exitCode = 1;
+                        return;
+                    }
+                    console.error(chalk.red(`Contract ${formatContractID(contractId)} not found. Run 'sorokeep watch' first.`));
+                    process.exit(1);
+                    return;
+                }
+
+                if (options.clear) {
+                    deleteEntryTypePolicy(db, contractId, entryType);
+                    if (options.json) {
+                        printOutput({ success: true, contractId, entryType, mode: "cleared" }, true);
+                        return;
+                    }
+                    console.log(chalk.green(`Cleared entry-type override for '${entryType}' on ${contract.name ?? formatContractID(contractId)}`));
+                    return;
+                }
+
+                if (!options.targetTtl || !options.threshold) {
+                    if (options.json) {
+                        printOutput({ success: false, error: "missing_options", message: "--target-ttl and --threshold are required (or pass --clear)" }, true);
+                        process.exitCode = 1;
+                        return;
+                    }
+                    console.error(chalk.red("--target-ttl and --threshold are required (or pass --clear to remove an override)"));
+                    process.exit(1);
+                    return;
+                }
+
+                const isValidLedgerCount = (raw: string, value: number): boolean =>
+                    /^\d+$/.test(raw) && Number.isSafeInteger(value) && value > 0;
+                const targetTTL = Number(options.targetTtl);
+                const threshold = Number(options.threshold);
+
+                if (!isValidLedgerCount(options.targetTtl, targetTTL)) {
+                    if (options.json) {
+                        printOutput({ success: false, error: "invalid_target_ttl", targetTtl: options.targetTtl }, true);
+                        process.exitCode = 1;
+                        return;
+                    }
+                    console.error(chalk.red("--target-ttl must be a positive number"));
+                    process.exit(1);
+                    return;
+                }
+
+                if (!isValidLedgerCount(options.threshold, threshold)) {
+                    if (options.json) {
+                        printOutput({ success: false, error: "invalid_threshold", threshold: options.threshold }, true);
+                        process.exitCode = 1;
+                        return;
+                    }
+                    console.error(chalk.red("--threshold must be a positive number"));
+                    process.exit(1);
+                    return;
+                }
+
+                if (threshold >= targetTTL) {
+                    if (options.json) {
+                        printOutput({ success: false, error: "invalid_threshold_range", targetTtl: targetTTL, threshold }, true);
+                        process.exitCode = 1;
+                        return;
+                    }
+                    console.error(chalk.red("--threshold must be less than --target-ttl"));
+                    process.exit(1);
+                    return;
+                }
+
+                setEntryTypePolicy(db, contractId, entryType as EntryType, { target_ttl_ledgers: targetTTL, extend_when_below_ledgers: threshold });
+
+                if (options.json) {
+                    printOutput({ success: true, contractId, entryType, mode: "set", policy: { target_ttl_ledgers: targetTTL, extend_when_below_ledgers: threshold } }, true);
+                    return;
+                }
+
+                console.log(chalk.green(`Entry-type override set for '${entryType}' on ${contract.name ?? formatContractID(contractId)}`));
+                console.log(`  Target TTL:  ${targetTTL.toLocaleString()} ledgers (${formatTimeToCloseLedger(targetTTL)})`);
+                console.log(`  Threshold:   ${threshold.toLocaleString()} ledgers (${formatTimeToCloseLedger(threshold)})`);
+
+                const effective = getEffectivePolicy(db, contractId, entryType as EntryType);
+                if (effective && !effective.enabled) {
+                    console.log(chalk.dim("\n  Note: this contract's auto-extension is currently DISABLED — the override"));
+                    console.log(chalk.dim("  will take effect once auto-extension is enabled via 'sorokeep guard --auto-extend'."));
+                }
+            } catch (error: unknown) {
+                const msg = error instanceof Error ? error.message : String(error);
+                logger.error("Guard entry-type command failed", { error: msg });
+                if (options.json) {
+                    printOutput({ success: false, error: msg, contractId, entryType }, true);
+                    process.exitCode = 1;
+                    return;
+                }
                 console.error(chalk.red(`Error: ${msg}`));
                 process.exit(1);
             }
