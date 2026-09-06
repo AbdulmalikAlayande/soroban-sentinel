@@ -9,7 +9,8 @@ import type { TTLStatus } from "../utils/formatting.js";
 import { instrumentMcpToolInvocations } from "../observability/metrics/mcp.js";
 import { resolveToken, verifyRequest, extractBearerToken } from "./auth.js";
 import { ToolRateLimiter, DEFAULT_REQUESTS_PER_MINUTE } from "./rateLimiter.js";
-import type { SorokeepConfig } from "../utils/config.js";
+import { applyMcpPermissions, READ_ONLY_ANNOTATIONS } from "./permissions.js";
+import { getMcpMode, type SorokeepConfig } from "../utils/config.js";
 import { getLogger } from "../logging/index.js";
 
 const logger = getLogger().child({ component: "MCPServer" });
@@ -146,6 +147,10 @@ export function createMcpServer(getDb: () => Database.Database, config?: Sorokee
 
     const rateLimiter = new ToolRateLimiter(config?.requestsPerMinute ?? DEFAULT_REQUESTS_PER_MINUTE);
 
+    // Permissions first, metrics/auth/rate-limit after, so a tool call
+    // refused by the mode check is not counted as an invocation and never
+    // reaches the other checks.
+    applyMcpPermissions(server, config ? getMcpMode(config) : undefined);
     instrumentMcpToolInvocations(server);
     enforceMcpAuth(server, configuredToken);
     enforceMcpRateLimit(server, rateLimiter);
@@ -156,6 +161,7 @@ export function createMcpServer(getDb: () => Database.Database, config?: Sorokee
     server.tool(
         "list_watched_contracts",
         "List all contracts registered for TTL monitoring with their current health status",
+        READ_ONLY_ANNOTATIONS,
         async () => invokeListWatchedContracts(getDb()),
     );
 
