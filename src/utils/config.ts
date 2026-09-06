@@ -62,6 +62,22 @@ export interface SorokeepConfig {
      */
     mcpAuthToken?: string;
 
+    /**
+     * CIDR-aware IP allowlist for sorokeep's HTTP-exposing features (the
+     * Prometheus /metrics and /readyz endpoints). Entries may be bare IPs
+     * (treated as /32 or /128) or CIDR ranges (e.g. "10.0.0.0/8"). Unset
+     * preserves today's open behavior — defense in depth for deployments
+     * where the daemon might be bound beyond localhost.
+     */
+    allowedIps?: string[];
+
+    /**
+     * Maximum MCP tool invocations allowed per tool name per 60-second
+     * window. Protects the daemon's shared SQLite connection from being
+     * hammered by a runaway AI loop or a malicious client. Defaults to 60.
+     */
+    requestsPerMinute?: number;
+
 }
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -121,6 +137,12 @@ export function loadConfig(customPath?: string): SorokeepConfig {
             feeSponsorSecret: typeof parsed.feeSponsorSecret === "string" ? parsed.feeSponsorSecret : undefined,
             smtp: parseSmtpConfig(parsed.smtp),
             mcpAuthToken: typeof parsed.mcpAuthToken === "string" ? parsed.mcpAuthToken : undefined,
+            allowedIps: Array.isArray(parsed.allowedIps) && parsed.allowedIps.every((ip) => typeof ip === "string")
+                ? parsed.allowedIps
+                : undefined,
+            requestsPerMinute: typeof parsed.requestsPerMinute === "number" && parsed.requestsPerMinute > 0
+                ? parsed.requestsPerMinute
+                : undefined,
 
         };
     } catch (err: unknown) {

@@ -112,6 +112,7 @@ export interface StateChange {
 export interface ContractGroup {
     id: number;
     name: string;
+    poll_interval_seconds: number | null;
     created_at: string;
 }
 
@@ -420,6 +421,23 @@ export function deleteAlertConfig(db: Database.Database, id: number): void {
 
 export function setAlertConfigEnabled(db: Database.Database, id: number, enabled: boolean): void {
   db.prepare("UPDATE alert_configs SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, id);
+}
+
+/**
+ * Rotate the HMAC signing secret for an existing alert config row.
+ * Only the `webhook_secret` column is touched; every other column is left unchanged.
+ *
+ * @returns `true` if the row was found and updated, `false` if no row with that `id` exists.
+ */
+export function updateAlertConfigSecret(
+  db: Database.Database,
+  id: number,
+  newSecret: string,
+): boolean {
+  const result = db
+    .prepare("UPDATE alert_configs SET webhook_secret = ? WHERE id = ?")
+    .run(newSecret, id);
+  return result.changes > 0;
 }
 
 // ---------------------------- Database Access Functions For Other Schema: AlertFired----------------------------
@@ -1760,13 +1778,28 @@ export function getLatestResourceUsageLog(
  */
 export function createGroup(
     db: Database.Database,
-    group: { name: string },
+    group: { name: string; poll_interval_seconds?: number | null },
 ): number {
     const result = db.prepare(`
-        INSERT INTO contract_groups (name)
-        VALUES (@name)
-    `).run({ name: group.name });
+        INSERT INTO contract_groups (name, poll_interval_seconds)
+        VALUES (@name, @poll_interval_seconds)
+    `).run({ name: group.name, poll_interval_seconds: group.poll_interval_seconds ?? null });
     return result.lastInsertRowid as number;
+}
+
+/**
+ * Set (or clear, with null) a group's default poll interval in seconds.
+ * Consulted by resolvePollIntervalMs as a fallback tier between a
+ * contract's own override and the global --interval flag (issue #400).
+ */
+export function setGroupPollInterval(
+    db: Database.Database,
+    groupId: number,
+    pollIntervalSeconds: number | null,
+): void {
+    db.prepare(`
+        UPDATE contract_groups SET poll_interval_seconds = ? WHERE id = ?
+    `).run(pollIntervalSeconds, groupId);
 }
 
 /**
