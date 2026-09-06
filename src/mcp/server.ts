@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { checkRateLimit } from "./rateLimiter.js";
 import { registerGetContractStatusTool } from "./tools/get_contract_status.js";
 import { registerGetExtensionCostsTool } from "./tools/get-extension-costs.js";
 import { getAllContracts, getEntriesForContract } from "../db/repositories.js";
@@ -36,7 +37,6 @@ export async function invokeListWatchedContracts(db: Database.Database) {
 
     return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],
-    };
 }
 
 export function createMcpServer(getDb: () => Database.Database): McpServer {
@@ -55,6 +55,16 @@ export function createMcpServer(getDb: () => Database.Database): McpServer {
     );
 
     instrumentMcpToolInvocations(server);
+
+    const originalTool = server.tool.bind(server) as any;
+    (server as any).tool = (name: string, ...args: any[]) => {
+        const handler = args.pop();
+        const wrappedHandler = async (...handlerArgs: any[]) => {
+            checkRateLimit(name);
+            return handler(...handlerArgs);
+        };
+        return originalTool(name, ...args, wrappedHandler);
+    };
 
     registerGetContractStatusTool(server, getDb);
     registerGetExtensionCostsTool(server);

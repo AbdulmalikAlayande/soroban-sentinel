@@ -55,6 +55,8 @@ export interface SorokeepConfig {
         pass: string;
     };
 
+    /** Rate limit for MCP tools (requests per minute per tool). */
+    requestsPerMinute?: number;
 }
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -113,7 +115,9 @@ export function loadConfig(customPath?: string): SorokeepConfig {
             vault,
             feeSponsorSecret: typeof parsed.feeSponsorSecret === "string" ? parsed.feeSponsorSecret : undefined,
             smtp: parseSmtpConfig(parsed.smtp),
-
+            requestsPerMinute: typeof parsed.requestsPerMinute === "number" && parsed.requestsPerMinute > 0
+                ? parsed.requestsPerMinute
+                : undefined,
         };
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
