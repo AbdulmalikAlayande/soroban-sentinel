@@ -4,6 +4,7 @@ import ora from "ora";
 import type Database from "better-sqlite3";
 import { getDatabase } from "../db/database.js";
 import { getContract, getEntriesForContract, upsertExtensionPolicy, getExtensionPolicy, getEffectivePolicy, setEntryTypePolicy, deleteEntryTypePolicy, type EntryType } from "../db/repositories.js";
+import { rollbackExtensionPolicy, listPolicyHistory } from "../db/guard_policy_history.js";
 import { simulateExtension, extendEntries, resolveSecretKey } from "../core/extension.js";
 import { applyGuardPolicyByTag } from "../core/fleet.js";
 import { getExtensionCosts } from "../core/costs.js";
@@ -383,6 +384,89 @@ export function registerGuardCommand(program: Command): void {
             } catch (error: unknown) {
                 const msg = error instanceof Error ? error.message : String(error);
                 logger.error("Guard preview command failed", { error: msg });
+                console.error(chalk.red(`Error: ${msg}`));
+                process.exit(1);
+            }
+        });
+
+    guard
+        .command("rollback")
+        .description("Roll back an extension policy to a previous historical version, or list its version history")
+        .requiredOption("--contract <id>", "The contract ID to roll back")
+        .option("--to <historyId>", "Historical policy version ID to restore (defaults to the immediately previous version)")
+        .option("--list", "List policy history instead of rolling back")
+        .option("--json", "Output machine-readable JSON")
+        .action((options: { contract: string; to?: string; list?: boolean; json?: boolean }) => {
+            try {
+                const db = getDatabase();
+                const contract = getContract(db, options.contract);
+                if (!contract) {
+                    if (options.json) {
+                        printOutput({ success: false, error: "contract_not_found", contractId: options.contract }, true);
+                        process.exitCode = 1;
+                        return;
+                    }
+                    console.error(chalk.red(`Contract ${formatContractID(options.contract)} not found. Run 'sorokeep watch' first.`));
+                    process.exit(1);
+                    return;
+                }
+
+                if (options.list) {
+                    const history = listPolicyHistory(db, options.contract);
+                    if (options.json) {
+                        printOutput({ success: true, contractId: options.contract, history }, true);
+                        return;
+                    }
+                    if (history.length === 0) {
+                        console.log(chalk.yellow(`No policy history found for ${contract.name ?? formatContractID(options.contract)}.`));
+                        return;
+                    }
+                    console.log(chalk.bold(`\n  Policy history for ${contract.name ?? formatContractID(options.contract)}:`));
+                    for (const row of history) {
+                        console.log(
+                            `  #${row.id}  target=${row.target_ttl_ledgers.toLocaleString()}  threshold=${row.extend_when_below_ledgers.toLocaleString()}  ` +
+                            `${row.enabled ? chalk.green("ENABLED") : chalk.yellow("DISABLED")}  ${chalk.dim(row.created_at ?? "")}`,
+                        );
+                    }
+                    console.log();
+                    return;
+                }
+
+                let historyId: number | undefined;
+                if (options.to !== undefined) {
+                    historyId = Number.parseInt(options.to, 10);
+                    if (!Number.isInteger(historyId) || historyId <= 0) {
+                        if (options.json) {
+                            printOutput({ success: false, error: "invalid_history_id", to: options.to }, true);
+                            process.exitCode = 1;
+                            return;
+                        }
+                        console.error(chalk.red("--to must be a positive history ID."));
+                        process.exit(1);
+                        return;
+                    }
+                }
+
+                const restored = rollbackExtensionPolicy(db, options.contract, historyId);
+
+                if (options.json) {
+                    printOutput({ success: true, contractId: options.contract, mode: "rollback", restored }, true);
+                    return;
+                }
+
+                console.log(chalk.green(`Extension policy rolled back for ${contract.name ?? formatContractID(options.contract)}.`));
+                console.log(`  Restored history ID: ${restored.id}`);
+                console.log(`  Target TTL:          ${restored.target_ttl_ledgers.toLocaleString()} ledgers`);
+                console.log(`  Threshold:           ${restored.extend_when_below_ledgers.toLocaleString()} ledgers`);
+                console.log(chalk.dim("  Rollback recorded as a new policy history entry."));
+            } catch (error: unknown) {
+                const msg = error instanceof Error ? error.message : String(error);
+                logger.error("Guard rollback command failed", { error: msg });
+                if (options.json) {
+                    printOutput({ success: false, error: msg, contractId: options.contract }, true);
+                    process.exitCode = 1;
+                    return;
+                }
                 console.error(chalk.red(`Error: ${msg}`));
                 process.exit(1);
             }

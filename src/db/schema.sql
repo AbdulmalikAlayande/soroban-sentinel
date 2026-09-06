@@ -300,3 +300,19 @@ CREATE TABLE IF NOT EXISTS entry_type_policies (
 
 CREATE INDEX IF NOT EXISTS idx_entry_type_policies_contract_id
     ON entry_type_policies(contract_id);
+
+-- Append-only version history of extension_policies, populated by every
+-- upsertExtensionPolicy() call. Powers 'sorokeep guard rollback' (#506).
+CREATE TABLE IF NOT EXISTS guard_policy_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+    enabled INTEGER NOT NULL,
+    target_ttl_ledgers INTEGER NOT NULL,
+    extend_when_below_ledgers INTEGER NOT NULL,
+    keypair_public TEXT,
+    keypair_source TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_guard_policy_history_contract_id
+    ON guard_policy_history(contract_id, id DESC);

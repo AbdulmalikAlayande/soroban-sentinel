@@ -340,23 +340,33 @@ export function upsertExtensionPolicy(db: Database.Database, policy: {
   keypair_public?: string;
   keypair_source?: string;
 }): void {
-  db.prepare(`
-    INSERT INTO extension_policies (contract_id, enabled, target_ttl_ledgers, extend_when_below_ledgers, keypair_public, keypair_source)
-    VALUES (@contract_id, @enabled, @target_ttl_ledgers, @extend_when_below_ledgers, @keypair_public, @keypair_source)
-    ON CONFLICT(contract_id) DO UPDATE SET
-      enabled = @enabled,
-      target_ttl_ledgers = @target_ttl_ledgers,
-      extend_when_below_ledgers = @extend_when_below_ledgers,
-      keypair_public = @keypair_public,
-      keypair_source = @keypair_source
-  `).run({
+  const row = {
     contract_id: policy.contract_id,
     enabled: policy.enabled !== false ? 1 : 0,
     target_ttl_ledgers: policy.target_ttl_ledgers,
     extend_when_below_ledgers: policy.extend_when_below_ledgers,
     keypair_public: policy.keypair_public ?? null,
     keypair_source: policy.keypair_source ?? null,
-  });
+  };
+
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO extension_policies (contract_id, enabled, target_ttl_ledgers, extend_when_below_ledgers, keypair_public, keypair_source)
+      VALUES (@contract_id, @enabled, @target_ttl_ledgers, @extend_when_below_ledgers, @keypair_public, @keypair_source)
+      ON CONFLICT(contract_id) DO UPDATE SET
+        enabled = @enabled,
+        target_ttl_ledgers = @target_ttl_ledgers,
+        extend_when_below_ledgers = @extend_when_below_ledgers,
+        keypair_public = @keypair_public,
+        keypair_source = @keypair_source
+    `).run(row);
+
+    // Append-only version history (issue #506) — powers 'sorokeep guard rollback'.
+    db.prepare(`
+      INSERT INTO guard_policy_history (contract_id, enabled, target_ttl_ledgers, extend_when_below_ledgers, keypair_public, keypair_source)
+      VALUES (@contract_id, @enabled, @target_ttl_ledgers, @extend_when_below_ledgers, @keypair_public, @keypair_source)
+    `).run(row);
+  })();
 }
 
 export function getExtensionPolicy(db: Database.Database, contractId: string): ExtensionPolicy | undefined {
