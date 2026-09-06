@@ -407,6 +407,7 @@ export function getEffectivePolicy(
     extend_when_below_ledgers: override.extend_when_below_ledgers,
     keypair_public: defaultPolicy?.keypair_public ?? null,
     keypair_source: defaultPolicy?.keypair_source ?? null,
+    max_fee_stroops: defaultPolicy?.max_fee_stroops ?? null,
     created_at: defaultPolicy?.created_at ?? new Date(),
   };
 }
