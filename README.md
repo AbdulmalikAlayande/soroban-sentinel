@@ -47,6 +47,10 @@ Sorokeep is the unified operations layer that handles all of this.
 
 > Security auditors have started flagging TTL mismanagement as a risk area in Soroban contracts. [Veridise](https://veridise.com/audits/soroban/) includes TTL handling in their audit scope. The [LayerZero Stellar endpoint audit](https://code4rena.com/audits/2026-04-layerzero-stellar-endpoint) explicitly lists TTL expiration edge cases as a concern. [OpenZeppelin's Stellar contracts library](https://docs.openzeppelin.com/stellar-contracts) deliberately leaves instance storage TTL management to the application developer.
 
+## Security & SBOM
+
+Sorokeep generates a CycloneDX Software Bill of Materials (SBOM) for every release. You can find the `bom.json` file attached as a release asset on the [GitHub Releases page](https://github.com/AbdulmalikAlayande/sorokeep/releases).
+
 ## Features
 
 - **Watch & Introspect** — Register contracts, footprint discovery from on-chain transactions, and introspection specs
@@ -747,6 +751,16 @@ npx vitest
 - **MCP Server** — Test coverage for all exposed MCP tools
 
 All tests use in-memory SQLite databases and mocked RPC responses — no network calls, no filesystem side effects. TDD is practiced throughout.
+
+## Security & Provenance
+
+Sorokeep packages published to npm carry a [verified provenance statement](https://docs.npmjs.com/generating-provenance-statements). This provides a cryptographic, auditable link between the published npm package and the exact GitHub Actions run and commit that built it.
+
+To verify the provenance of your installed Sorokeep package, you can check the [npm registry page](https://www.npmjs.com/package/sorokeep) for the provenance badge, or run the following command to check npm audit signatures:
+
+```bash
+npm audit signatures
+```
 
 ## FAQ
 
