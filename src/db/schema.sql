@@ -202,6 +202,10 @@ CREATE TABLE IF NOT EXISTS contract_budgets (
 CREATE TABLE IF NOT EXISTS contract_groups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
+    -- Group-level default poll interval in seconds, consulted by
+    -- resolvePollIntervalMs as a fallback tier between the per-contract
+    -- override and the global --interval flag (issue #400).
+    poll_interval_seconds INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
