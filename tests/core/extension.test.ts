@@ -11,6 +11,7 @@ import {
     upsertChannelAccount,
     updateChannelBalance,
     insertAlertConfig,
+    setEntryTypePolicy,
 } from "../../src/db/repositories.js";
 
 // ─── Mock RPC client ────────────────────────────────────────────────────────
@@ -1202,6 +1203,74 @@ describe("Core Extension Logic", () => {
             const result = await runAutoExtensions(db, "testnet");
 
             expect(result.contractsExtended).toBe(1);
+        });
+
+        // ── Issue #491/#563: per-entry-type policy target grouping ─────────
+
+        it("extends entries with different effective target TTLs in separate transactions", async () => {
+            const contractId = seedContract(db);
+
+            // Override the seeded "instance" entry's TTL so it needs extension
+            // under the contract-level policy's threshold.
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "instance-key-xdr",
+                entry_type: "instance",
+                live_until_ledger: 2410000,
+                discovery_source: "deterministic",
+            });
+
+            // A "persistent" entry that also needs extension, but whose
+            // entry-type override resolves to a different target TTL.
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "persistent-key-xdr",
+                entry_type: "persistent",
+                live_until_ledger: 2405000,
+                discovery_source: "deterministic",
+            });
+
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+
+            setEntryTypePolicy(db, contractId, "persistent", {
+                target_ttl_ledgers: 50000,
+                extend_when_below_ledgers: 20000,
+            });
+
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+            mockSubmitExtension.mockResolvedValue({ success: true, txHash: "tx", ledger: 2400100 });
+            mockGetEntryTTLs.mockImplementation(async (entryKeyXdrs: string[]) => ({
+                latestLedger: 2400100,
+                entries: entryKeyXdrs.map((xdr) => ({
+                    entryKeyXdr: xdr,
+                    latestLedger: 2400100,
+                    liveUntilLedgerSeq: xdr === "persistent-key-xdr" ? 2450100 : 2500100,
+                    lastModifiedLedgerSeq: 2400100,
+                    remainingTTL: xdr === "persistent-key-xdr" ? 50000 : 100000,
+                })),
+            }));
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.errors).toEqual([]);
+            expect(result.entriesExtended).toBe(2);
+            expect(mockSubmitExtension).toHaveBeenCalledTimes(2);
+
+            const calls = mockSubmitExtension.mock.calls as [string[], number, string][];
+            const instanceCall = calls.find(([xdrs]) => xdrs.includes("instance-key-xdr"));
+            const persistentCall = calls.find(([xdrs]) => xdrs.includes("persistent-key-xdr"));
+
+            expect(instanceCall).toBeDefined();
+            expect(persistentCall).toBeDefined();
+            expect(instanceCall?.[1]).toBe(100000);
+            expect(persistentCall?.[1]).toBe(50000);
         });
     });
 });

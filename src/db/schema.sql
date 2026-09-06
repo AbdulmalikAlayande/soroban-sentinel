@@ -289,3 +289,18 @@ CREATE TABLE IF NOT EXISTS shared_budget_pool_contracts (
 
 CREATE INDEX IF NOT EXISTS idx_shared_budget_pool_contracts_pool_id
     ON shared_budget_pool_contracts(pool_id);
+
+-- Per-entry-type TTL policy overrides, falling back to extension_policies
+-- (contract-level default) when no type-specific override exists (#491).
+CREATE TABLE IF NOT EXISTS entry_type_policies (
+    contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+    entry_type TEXT NOT NULL CHECK(entry_type IN ('instance', 'wasm', 'persistent', 'temporary')),
+    target_ttl_ledgers INTEGER NOT NULL,
+    extend_when_below_ledgers INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (contract_id, entry_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entry_type_policies_contract_id
+    ON entry_type_policies(contract_id);
