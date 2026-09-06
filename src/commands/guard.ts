@@ -528,11 +528,12 @@ export function registerGuardCommand(program: Command): void {
         .option("--keypair <secret>", "Stellar secret key for signing extension transactions")
         .option("--keypair-env <var>", "Environment variable containing the secret key")
         .option("--keypair-vault <path>", "HashiCorp Vault secret path (e.g. secret/data/stellar/mykey)")
+        .option("--max-fee <stroops>", "Maximum fee ceiling for a single extension transaction, in stroops")
         .option("--auto-extend", "Enable auto-extension (the daemon will extend automatically)")
         .option("--dry-run", "Simulate the extension without submitting")
         .option("--disable", "Disable auto-extension for this contract")
         .option("--json", "Output machine-readable JSON")
-        .action(async (contractId: string | undefined, options: { json?: boolean; tag?: string; targetTtl?: string; threshold?: string; keypair?: string; keypairEnv?: string; keypairVault?: string; autoExtend?: boolean; dryRun?: boolean; disable?: boolean } = {}) => {
+        .action(async (contractId: string | undefined, options: { json?: boolean; tag?: string; targetTtl?: string; threshold?: string; keypair?: string; keypairEnv?: string; keypairVault?: string; maxFee?: string; autoExtend?: boolean; dryRun?: boolean; disable?: boolean } = {}) => {
             try {
                 if (contractId && options.tag) {
                     if (options.json) {
@@ -594,6 +595,21 @@ export function registerGuardCommand(program: Command): void {
                 const isValidLedgerCount = (raw: string, value: number): boolean =>
                     /^\d+$/.test(raw) && Number.isSafeInteger(value) && value > 0;
 
+                let maxFee: number | undefined;
+                if (options.maxFee !== undefined) {
+                    maxFee = Number(options.maxFee);
+                    if (!/^\d+$/.test(options.maxFee) || !Number.isSafeInteger(maxFee) || maxFee < 0) {
+                        if (options.json) {
+                            printOutput({ success: false, error: "invalid_max_fee", contractId, maxFee: options.maxFee }, true);
+                            process.exitCode = 1;
+                            return;
+                        }
+                        console.error(chalk.red("--max-fee must be a positive integer"));
+                        process.exit(1);
+                        return;
+                    }
+                }
+
                 if (!isValidLedgerCount(targetTtlRaw, targetTTL)) {
                     if (options.json) {
                         printOutput({ success: false, error: "invalid_target_ttl", contractId, targetTtl: options.targetTtl }, true);
@@ -632,9 +648,10 @@ export function registerGuardCommand(program: Command): void {
                         enabled: false,
                         target_ttl_ledgers: targetTTL,
                         extend_when_below_ledgers: threshold,
+                        max_fee_stroops: maxFee,
                     });
                     if (options.json) {
-                        printOutput({ success: true, contractId, mode: "disabled", policy: { enabled: false, target_ttl_ledgers: targetTTL, extend_when_below_ledgers: threshold } }, true);
+                        printOutput({ success: true, contractId, mode: "disabled", policy: { enabled: false, target_ttl_ledgers: targetTTL, extend_when_below_ledgers: threshold, max_fee_stroops: maxFee } }, true);
                         return;
                     }
                     console.log(chalk.yellow(`Auto-extension disabled for ${contract.name ?? formatContractID(contractId!)}`));
@@ -689,16 +706,20 @@ export function registerGuardCommand(program: Command): void {
                         extend_when_below_ledgers: threshold,
                         keypair_public: kp.publicKey(),
                         keypair_source: keypairSource!,
+                        max_fee_stroops: maxFee,
                     });
 
                     if (options.json) {
-                        printOutput({ success: true, contractId, mode: "auto-extend", policy: { enabled: true, target_ttl_ledgers: targetTTL, extend_when_below_ledgers: threshold, keypair_source: keypairSource, keypair_public: kp.publicKey() } }, true);
+                        printOutput({ success: true, contractId, mode: "auto-extend", policy: { enabled: true, target_ttl_ledgers: targetTTL, extend_when_below_ledgers: threshold, keypair_source: keypairSource, keypair_public: kp.publicKey(), max_fee_stroops: maxFee } }, true);
                         return;
                     }
 
                     console.log(chalk.green(`\nAuto-extension enabled for ${contract.name ?? formatContractID(contractId!)}`));
                     console.log(`  Target TTL:  ${targetTTL.toLocaleString()} ledgers (${formatTimeToCloseLedger(targetTTL)})`);
                     console.log(`  Threshold:   ${threshold.toLocaleString()} ledgers (${formatTimeToCloseLedger(threshold)})`);
+                    if (maxFee !== undefined) {
+                        console.log(`  Max Fee:     ${maxFee.toLocaleString()} stroops`);
+                    }
                     console.log(`  Funded by:   ${kp.publicKey().slice(0, 8)}...${kp.publicKey().slice(-4)}`);
                     console.log(chalk.dim("\n  The daemon will auto-extend when TTL drops below the threshold."));
                     console.log(chalk.dim("  Run 'sorokeep daemon --network " + contract.network + "' to start monitoring."));
@@ -823,6 +844,9 @@ export function registerGuardCommand(program: Command): void {
                     console.log(`  Status:    ${policy.enabled ? chalk.green("ENABLED") : chalk.yellow("DISABLED")}`);
                     console.log(`  Target:    ${policy.target_ttl_ledgers.toLocaleString()} ledgers (${formatTimeToCloseLedger(policy.target_ttl_ledgers)})`);
                     console.log(`  Threshold: ${policy.extend_when_below_ledgers.toLocaleString()} ledgers (${formatTimeToCloseLedger(policy.extend_when_below_ledgers)})`);
+                    if (policy.max_fee_stroops != null) {
+                        console.log(`  Max Fee:   ${policy.max_fee_stroops.toLocaleString()} stroops`);
+                    }
                     if (policy.keypair_public) {
                         console.log(`  Funded by: ${policy.keypair_public.slice(0, 8)}...${policy.keypair_public.slice(-4)}`);
                     }
@@ -856,6 +880,7 @@ interface TagPolicyOptions {
     keypair?: string;
     keypairEnv?: string;
     keypairVault?: string;
+    maxFee?: string;
     autoExtend?: boolean;
     disable?: boolean;
 }
@@ -903,6 +928,21 @@ async function applyGuardPolicyToTag(
         console.error(chalk.red("--threshold must be less than --target-ttl"));
         process.exit(1);
         return;
+    }
+
+    let maxFee: number | undefined;
+    if (options.maxFee !== undefined) {
+        maxFee = Number(options.maxFee);
+        if (!/^\d+$/.test(options.maxFee) || !Number.isSafeInteger(maxFee) || maxFee < 0) {
+            if (options.json) {
+                printOutput({ success: false, error: "invalid_max_fee", tag, maxFee: options.maxFee }, true);
+                process.exitCode = 1;
+                return;
+            }
+            console.error(chalk.red("--max-fee must be a non-negative integer"));
+            process.exit(1);
+            return;
+        }
     }
 
     let keypairSource: string | undefined;
@@ -956,6 +996,7 @@ async function applyGuardPolicyToTag(
         extend_when_below_ledgers: threshold,
         keypair_public: keypairPublic,
         keypair_source: keypairSource,
+        max_fee_stroops: maxFee,
     });
 
     const successCount = results.filter((r) => r.status === "ok").length;

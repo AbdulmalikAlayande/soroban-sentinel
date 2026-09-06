@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS extension_policies (
     extend_when_below_ledgers INTEGER NOT NULL,
     keypair_public TEXT,
     keypair_source TEXT,
+    -- Hard per-transaction fee ceiling in stroops (issue #420). NULL means
+    -- no ceiling — the existing monthly budget check is the only guard.
+    max_fee_stroops INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(contract_id)
 );

@@ -593,7 +593,7 @@ export async function runAutoExtensions(
                 let estimatedFeeXlm = 0;
                 let reservedPoolSpend = 0;
 
-                if (sharedBudget || budget) {
+                if (sharedBudget || budget || policy.max_fee_stroops != null) {
                     const { Keypair } = await import("@stellar/stellar-sdk");
                     const pubKey = Keypair.fromSecret(secretKey).publicKey();
                     const simResult = await simulateExtension(db, contract.id, entryKeys, targetTtlLedgers, pubKey, rpcUrl);
@@ -603,6 +603,17 @@ export async function runAutoExtensions(
                     }
 
                     estimatedFeeXlm = (simResult.estimatedFee || 0) / 10000000;
+
+                    // Hard per-transaction fee ceiling (issue #420) — an
+                    // independent safety net from the monthly budget checks
+                    // below. Blocks submission outright if the RPC's fee
+                    // estimate is anomalously high (bad estimate, misconfigured
+                    // node, or a network fee spike).
+                    if (policy.max_fee_stroops != null && (simResult.estimatedFee || 0) > policy.max_fee_stroops) {
+                        throw new Error(
+                            `Estimated fee (${simResult.estimatedFee} stroops) exceeds max fee ceiling (${policy.max_fee_stroops} stroops)`,
+                        );
+                    }
 
                     if (sharedBudget) {
                         // Atomic reserve-if-under-limit: the WHERE clause re-checks

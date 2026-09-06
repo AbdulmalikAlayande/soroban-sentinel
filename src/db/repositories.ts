@@ -35,6 +35,8 @@ export interface ExtensionPolicy {
     extend_when_below_ledgers: number;
     keypair_public: string | null;
     keypair_source: string | null;
+    /** Hard per-transaction fee ceiling in stroops, or null for no ceiling (issue #420). */
+    max_fee_stroops: number | null;
     created_at: Date;
 }
 
@@ -340,16 +342,18 @@ export function upsertExtensionPolicy(db: Database.Database, policy: {
   extend_when_below_ledgers: number;
   keypair_public?: string;
   keypair_source?: string;
+  max_fee_stroops?: number | null;
 }): void {
   db.prepare(`
-    INSERT INTO extension_policies (contract_id, enabled, target_ttl_ledgers, extend_when_below_ledgers, keypair_public, keypair_source)
-    VALUES (@contract_id, @enabled, @target_ttl_ledgers, @extend_when_below_ledgers, @keypair_public, @keypair_source)
+    INSERT INTO extension_policies (contract_id, enabled, target_ttl_ledgers, extend_when_below_ledgers, keypair_public, keypair_source, max_fee_stroops)
+    VALUES (@contract_id, @enabled, @target_ttl_ledgers, @extend_when_below_ledgers, @keypair_public, @keypair_source, @max_fee_stroops)
     ON CONFLICT(contract_id) DO UPDATE SET
       enabled = @enabled,
       target_ttl_ledgers = @target_ttl_ledgers,
       extend_when_below_ledgers = @extend_when_below_ledgers,
       keypair_public = @keypair_public,
-      keypair_source = @keypair_source
+      keypair_source = @keypair_source,
+      max_fee_stroops = @max_fee_stroops
   `).run({
     contract_id: policy.contract_id,
     enabled: policy.enabled !== false ? 1 : 0,
@@ -357,6 +361,7 @@ export function upsertExtensionPolicy(db: Database.Database, policy: {
     extend_when_below_ledgers: policy.extend_when_below_ledgers,
     keypair_public: policy.keypair_public ?? null,
     keypair_source: policy.keypair_source ?? null,
+    max_fee_stroops: policy.max_fee_stroops ?? null,
   });
 }
 

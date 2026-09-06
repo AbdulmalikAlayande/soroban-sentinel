@@ -969,6 +969,162 @@ describe("Core Extension Logic", () => {
             expect(result.extensions[0]!.txHash).toBe("sufficient-balance-tx");
         });
 
+        it("blocks extension when estimated fee exceeds the max fee ceiling (issue #420)", async () => {
+            const contractId = seedContract(db);
+
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "instance-key-xdr",
+                entry_type: "instance",
+                live_until_ledger: 2410000,
+                discovery_source: "deterministic",
+            });
+
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+                max_fee_stroops: 10000,
+            });
+
+            setEnv("TEST_SECRET_KEY", "SBPQHPF4S2SQ7XMYAC27XZZ3BE4BKXPW2MDJMMNKSAW5GCEYOQUDJPN7");
+
+            const channelPubKey = "GCHANNEL4" + "A".repeat(48);
+            upsertChannelAccount(db, {
+                public_key: channelPubKey,
+                keypair_source: "env:CHANNEL_SECRET",
+                network: "testnet",
+            });
+            setEnv("CHANNEL_SECRET", "SBPQHPF4S2SQ7XMYAC27XZZ3BE4BKXPW2MDJMMNKSAW5GCEYOQUDJPN7");
+            updateChannelBalance(db, channelPubKey, 100.0);
+
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+            mockSimulateExtension.mockResolvedValue({
+                success: true,
+                minResourceFee: 50000,
+            });
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.contractsExtended).toBe(0);
+            expect(mockSubmitExtension).not.toHaveBeenCalled();
+            expect(result.errors.some(e => e.includes("exceeds max fee ceiling"))).toBe(true);
+        });
+
+        it("proceeds with extension when estimated fee is under the max fee ceiling (issue #420)", async () => {
+            const contractId = seedContract(db);
+
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "instance-key-xdr",
+                entry_type: "instance",
+                live_until_ledger: 2410000,
+                discovery_source: "deterministic",
+            });
+
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+                max_fee_stroops: 100000,
+            });
+
+            setEnv("TEST_SECRET_KEY", "SBPQHPF4S2SQ7XMYAC27XZZ3BE4BKXPW2MDJMMNKSAW5GCEYOQUDJPN7");
+
+            const channelPubKey = "GCHANNEL5" + "A".repeat(48);
+            upsertChannelAccount(db, {
+                public_key: channelPubKey,
+                keypair_source: "env:CHANNEL_SECRET",
+                network: "testnet",
+            });
+            setEnv("CHANNEL_SECRET", "SBPQHPF4S2SQ7XMYAC27XZZ3BE4BKXPW2MDJMMNKSAW5GCEYOQUDJPN7");
+            updateChannelBalance(db, channelPubKey, 100.0);
+
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+            mockSimulateExtension.mockResolvedValue({
+                success: true,
+                minResourceFee: 50000,
+            });
+            mockSubmitExtension.mockResolvedValue({
+                success: true,
+                txHash: "under-ceiling-tx",
+                ledger: 2400100,
+            });
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2400100,
+                entries: [{
+                    entryKeyXdr: "instance-key-xdr",
+                    latestLedger: 2400100,
+                    liveUntilLedgerSeq: 2500100,
+                    lastModifiedLedgerSeq: 2400100,
+                    remainingTTL: 100000,
+                }],
+            });
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.contractsExtended).toBe(1);
+            expect(result.extensions[0]!.txHash).toBe("under-ceiling-tx");
+        });
+
+        it("does not simulate or block when no max fee ceiling is configured (issue #420)", async () => {
+            const contractId = seedContract(db);
+
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "instance-key-xdr",
+                entry_type: "instance",
+                live_until_ledger: 2410000,
+                discovery_source: "deterministic",
+            });
+
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+
+            const channelPubKey = "GCHANNEL6" + "A".repeat(48);
+            upsertChannelAccount(db, {
+                public_key: channelPubKey,
+                keypair_source: "env:CHANNEL_SECRET",
+                network: "testnet",
+            });
+            setEnv("CHANNEL_SECRET", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAG");
+            updateChannelBalance(db, channelPubKey, 100.0);
+
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+            mockSubmitExtension.mockResolvedValue({
+                success: true,
+                txHash: "no-ceiling-tx",
+                ledger: 2400100,
+            });
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2400100,
+                entries: [{
+                    entryKeyXdr: "instance-key-xdr",
+                    latestLedger: 2400100,
+                    liveUntilLedgerSeq: 2500100,
+                    lastModifiedLedgerSeq: 2400100,
+                    remainingTTL: 100000,
+                }],
+            });
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.contractsExtended).toBe(1);
+            expect(result.extensions[0]!.txHash).toBe("no-ceiling-tx");
+            expect(mockSimulateExtension).not.toHaveBeenCalled();
+        });
+
         it("skips when channel account balance is null (unknown)", async () => {
             const contractId = seedContract(db);
 
