@@ -71,6 +71,13 @@ export interface SorokeepConfig {
      */
     allowedIps?: string[];
 
+    /**
+     * Maximum MCP tool invocations allowed per tool name per 60-second
+     * window. Protects the daemon's shared SQLite connection from being
+     * hammered by a runaway AI loop or a malicious client. Defaults to 60.
+     */
+    requestsPerMinute?: number;
+
 }
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -132,6 +139,9 @@ export function loadConfig(customPath?: string): SorokeepConfig {
             mcpAuthToken: typeof parsed.mcpAuthToken === "string" ? parsed.mcpAuthToken : undefined,
             allowedIps: Array.isArray(parsed.allowedIps) && parsed.allowedIps.every((ip) => typeof ip === "string")
                 ? parsed.allowedIps
+                : undefined,
+            requestsPerMinute: typeof parsed.requestsPerMinute === "number" && parsed.requestsPerMinute > 0
+                ? parsed.requestsPerMinute
                 : undefined,
 
         };

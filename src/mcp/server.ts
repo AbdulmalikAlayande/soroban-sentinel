@@ -8,6 +8,7 @@ import { classifyTTL } from "../utils/formatting.js";
 import type { TTLStatus } from "../utils/formatting.js";
 import { instrumentMcpToolInvocations } from "../observability/metrics/mcp.js";
 import { resolveToken, verifyRequest, extractBearerToken } from "./auth.js";
+import { ToolRateLimiter, DEFAULT_REQUESTS_PER_MINUTE } from "./rateLimiter.js";
 import type { SorokeepConfig } from "../utils/config.js";
 import { getLogger } from "../logging/index.js";
 
@@ -47,6 +48,36 @@ export function enforceMcpAuth<T extends { tool: (...args: any[]) => any }>(serv
                     logger.warn(`Rejected unauthenticated MCP tool call: ${toolName}`);
                     throw new McpError(ErrorCode.InvalidRequest, "Unauthorized: missing or invalid bearer token");
                 }
+            }
+            return originalCallback(...cbArgs);
+        };
+
+        return originalTool(...args);
+    }) as T["tool"];
+
+    return server;
+}
+
+/**
+ * Wrap an MCP server's `.tool()` registration so every call is throttled by
+ * a fixed-window rate limit, scoped per tool name (issue #411). Protects the
+ * daemon's shared SQLite connection from a runaway AI loop or malicious
+ * client hammering a tool. Enforcement runs on every real invocation via the
+ * same interception point as the auth/metrics wrappers, regardless of
+ * transport (stdio or HTTP both call the wrapped callback per tool call).
+ */
+export function enforceMcpRateLimit<T extends { tool: (...args: any[]) => any }>(server: T, limiter: ToolRateLimiter): T {
+    const originalTool = server.tool.bind(server);
+
+    server.tool = ((...args: any[]) => {
+        const toolName = args[0] as string;
+        const lastIndex = args.length - 1;
+        const originalCallback = args[lastIndex] as (...cbArgs: any[]) => unknown;
+
+        args[lastIndex] = async (...cbArgs: any[]) => {
+            if (!limiter.tryConsume(toolName)) {
+                logger.warn(`Rate limit exceeded for MCP tool: ${toolName}`);
+                throw new McpError(ErrorCode.InternalError, `Rate limit exceeded for tool ${toolName}. Try again later.`);
             }
             return originalCallback(...cbArgs);
         };
@@ -113,8 +144,11 @@ export function createMcpServer(getDb: () => Database.Database, config?: Sorokee
         logger.debug("MCP server authentication enabled: token configured");
     }
 
+    const rateLimiter = new ToolRateLimiter(config?.requestsPerMinute ?? DEFAULT_REQUESTS_PER_MINUTE);
+
     instrumentMcpToolInvocations(server);
     enforceMcpAuth(server, configuredToken);
+    enforceMcpRateLimit(server, rateLimiter);
 
     registerGetContractStatusTool(server, getDb);
     registerGetExtensionCostsTool(server);
