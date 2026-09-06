@@ -74,6 +74,8 @@ export function getDatabase(customPath?: string): Database.Database {
         `ALTER TABLE alert_configs ADD COLUMN quiet_hours_start TEXT`,
         `ALTER TABLE alert_configs ADD COLUMN quiet_hours_end TEXT`,
         `ALTER TABLE alert_configs ADD COLUMN quiet_hours_timezone TEXT`,
+        // issue #400 — group-level default poll interval
+        `ALTER TABLE contract_groups ADD COLUMN poll_interval_seconds INTEGER`,
     ];
     for (const sql of migrations) {
         try { db.exec(sql); } catch { /* column already exists — no-op */ }
