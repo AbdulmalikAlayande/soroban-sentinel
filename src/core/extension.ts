@@ -14,6 +14,7 @@ import {
     addBudgetSpent,
     countExtensionsInLastHour,
     getAlertConfigsForContract,
+    getExtensionHistory,
 
 } from "../db/repositories.js";
 import { ChannelAccountPool } from "./channels.js";
@@ -57,6 +58,17 @@ export const HOURLY_RATE_LIMIT = 5;
  * (issue #504).
  */
 export const MINIMUM_BALANCE_XLM = 5;
+
+/**
+ * Minimum time (in milliseconds) that must pass between two consecutive
+ * extensions of the same contract entry. Prevents the same entry being
+ * extended twice in quick succession when the threshold is very tight
+ * relative to the target TTL (issue #510).
+ *
+ * Default 5 minutes — slightly below the typical polling interval so it
+ * does not interfere with normal operation.
+ */
+export const EXTENSION_COOLDOWN_MS = 5 * 60 * 1000;
 
 /**
  * Check whether the given contract has reached its hourly auto-extension rate limit.
@@ -395,6 +407,44 @@ export async function runAutoExtensions(
                 const msg = `Contract ${contract.id}: rate limit reached — ${count}/${HOURLY_RATE_LIMIT} extensions in the last hour. Skipping.`;
                 logger.warn(msg);
                 result.errors.push(msg);
+                return;
+            }
+
+            // ── Cooldown check per entry (issue #510) ──────────────────────
+            // Filter out entries that were extended within the cooldown window
+            // to prevent redundant back-to-back extensions of the same entry.
+            const recentHistory = getExtensionHistory(db, contract.id, 1);
+            const lastExtendedAt = new Map<number, Date>();
+            for (const record of recentHistory) {
+                const entryId = record.contract_entry_id;
+                // executed_at is stored as UTC (SQLite CURRENT_TIMESTAMP); append
+                // "Z" so the timestamp is parsed as UTC regardless of the host
+                // machine's timezone.
+                const executedAt = new Date(record.executed_at + "Z");
+                const existing = lastExtendedAt.get(entryId);
+                if (!existing || executedAt > existing) {
+                    lastExtendedAt.set(entryId, executedAt);
+                }
+            }
+
+            const cooldownEligible = needsExtension.filter(e => {
+                const lastExt = lastExtendedAt.get(e.id);
+                if (!lastExt) return true; // never extended → eligible
+                const elapsed = Date.now() - lastExt.getTime();
+                if (elapsed < EXTENSION_COOLDOWN_MS) {
+                    logger.info(
+                        `Entry ${e.entry_key_xdr} for ${contract.id} was extended ` +
+                        `${Math.round(elapsed / 1000)}s ago — skipping (cooldown: ${EXTENSION_COOLDOWN_MS / 1000}s)`,
+                    );
+                    return false;
+                }
+                return true;
+            });
+
+            if (cooldownEligible.length === 0) {
+                logger.info(
+                    `All ${needsExtension.length} entries for ${contract.id} are within cooldown — skipping`,
+                );
                 return;
             }
 

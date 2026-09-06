@@ -770,7 +770,9 @@ describe("Core Extension Logic", () => {
         it("flags anomalous execution if resource usage spikes", async () => {
             const contractId = seedContract(db);
 
-            // Seed with some normal history
+            // Seed with some normal history. Backdated well outside the
+            // cooldown window (issue #510) — these establish the resource-usage
+            // baseline and are unrelated to the cooldown behavior under test.
             recordExtension(db, {
                 contract_id: contractId, contract_entry_id: 1, old_ttl_ledgers: 1, new_ttl_ledgers: 2,
                 tx_hash: "h1", cost_xlm: 0.1, executed_at_ledger: 1, cpu_insns: 1000, mem_bytes: 100
@@ -779,6 +781,9 @@ describe("Core Extension Logic", () => {
                 contract_id: contractId, contract_entry_id: 1, old_ttl_ledgers: 1, new_ttl_ledgers: 2,
                 tx_hash: "h2", cost_xlm: 0.1, executed_at_ledger: 2, cpu_insns: 1200, mem_bytes: 120
             });
+            db.prepare(
+                `UPDATE extension_history SET executed_at = datetime('now', '-1 hour') WHERE tx_hash IN ('h1', 'h2')`,
+            ).run();
 
             // Set instance entry with low TTL
             upsertEntry(db, {
@@ -1067,6 +1072,136 @@ describe("Core Extension Logic", () => {
             expect(duration).toBeGreaterThanOrEqual(270);
 
             randomSpy.mockRestore();
+        });
+
+        // ── Issue #510: extension cooldown per entry ───────────────────────
+
+        it("skips an entry extended within the cooldown window", async () => {
+            const contractId = seedContract(db);
+
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "instance-key-xdr",
+                entry_type: "instance",
+                live_until_ledger: 2410000,
+                discovery_source: "deterministic",
+            });
+
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+
+            const entryRow = db
+                .prepare("SELECT id FROM contract_entries WHERE contract_id = ?")
+                .get(contractId) as { id: number };
+
+            recordExtension(db, {
+                contract_id: contractId,
+                contract_entry_id: entryRow.id,
+                old_ttl_ledgers: 1000,
+                new_ttl_ledgers: 100000,
+                tx_hash: "recent-tx",
+                executed_at_ledger: 2399900,
+            });
+
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.contractsExtended).toBe(0);
+            expect(mockSubmitExtension).not.toHaveBeenCalled();
+        });
+
+        it("extends an entry whose last extension is outside the cooldown window", async () => {
+            const contractId = seedContract(db);
+
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "instance-key-xdr",
+                entry_type: "instance",
+                live_until_ledger: 2410000,
+                discovery_source: "deterministic",
+            });
+
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+
+            const entryRow = db
+                .prepare("SELECT id FROM contract_entries WHERE contract_id = ?")
+                .get(contractId) as { id: number };
+
+            db.prepare(
+                `INSERT INTO extension_history
+                    (contract_id, contract_entry_id, old_ttl_ledgers, new_ttl_ledgers, tx_hash, executed_at_ledger, executed_at)
+                 VALUES (?, ?, ?, ?, ?, ?, datetime('now', '-1 hour'))`,
+            ).run(contractId, entryRow.id, 1000, 100000, "old-tx", 2000000);
+
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+            mockSubmitExtension.mockResolvedValue({ success: true, txHash: "new-tx", ledger: 2400100 });
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2400100,
+                entries: [{
+                    entryKeyXdr: "instance-key-xdr",
+                    latestLedger: 2400100,
+                    liveUntilLedgerSeq: 2500100,
+                    lastModifiedLedgerSeq: 2400100,
+                    remainingTTL: 100000,
+                }],
+            });
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.contractsExtended).toBe(1);
+            expect(mockSubmitExtension).toHaveBeenCalled();
+        });
+
+        it("extends an entry that has never been extended before", async () => {
+            const contractId = seedContract(db);
+
+            upsertEntry(db, {
+                contract_id: contractId,
+                entry_key_xdr: "instance-key-xdr",
+                entry_type: "instance",
+                live_until_ledger: 2410000,
+                discovery_source: "deterministic",
+            });
+
+            upsertExtensionPolicy(db, {
+                contract_id: contractId,
+                enabled: true,
+                target_ttl_ledgers: 100000,
+                extend_when_below_ledgers: 20000,
+                keypair_source: "env:TEST_SECRET_KEY",
+            });
+            setEnv("TEST_SECRET_KEY", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+
+            mockGetCurrentLedger.mockResolvedValue(2400000);
+            mockSubmitExtension.mockResolvedValue({ success: true, txHash: "first-tx", ledger: 2400100 });
+            mockGetEntryTTLs.mockResolvedValue({
+                latestLedger: 2400100,
+                entries: [{
+                    entryKeyXdr: "instance-key-xdr",
+                    latestLedger: 2400100,
+                    liveUntilLedgerSeq: 2500100,
+                    lastModifiedLedgerSeq: 2400100,
+                    remainingTTL: 100000,
+                }],
+            });
+
+            const result = await runAutoExtensions(db, "testnet");
+
+            expect(result.contractsExtended).toBe(1);
         });
     });
 });
