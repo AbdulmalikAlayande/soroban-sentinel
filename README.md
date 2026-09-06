@@ -551,7 +551,15 @@ Webhook requests include an HMAC-SHA256 signature in the `X-Sorokeep-Signature` 
 X-Sorokeep-Signature: sha256=a1b2c3d4e5f6...
 ```
 
-To verify on your server:
+To verify on your server using `sorokeep`:
+
+```typescript
+import { verifyWebhookSignature } from "sorokeep";
+
+const isValid = verifyWebhookSignature(payload, signature, secret);
+```
+
+For non-Node receivers or without the `sorokeep` dependency, you can verify manually:
 
 ```javascript
 import { createHmac } from "node:crypto";
